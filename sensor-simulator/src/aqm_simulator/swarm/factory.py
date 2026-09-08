@@ -44,15 +44,32 @@ class VirtualSensor:
     distance_to_kerb_m: float
 
 
-def _classification_for(fraction: float) -> str:
-    # Map a uniform fraction 0..1 onto the classification mix by cumulative share
-    # (deterministic, so the observed proportions track the mix — Req 8.6).
-    cumulative = 0.0
+def _classification_quota(size: int) -> list[str]:
+    """Assign classifications by exact quota so proportions track the mix.
+
+    Independent per-sensor sampling has binomial variance that can exceed the
+    5pp bound of Requirement 8.6 for some seeds; assigning floor(share*size) of
+    each class and distributing the remainder by largest fractional part keeps
+    every observed share within one sensor (~0.5pp at size 200) of its target.
+    """
+    base: list[tuple[str, int, float]] = []
+    assigned = 0
     for name, share in _DEFAULT_MIX:
-        cumulative += share
-        if fraction < cumulative:
-            return name
-    return _DEFAULT_MIX[-1][0]
+        exact = share * size
+        count = int(exact)
+        base.append((name, count, exact - count))
+        assigned += count
+    # distribute the leftover to the largest fractional remainders, in order
+    remainder = size - assigned
+    for name, _count, _frac in sorted(base, key=lambda t: t[2], reverse=True)[:remainder]:
+        for i, (n, c, f) in enumerate(base):
+            if n == name:
+                base[i] = (n, c + 1, f)
+                break
+    result: list[str] = []
+    for name, count, _frac in base:
+        result.extend([name] * count)
+    return result
 
 
 def _borough_for(latitude: float, profile: GeographyProfile) -> str:
@@ -64,7 +81,7 @@ def _borough_for(latitude: float, profile: GeographyProfile) -> str:
 
 
 def _make_sensor(
-    index: int, profile: GeographyProfile, factory: RandomStreamFactory
+    index: int, classification: str, profile: GeographyProfile, factory: RandomStreamFactory
 ) -> VirtualSensor:
     site_code = f"{profile.site_code_prefix}{index:04d}"
     rng = factory.stream(site_code, Purpose.IDENTITY)
@@ -82,7 +99,7 @@ def _make_sensor(
         latitude=lat_s,
         longitude=lon_s,
         borough=_borough_for(lat, profile),
-        classification=_classification_for(float(rng.random())),
+        classification=classification,
         power_tag="Solar" if rng.random() < 0.25 else "Mains",
         sensor_height_m=round(float(rng.uniform(2.0, 3.0)), 2),
         distance_to_kerb_m=round(float(rng.uniform(0.5, 30.0)), 2),
@@ -100,4 +117,8 @@ def build_swarm(
     """
     if not (1 <= size <= 500):
         raise ValueError(f"swarm size {size} is outside the permitted range 1..500")
-    return [_make_sensor(i, profile, factory) for i in range(1, size + 1)]
+    classifications = _classification_quota(size)
+    return [
+        _make_sensor(i, classifications[i - 1], profile, factory)
+        for i in range(1, size + 1)
+    ]
