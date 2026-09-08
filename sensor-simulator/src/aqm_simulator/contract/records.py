@@ -80,7 +80,7 @@ class SensorMetadataRecord(_StrictModel):
     DeviceCode: str
     InstallationCode: str | None
     Facility: str | None
-    Location: GeoLocation
+    Location: GeoLocation = None  # type: ignore[assignment]  # populated by validator
     Latitude: LatLonString
     Longitude: LatLonString
     Borough: str
@@ -100,8 +100,9 @@ class SensorMetadataRecord(_StrictModel):
     @classmethod
     def _derive_location(cls, data: Any) -> Any:
         # Build Location from Latitude/Longitude so coordinates are
-        # character-identical (Requirement 1.3). A caller-supplied Location is
-        # overridden to keep the invariant single-sourced.
+        # character-identical (Requirement 1.3). Always overridden from the
+        # sibling values so the invariant is single-sourced; a caller need not
+        # (and should not) supply Location.
         if isinstance(data, dict):
             lat, lon = data.get("Latitude"), data.get("Longitude")
             if isinstance(lat, str) and isinstance(lon, str):

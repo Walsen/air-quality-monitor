@@ -67,7 +67,7 @@ def _data(**overrides: object) -> SensorDataRecord:
 
 
 def _metadata() -> SensorMetadataRecord:
-    return SensorMetadataRecord(  # type: ignore[call-arg]
+    return SensorMetadataRecord(
         SiteCode="CB0001",
         SiteName="Cochabamba Centro",
         DeviceCode="DEV-CB0001",
