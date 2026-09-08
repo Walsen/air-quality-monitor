@@ -121,3 +121,90 @@ def resolve_config(
         classification_mix=file_data.get("classification_mix"),
         scenario_schedule=list(file_data.get("scenario_schedule", [])),
     )
+
+
+_INTERFACES = ("mqtt", "rest", "both")
+_LOG_LEVELS = ("debug", "info", "warn", "error")
+_TIME_MODES = ("realtime", "backfill")
+
+
+def validate_config(config: SimulatorConfig, *, raise_on_error: bool = False) -> list[str]:
+    """Validate every resolved value, accumulating one message per problem.
+
+    Fail-fast means "do not half-start", not "stop at the first error": every
+    value is checked and every violation reported (Requirement 15.5). Returns
+    the list of human-readable problems (empty when valid); with
+    ``raise_on_error`` it raises :class:`ConfigError` joining all messages, which
+    the entry point turns into a non-zero exit (§5).
+    """
+    problems: list[str] = []
+
+    def check(ok: bool, message: str) -> None:
+        if not ok:
+            problems.append(message)
+
+    check(
+        1 <= config.swarm_size <= 500,
+        f"swarm_size {config.swarm_size} is outside the permitted range 1..500",
+    )
+    check(
+        1 <= config.tick_minutes <= 60,
+        f"tick_minutes {config.tick_minutes} is outside the permitted range 1..60",
+    )
+    check(
+        1 <= config.publish_minutes <= 1440,
+        f"publish_minutes {config.publish_minutes} is outside the permitted range 1..1440",
+    )
+    if config.tick_minutes > 0 and config.publish_minutes % config.tick_minutes != 0:
+        problems.append(
+            f"publish_minutes {config.publish_minutes} is not an integer multiple of "
+            f"tick_minutes {config.tick_minutes}"
+        )
+    if config.seed is not None:
+        check(
+            0 <= config.seed <= 4_294_967_295,
+            f"seed {config.seed} is outside the permitted range 0..4294967295",
+        )
+    check(
+        1 <= config.retention_days <= 365,
+        f"retention_days {config.retention_days} is outside the permitted range 1..365",
+    )
+    check(
+        config.interface in _INTERFACES,
+        f"interface {config.interface!r} is not one of {', '.join(_INTERFACES)}",
+    )
+    check(
+        config.log_level in _LOG_LEVELS,
+        f"log_level {config.log_level!r} is not one of {', '.join(_LOG_LEVELS)}",
+    )
+    check(
+        config.time_mode in _TIME_MODES,
+        f"time_mode {config.time_mode!r} is not one of {', '.join(_TIME_MODES)}",
+    )
+
+    if config.classification_mix is not None:
+        total = sum(config.classification_mix.values())
+        for name, pct in config.classification_mix.items():
+            check(
+                0 <= pct <= 100,
+                f"classification mix proportion for {name!r} ({pct}) is outside 0..100",
+            )
+        check(
+            abs(total - 100) < 1e-9,
+            f"classification mix proportions sum to {total}, not 100",
+        )
+
+    if config.site_list is not None:
+        check(
+            len(config.site_list) <= 500,
+            f"site list has {len(config.site_list)} entries, exceeding the 500 maximum",
+        )
+    check(
+        len(config.scenario_schedule) <= 100,
+        f"scenario schedule has {len(config.scenario_schedule)} entries, exceeding the 100 maximum",
+    )
+
+    if raise_on_error and problems:
+        raise ConfigError("; ".join(problems))
+    return problems
+
