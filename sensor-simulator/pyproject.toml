@@ -1,0 +1,60 @@
+[project]
+name = "sensor-simulator"
+version = "0.1.0"
+description = "Sensor Simulator Service — emits Breathe-London-shaped air-quality sensor data over MQTT and REST"
+requires-python = "==3.12.*"
+dependencies = [
+    "aiomqtt==2.5.1",
+    "cryptography==50.0.1",
+    "fastapi==0.141.1",
+    "numpy==2.5.3",
+    "pydantic==2.13.5",
+    "uvicorn[standard]==0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "hypothesis==6.168.0",
+    "mypy==2.3.1",
+    "pytest==9.1.1",
+    "pytest-xdist==3.8.0",
+    "ruff==0.16.6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aqm_simulator"
+module-root = "src"
+
+# ---------------------------------------------------------------------------
+# Test configuration — the single documented test command runs `pytest`.
+# The `ci` hypothesis profile generates at least 100 examples per property,
+# as Requirement 16.3 mandates.
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "property: property-based test asserting a named correctness property",
+    "integration: requires a container engine or local broker (excluded from the offline suite)",
+]
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true

@@ -1,0 +1,22 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.18.0/.schema/devbox.schema.json",
+  "packages": [
+    "python@3.12.14",
+    "uv@0.12.5",
+    "just@1.58.0",
+    "jq@1.8.2",
+    "yq-go@4.53.3",
+    "docker-client@29.7.2",
+    "docker-compose@2.39.4",
+    "aws-cdk-cli@2.1138.0",
+    "awscli2@2.35.11",
+    "git@2.55.0",
+    "gh@2.98.0"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo 'air-quality-monitor devbox environment active'"
+    ],
+    "scripts": {}
+  }
+}

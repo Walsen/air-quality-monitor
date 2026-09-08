@@ -1,0 +1,27 @@
+# Devbox
+.devbox/
+
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# Generated credential trees (never commit certs/keys/API keys)
+certs/
+*.crt
+*.key
+*.pem
+.env.local
+
+# CDK
+infra/cdk.out/
+
+# OS / editor
+.DS_Store
+
+# Kiro CLI / agent session settings (not project config)
+.kiro/settings/cli.json
