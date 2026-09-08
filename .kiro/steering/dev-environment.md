@@ -21,6 +21,9 @@ the host.
 | **just** | The documented command surface — test, run, lint, synth, backfill | `devbox.json` package; recipes in `Justfile` |
 | **jq** | JSON inspection in recipes and scripts | `devbox.json` package |
 | **yq** | YAML inspection in recipes and scripts | `devbox.json` package |
+| **docker-client** | Building and running the committed image; the CLI only, not the daemon | `devbox.json` package |
+| **docker-compose** | The local runtime stack — the service under test plus its broker | `devbox.json` package |
+| **aws-cdk-cli** | `cdk synth` and `cdk deploy`; the CLI is Node-based whatever language the constructs are written in | `devbox.json` package |
 | **awscli2** | Ad hoc AWS inspection and deploy-adjacent commands | `devbox.json` package |
 | **git** | Version control, and the hook behavior CI depends on | `devbox.json` package |
 | **gh** | Pull requests, releases, CI runs from the terminal | `devbox.json` package |
@@ -40,6 +43,15 @@ environment, so hooks, config resolution, and subcommand availability behave the
 same for every contributor and on a clean CI runner. That is a different case
 from devbox and direnv, neither of which can be supplied by the environment they
 are responsible for creating.
+
+**The container daemon is a host prerequisite; only the client is pinned.** A
+container *engine* is host infrastructure — a system service on Linux, and Docker
+Desktop, colima, or podman machine on macOS. It cannot be supplied by a package
+inside the project environment. What the project pins is the **client**, so the
+build and compose commands behave identically everywhere even though the engine
+underneath them is whatever the host provides. Substituting `podman` for
+`docker-client` is a per-machine choice and needs no change to `devbox.json`
+where the recipes invoke the client through a variable.
 
 ## Required files at the repository root
 
@@ -69,6 +81,9 @@ apply to application dependencies, extended to the tools that build them:
     "just@<exact>",
     "jq@<exact>",
     "yq-go@<exact>",
+    "docker-client@<exact>",
+    "docker-compose@<exact>",
+    "aws-cdk-cli@<exact>",
     "awscli2@<exact>",
     "git@<exact>",
     "gh@<exact>"
@@ -80,9 +95,20 @@ Resolve each `<exact>` with `devbox search <pkg>` and commit `devbox.lock`
 alongside. Upgrade deliberately, as its own reviewable commit, never as a side
 effect of someone else's checkout.
 
-Note the package name: in the Nix package set, `yq` is the Python wrapper around
-jq while `yq-go` is the Go implementation most recipes assume. Name the one you
-actually want rather than taking the default.
+Three package names need naming deliberately rather than by guess, because the
+obvious spelling resolves to the wrong thing:
+
+- `yq` is the Python wrapper around jq; **`yq-go`** is the Go implementation most
+  recipes assume.
+- **`aws-cdk-cli`** is the maintained CDK toolkit package. `nodePackages.aws-cdk`
+  also exists and lags well behind; pinning it gets you a stale toolkit. Pinning
+  `aws-cdk-cli` brings Node in as part of its closure, so there is no need to
+  declare `nodejs` separately.
+- **`docker-client`** is the CLI alone, which is what a project should pin;
+  `docker` pulls the whole engine, which the host already supplies. For
+  `docker-compose`, pin an explicit upstream `2.x` version — the search index
+  also returns entries whose numbering does not track upstream Compose, so take
+  the version you meant rather than the newest string offered.
 
 ## Python: devbox provides the interpreter, uv owns the dependencies
 
@@ -97,6 +123,22 @@ globally would defeat the per-project isolation devbox exists to give.
   that a service owns its own manifest.
 - `uv.lock` is committed. It is what satisfies the exact-version requirement the
   specs place on direct dependencies.
+
+**The dividing line is import versus invoke.** Anything application code
+`import`s is a uv dependency. Anything a recipe or a shell invokes is a devbox
+package. So `pytest`, `hypothesis`, `pytest-xdist`, `ruff`, `mypy`, `boto3`,
+`mangum`, `aws-cdk-lib`, `constructs`, `cryptography`, `fastapi`, `pydantic`,
+`numpy`, and the MQTT client library all live in `pyproject.toml` — none of them
+belongs in `devbox.json`.
+
+Two pairs in this stack are easy to file wrongly:
+
+- **`aws-cdk-lib` is a uv dependency; `aws-cdk-cli` is a devbox package.** The
+  constructs are Python and get imported. The `cdk` command is a separate
+  Node-based binary and gets invoked. Both are needed, in different files.
+- **`boto3` is a uv dependency; `awscli2` is a devbox package.** Same service,
+  different layer: one is imported by the provisioner and the read-only checks,
+  the other is a CLI for ad hoc inspection.
 
 ## just is the command surface
 
@@ -116,12 +158,42 @@ These are complementary and should not be confused. Devbox provides the
 local MQTT broker. A contributor runs `devbox shell` (or lets direnv do it) and
 then `just up`; the two are not alternatives.
 
+## Optional tools
+
+Add these per project when they earn their place; none is required by a spec.
+
+- **`mosquitto`** — the client binaries, for watching a topic while debugging a
+  publisher. The broker itself belongs in the Compose stack, not here. Highest
+  value of anything on this list for an MQTT project.
+- **`openssl`** — for inspecting a leaf certificate when a TLS handshake fails.
+  Not needed to *generate* development certificates where a project does that in
+  Python through `cryptography`.
+- **`pre-commit`** — complementary to a pipeline check, never a substitute for
+  one. A hook that can be skipped locally is not an enforcement boundary.
+
+### One to leave out
+
+A generic entropy-based secret scanner is a poor fit where a project defines its
+own credential scan with an explicit recognition rule. Where a spec requires
+matching only on structural markers such as a PEM delimiter pair or a named
+assignment site, and explicitly forbids length-based and character-class
+heuristics, a generic scanner does not satisfy that requirement and will fire on
+ordinary source text until somebody disables it. It can sit alongside as defense
+in depth; it must not be mistaken for the required scan.
+
 ## Constraints this must not break
 
-- **Offline test guarantee.** Having `awscli2` and `gh` on the PATH must not
-  make any test depend on them. Suites that are required to pass with no cloud
-  credentials and no network beyond localhost must keep doing so with the full
-  toolchain present.
+- **Offline test guarantee.** Having `awscli2`, `aws-cdk-cli`, and `gh` on the
+  PATH must not make any test depend on cloud access. Suites required to pass
+  with no credentials and no network beyond localhost must keep doing so with the
+  full toolchain present — which for the CDK means synthesis must resolve nothing
+  from an account, since template synthesis and the assertions over its output
+  are part of that offline suite.
+- **The container daemon is the one exception, and it is fenced.** Checks that
+  need an engine are marked so the offline suite excludes them and a separate job
+  runs them, with a container daemon and localhost networking available and no
+  cloud credentials attached. Needing an engine is not licence to need an
+  account.
 - **No secrets in committed files.** Environment variables that carry secrets
   are supplied at runtime. `.envrc` may export non-sensitive configuration and
   must never contain a key, token, or credential path holding real material.
