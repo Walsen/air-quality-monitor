@@ -59,7 +59,7 @@ class RegionalField:
         self._phases = tuple(float(rng.uniform(0, 2 * math.pi)) for _ in self._periods_h)
         # Amplitudes sized so the seasonal-scaled baseline stays inside the wet
         # clean band 3..35 (Req 4.5) around the _MEAN_PM centre.
-        self._amps = tuple(float(rng.uniform(2.0, 3.5)) for _ in self._periods_h)
+        self._amps = tuple(float(rng.uniform(2.0, 3.0)) for _ in self._periods_h)
         self._seasonal = seasonal_multiplier
 
         # Defence in depth: verify the scaled per-hour slope stays under the

@@ -88,7 +88,7 @@ _MAX_PLAUSIBLE = {"PM25": 500.0, "NO2": 400.0}
 # baseline so the shared Regional_Field accounts for >=60% of hourly variance
 # (Requirement 9.1 / Property 27), and a weak diurnal term so PM2.5's relative
 # diurnal amplitude stays <=0.5x NO2's (Requirement 4.4).
-_LOCAL_MODIFIER_SD = 1.5  # µg/m³
+_LOCAL_MODIFIER_MAX = 2.0  # µg/m³ bounded per-site offset magnitude
 _PM_DIURNAL_AMPLITUDE = 1.0  # µg/m³
 
 
@@ -115,8 +115,11 @@ class PM25Signal:
         self._regional = regional
         self._site = site_code
         rng = factory.stream(site_code, Purpose.SIGNAL)
-        # fixed per-site offset and diurnal phase, drawn once for determinism
-        self._local_offset = float(rng.normal(0.0, _LOCAL_MODIFIER_SD))
+        # Per-site offset is BOUNDED (not an unbounded normal) so the composed
+        # wet-season value provably stays inside the clean 3..35 band (Req 4.5)
+        # for every seed: regional wet floor ~6 minus this offset minus the
+        # diurnal term stays >=3.
+        self._local_offset = float(rng.uniform(-_LOCAL_MODIFIER_MAX, _LOCAL_MODIFIER_MAX))
         self._diurnal_phase = float(rng.uniform(0.0, 2.0 * math.pi))
         self._clamp_events: list[ClampEvent] = []
 
