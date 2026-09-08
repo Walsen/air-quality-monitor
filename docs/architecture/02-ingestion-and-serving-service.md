@@ -1,13 +1,13 @@
 # Service 2 — Ingestion, Processing & Serving Service
 
-**Goal:** collect sensor data (from the simulator now, the real Breathe London feed later), process
+**Goal:** collect sensor data (from the simulator now, a live public air-quality feed later), process
 and calibrate it, store it, and serve **per-user customized** views to the AI Air Quality Monitor
 agent over an authenticated API.
 
 ---
 
 ## 1. Responsibilities
-1. **Ingest** sensor readings (push via MQTT, and/or pull via scheduled poll of a BL-compatible API).
+1. **Ingest** sensor readings (push via MQTT, and/or pull via scheduled poll of a reference-contract-compatible API).
 2. **Process**: validate, deduplicate, **calibrate/correct** (RH compensation), compute **AQI sub-indices** and the driving pollutant.
 3. **Store**: time-series readings, sensor metadata, user profiles, raw archive.
 4. **Serve**: authenticated, **per-user customized** JSON to the agent (nearest sensors, condition-weighted pollutants, personal thresholds, optional inhaled-dose).
@@ -21,22 +21,22 @@ agent over an authenticated API.
 | Message routing | **IoT Rules** | SQL-like routing → Lambda / Kinesis / Timestream; no glue servers |
 | Stream buffer (high volume) | **Kinesis Data Streams** *(optional, at scale)* | smooths spikes, enables replay; skip for demo |
 | Processing / business logic | **AWS Lambda** | validate, calibrate, AQI compute, per-user shaping; pay-per-invoke |
-| Scheduled pull (real BL feed) | **EventBridge Scheduler → Lambda** | hourly poll of `/SensorData`; matches BL's hourly cadence |
+| Scheduled pull (live public feed) | **EventBridge Scheduler → Lambda** | hourly poll of `/SensorData`; matches the feed's hourly cadence |
 | Time-series store | **Amazon Timestream (LiveAnalytics)** | purpose-built for sensor time-series; memory tier for recent + magnetic for history; cheap writes, time-window queries |
 | Metadata + user profiles | **DynamoDB** | sensor registry, user condition/prefs/thresholds; single-digit-ms lookups for per-request personalization |
 | Raw archive / data lake | **Amazon S3** | immutable raw JSON (replay, audit, ML later); lifecycle to Glacier |
 | Serving API | **API Gateway (HTTP API)** | cheap, low-latency REST for the agent tool call |
 | AuthN/Z | **Amazon Cognito** (+ IAM, optional WAF) | user identity → JWT; scopes per-user data; health data must be protected |
 | AI agent runtime | **Amazon Bedrock** *(the agent — separate service)* | consumes this API as a tool |
-| Secrets | **Secrets Manager / SSM Parameter Store** | BL API key, forecast API keys |
+| Secrets | **Secrets Manager / SSM Parameter Store** | feed API key, forecast API keys |
 | Observability | **CloudWatch + X-Ray** | metrics, logs, tracing, data-quality alarms |
 | IaC | **AWS CDK** (or Terraform) | reproducible stacks; CDK matches team's prior work |
 
 ## 3. Reference architecture
 
 ```
-   Simulator / real BL sensors
-        │ MQTT                         ┌───────────── EventBridge (hourly) ── Lambda (BL poller)
+   Simulator / live public feed
+        │ MQTT                         ┌───────────── EventBridge (hourly) ── Lambda (feed poller)
         ▼                              │                                          │ pull /SensorData
   ┌──────────────┐   IoT Rule   ┌──────┴───────┐                                  │
   │  IoT Core    ├─────────────▶│  Ingest      │◀─────────────────────────────────┘
@@ -64,7 +64,7 @@ agent over an authenticated API.
 The agent passes the authenticated user (Cognito JWT). The Serving Lambda joins **sensor readings ×
 the user's profile** (DynamoDB) to tailor the response:
 
-- **Geo-personalization:** return the **nearest / most relevant sensors** to the user's home, work, and commute (lat/lon + `RadiusKM`, reusing the BL query semantics).
+- **Geo-personalization:** return the **nearest / most relevant sensors** to the user's home, work, and commute (lat/lon + `RadiusKM`, reusing the reference contract's query semantics).
 - **Condition weighting:** emphasize the pollutants that matter for the user's condition — **COPD → NO2/O3**, **asthma/allergic → PM2.5 (+ pollen)** (research SQ3/SQ7).
 - **Personal thresholds:** compare against the user's learned/set sensitivity level, not just national breakpoints; flag when the user's **"Orange" (AQI 100+)** trigger is crossed (research SQ1).
 - **Inhaled dose (optional):** if the user shares activity data, return activity-adjusted exposure, not just ambient concentration (research SQ2).
@@ -74,8 +74,8 @@ the user's profile** (DynamoDB) to tailor the response:
 > ```json
 > {
 >   "user": "u_123", "generatedAt": "2026-09-08T01:00:00Z",
->   "location": {"lat": 51.51, "lon": -0.13},
->   "nearestSensors": [{"siteCode":"BL0086","distanceKm":0.4,
+>   "location": {"lat": -17.39, "lon": -66.16},
+>   "nearestSensors": [{"siteCode":"CB0086","distanceKm":0.4,
 >       "pm25":18.2,"no2":41.0,"aqi":63,"drivingPollutant":"NO2",
 >       "confidence":"calibrated","asOf":"2026-09-08T00:00:00Z"}],
 >   "personalized": {"condition":"asthma","sensitivity":"high",
@@ -116,7 +116,7 @@ dominate next; realistic **~$300–700/mo**. **Lever:** batch/pre-average to hou
 cut messages+writes ~60× (biggest single cost reduction).
 
 ## 7. Requirements checklist (acceptance)
-- [ ] Ingest via MQTT (IoT Core → Rule → Lambda) **and** via scheduled BL-API poll.
+- [ ] Ingest via MQTT (IoT Core → Rule → Lambda) **and** via scheduled reference-contract API poll.
 - [ ] Calibration/correction (RH-aware) applied before AQI + storage; quality/confidence flag persisted.
 - [ ] AQI sub-index + driving-pollutant computed per reading.
 - [ ] Timestream (readings) + DynamoDB (registry + user profiles) + S3 (raw) wired.
