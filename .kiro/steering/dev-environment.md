@@ -22,6 +22,7 @@ the host.
 | **jq** | JSON inspection in recipes and scripts | `devbox.json` package |
 | **yq** | YAML inspection in recipes and scripts | `devbox.json` package |
 | **awscli2** | Ad hoc AWS inspection and deploy-adjacent commands | `devbox.json` package |
+| **git** | Version control, and the hook behavior CI depends on | `devbox.json` package |
 | **gh** | Pull requests, releases, CI runs from the terminal | `devbox.json` package |
 
 ### Host prerequisites versus project packages
@@ -32,6 +33,13 @@ directory or there is nothing to trigger activation. Install direnv once with
 `devbox global add direnv` so it is available across every project, and hook it
 into your shell. Everything else in the table above belongs in the project's own
 `devbox.json` so it is versioned with the code that needs it.
+
+**git is a project package even though the host already has one.** You need some
+git to clone the repository, but only the pinned one is on the PATH inside the
+environment, so hooks, config resolution, and subcommand availability behave the
+same for every contributor and on a clean CI runner. That is a different case
+from devbox and direnv, neither of which can be supplied by the environment they
+are responsible for creating.
 
 ## Required files at the repository root
 
@@ -62,6 +70,7 @@ apply to application dependencies, extended to the tools that build them:
     "jq@<exact>",
     "yq-go@<exact>",
     "awscli2@<exact>",
+    "git@<exact>",
     "gh@<exact>"
   ]
 }
