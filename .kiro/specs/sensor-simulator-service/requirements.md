@@ -3,20 +3,20 @@
 ## Introduction
 
 The Sensor Simulator Service (Service 1 of three in this monorepo) emulates one virtual air-quality
-sensor or a swarm of them, modelled on the Breathe London network (Airly hardware). It produces
-realistic, schema-accurate PM2.5 / NO2 / meteorology data so that the Ingestion & Serving Service
-(Service 2) and the AI Advisor Agent (Service 3) can be developed, tested, and demonstrated without
-physical hardware.
+sensor or a swarm of them, modelled on a public municipal air-quality network built on commercial
+low-cost sensor units. It produces realistic, schema-accurate PM2.5 / NO2 / meteorology data so that
+the Ingestion & Serving Service (Service 2) and the AI Advisor Agent (Service 3) can be developed,
+tested, and demonstrated without physical hardware.
 
-The service has one load-bearing constraint: **contract fidelity**. It reproduces the real Breathe
-London API JSON contract (`/ListSensors`, `/SensorData`) exactly, so Service 2 can later be pointed
-at the live Breathe London feed with no code change (design decision D1 in
+The service has one load-bearing constraint: **contract fidelity**. It reproduces the reference
+network contract (`/ListSensors`, `/SensorData`) exactly, so Service 2 can later be pointed at a live
+public air-quality feed with no code change (design decision D1 in
 `docs/architecture/00-overview.md`). It offers both a push interface (MQTT, matching real device
-behavior) and a pull interface (BL-compatible REST), per design decision D2.
+behavior) and a pull interface (reference-contract-compatible REST), per design decision D2.
 
 The simulated fleet is deployed over the **Cochabamba metropolitan area, Bolivia** by default, while
-still emitting the Breathe London field names and value formats. Geography is a configuration concern,
-not a contract concern.
+still emitting the reference network contract field names and value formats. Geography is a
+configuration concern, not a contract concern.
 
 Source material: `docs/architecture/01-sensor-simulator-service.md` (primary),
 `docs/architecture/00-overview.md` (system context and decisions D1–D6), and
@@ -28,8 +28,11 @@ In scope: signal generation, swarm behavior, scenario injection, the two interfa
 replay, configuration, and the simulator's own project scaffolding inside `sensor-simulator/`.
 
 Out of scope (owned by Service 2 or later specs): ingestion, calibration/correction, AQI computation,
-Timestream/DynamoDB/S3 storage, user profiles, the serving API, and the Bedrock agent. This document
-constrains the simulator only up to the contract boundary those services consume.
+Timestream/DynamoDB/S3 storage, user profiles, the serving API, and the Bedrock agent. Also out of
+scope, and deferred to a separate deployment spec: cloud deployment topology and runtime selection,
+infrastructure-as-code, IoT Core device provisioning and authorization policies, and continuous
+integration. This document constrains the simulator only up to the contract boundary those services
+consume.
 
 ### Assumptions pending confirmation
 
@@ -39,21 +42,33 @@ reader should confirm or override.
 - **A1 — Language/runtime:** Python 3.12 (chosen from the two options in the docs for its
   time-series/statistics libraries).
 - **A2 — First milestone target:** local-only — a local MQTT broker and a locally hosted REST API.
-  AWS IoT Core connectivity and ECS Fargate deployment are specified here as configurable targets but
-  are exercised in a later milestone.
-- **A3 — Default geography:** the Cochabamba metropolitan area, Bolivia (the Kanata region), replacing
-  the documented London default. Geography is expressed as a swappable Geography_Profile so that the
-  London / Breathe London profile stays available for contract-parity checks against the live feed.
+  Cloud runtime selection is deferred to a separate deployment spec. The intended split is a
+  stateless invocation-scoped runtime, such as AWS Lambda, for pull/REST and Backfill_Mode — which
+  the seeded determinism of Requirement 11 and the mode-equivalence of Requirement 12 criterion 4
+  make possible without carrying state between invocations — and a long-running container task, such
+  as ECS Fargate, for real-time MQTT push, which needs persistent per-device TLS sessions and
+  in-memory buffering.
+- **A3 — Default geography:** the Cochabamba metropolitan area, Bolivia (the Kanata region) is the
+  default profile. Geography is expressed as a swappable Geography_Profile so that the `reference`
+  profile (a temperate sea-level reference profile) remains available for contract-parity checks
+  against a live public air-quality feed. Additional regions can be added as further
+  Geography_Profile entries without a contract change.
   Two consequences worth flagging: Cochabamba sits at roughly 2,560 m above sea level, so absolute
   barometric pressure is around 740 hPa rather than a sea-level value; and local time is
   `America/La_Paz` (UTC-4, no daylight saving), which is the frame for every diurnal window in this
   document.
 - **A4 — Monorepo tooling:** this spec covers only `sensor-simulator/` scaffolding. A shared contract
   package, workspace-wide build orchestration, and CI are deferred to a later spec.
-- **A5 — Index species semantics:** the numeric basis of the Breathe London `NO2Index` / `PM25Index`
-  values is not documented in the captured contract, so the simulator derives them from a
-  configurable breakpoint table whose default is the UK DAQI 1–10 bands. A Bolivian or US-EPA band
-  table can be substituted through configuration without changing the record contract.
+- **A5 — Index species semantics:** the numeric basis of the `NO2Index` / `PM25Index` species in the
+  captured reference network contract is not documented, so the simulator derives them from a
+  configurable breakpoint table whose default is the default ten-band index table with band
+  identifiers 1 to 10. An alternative band table can be substituted through configuration without
+  changing the record contract.
+- **A6 — Retention-window record source:** whether wide `/SensorData` queries across the retention
+  window are served from in-process retention, from recomputation from the Seed, or from a backing
+  store is deferred to the deployment spec. This document requires only that every served record fall
+  inside the retention window (Requirement 14 criterion 7) and deliberately mandates no storage
+  mechanism.
 
 ## Glossary
 
@@ -79,11 +94,16 @@ reader should confirm or override.
   broker.
 - **Config_Loader**: the component that reads and validates simulator configuration from file and
   environment.
-- **Geography_Profile**: a named, self-contained set of geographic defaults — bounding box, local
-  timezone, area name list, elevation, `SiteCode` prefix, `SponsorName`, `SensorContract`, and
-  meteorology ranges, the last including a relative humidity range whose default is 15 to 90 percent
-  under the `cochabamba` profile. Two profiles ship built in: `cochabamba` (default) and `london`
-  (the Breathe London reference profile).
+- **Long_Running_Deployment**: a deployment in which one Simulator process stays resident across two
+  or more consecutive Publish_Intervals, such as a container task. Contrast an invocation-scoped
+  deployment, which computes a bounded set of Publish_Intervals and then exits.
+- **Geography_Profile**: a named entry in a Geography_Profile registry, holding a self-contained set
+  of geographic defaults — bounding box, local timezone, area name list, elevation, `SiteCode`
+  prefix, `SponsorName`, `SensorContract`, and meteorology ranges, the last including a relative
+  humidity range whose default is 15 to 90 percent under the `cochabamba` profile. Two profiles ship
+  built in: `cochabamba` (default) and `reference` (a temperate sea-level reference profile).
+  Additional named profiles can be declared in configuration or registered in the profile registry
+  without a source change.
 - **Kanata_Region**: the Cochabamba metropolitan region, comprising the municipalities Cochabamba,
   Sacaba, Quillacollo, Tiquipaya, Colcapirhua, Vinto, and Sipe Sipe. These municipality names populate
   the `Borough` field under the `cochabamba` profile.
@@ -107,8 +127,8 @@ reader should confirm or override.
 ### Requirement 1: Sensor Metadata Contract (`/ListSensors`)
 
 **User Story:** As a Service 2 developer, I want the simulator to emit sensor metadata in the exact
-Breathe London `/ListSensors` shape, so that I can build ingestion against a contract that also works
-with the live feed.
+reference network contract `/ListSensors` shape, so that I can build ingestion against a contract
+that also works with a live public air-quality feed.
 
 #### Acceptance Criteria
 
@@ -130,13 +150,13 @@ with the live feed.
    in `Z` and no later than the current simulated time, and SHALL emit `EndDate` as JSON `null` for a
    Virtual_Sensor that is currently active.
 5. THE Simulator SHALL emit `PowerTag` as exactly one of the case-sensitive values `Mains` or `Solar`,
-   and `SensorContract` as the Geography_Profile contract name, with default `Entel` under the
-   `cochabamba` profile and `Vodafone` under the `london` profile.
+   and `SensorContract` as the Geography_Profile contract name, with default `Cellular-BO` under the
+   `cochabamba` profile and `Cellular-REF` under the `reference` profile.
 6. THE Simulator SHALL emit `Borough` as a value character-identical to one of the Geography_Profile
    area names, which under the `cochabamba` profile are the seven Kanata_Region municipality names.
 7. THE Simulator SHALL emit `SiteCode` as the Geography_Profile prefix followed by a zero-padded
    four-digit decimal number in the range 0001 to 9999, with default prefix `CB` under the
-   `cochabamba` profile and `BL` under the `london` profile.
+   `cochabamba` profile and `RF` under the `reference` profile.
 8. WHEN a client requests `/ListSensors` with no query parameters, THE REST_API SHALL return a JSON
    array containing exactly one Sensor_Metadata_Record for every Virtual_Sensor in the Swarm, ordered
    by ascending `SiteCode`, within 2 seconds for a Swarm of up to 500 Virtual_Sensor instances.
@@ -165,7 +185,7 @@ with the live feed.
 
 ### Requirement 2: Measurement Contract (`/SensorData`)
 
-**User Story:** As a Service 2 developer, I want measurements in the exact Breathe London
+**User Story:** As a Service 2 developer, I want measurements in the exact reference network contract
 `/SensorData` shape, so that my ingestion, validation, and storage code needs no change when the real
 feed replaces the simulator.
 
@@ -349,8 +369,8 @@ calibration and correction step I build has a real artifact to correct.
    -0.5.
 5. FOR ALL Ticks, THE Signal_Engine SHALL compute absolute barometric pressure within the inclusive
    Geography_Profile pressure range, with default 730 to 755 hPa under the `cochabamba` profile,
-   reflecting an elevation of approximately 2,560 m, and 980 to 1040 hPa under the `london` profile,
-   and SHALL clamp any computed value outside that range to the nearer bound.
+   reflecting an elevation of approximately 2,560 m, and 980 to 1040 hPa under the `reference`
+   profile, and SHALL clamp any computed value outside that range to the nearer bound.
 6. THE Simulator SHALL express every emitted barometric pressure value as absolute station pressure
    at the Virtual_Sensor elevation rather than as a sea-level-normalized value, so that the value
    matches what a device barometer reads at the site elevation.
@@ -399,10 +419,10 @@ emits, so that my ingestion handles all four Species values.
    `RatificationStatus`, and `SensorContract` values.
 3. THE Simulator SHALL derive each index `ScaledValue` from the Reported_Concentration `ScaledValue`
    of its corresponding concentration record for the same Publish_Interval, rather than from
-   individual Tick values, using the configured per-Species breakpoint table whose default is the UK
-   DAQI 1-to-10 bands for PM2.5 and NO2, and SHALL treat each band's lower concentration bound as
-   inclusive and its upper concentration bound as exclusive, so that a concentration equal to a band
-   boundary yields the higher band.
+   individual Tick values, using the configured per-Species breakpoint table whose default is the
+   default ten-band index table with band identifiers 1 to 10 for PM2.5 and NO2, and SHALL treat each
+   band's lower concentration bound as inclusive and its upper concentration bound as exclusive, so
+   that a concentration equal to a band boundary yields the higher band.
 4. FOR ALL pairs of concentration values within 0 to 1000 µg/m³ where the first is less than or equal
    to the second, THE Simulator SHALL derive, from the same configured breakpoint table, an index
    value for the first that is less than or equal to the index value for the second (monotonicity
@@ -502,9 +522,9 @@ the geography being hard-coded.
 8. WHERE a site list is supplied in configuration, THE Swarm_Manager SHALL instantiate one
    Virtual_Sensor per supplied entry using the supplied identity and location values in place of
    generated ones, and SHALL set the Swarm size to the number of supplied entries.
-9. FOR ALL Geography_Profile values from `cochabamba` and `london`, THE Simulator SHALL emit the
-   identical set of Sensor_Metadata_Record and Sensor_Data_Record field names defined in Requirement
-   1 and Requirement 2, differing only in field values.
+9. FOR ALL registered Geography_Profile values, THE Simulator SHALL emit the identical set of
+   Sensor_Metadata_Record and Sensor_Data_Record field names defined in Requirement 1 and
+   Requirement 2, differing only in field values.
 10. IF the configured Swarm size is not an integer from 1 to 500 inclusive, or the configured
     classification mix proportions do not sum to 100 percent, THEN THE Config_Loader SHALL reject the
     configuration with an error naming the offending setting and its permitted range, and THE
@@ -517,6 +537,16 @@ the geography being hard-coded.
 12. IF the configured Geography_Profile name is not one of the supported profile names, THEN THE
     Config_Loader SHALL reject the configuration with an error naming the supplied value and listing
     the supported profile names, and THE Swarm_Manager SHALL instantiate no Virtual_Sensor.
+13. THE Config_Loader SHALL require every registered Geography_Profile, whether built in or declared
+    in configuration, to supply a complete value set comprising bounding box, local timezone,
+    sub-area name list, elevation, `SiteCode` prefix, `SponsorName`, `SensorContract`, temperature
+    range, RH range, pressure range, and seasonal PM2.5 multiplier, and SHALL validate a
+    configuration-declared profile against the same rules it applies to a built-in profile.
+14. IF a configuration-declared Geography_Profile omits any value required by criterion 13, reuses
+    the name of an already-registered profile, declares a `SiteCode` prefix equal to another
+    registered profile's prefix, or declares one or more sub-areas that do not fall within its own
+    bounding box, THEN THE Config_Loader SHALL reject the configuration with an error naming the
+    offending profile and value, and THE Swarm_Manager SHALL instantiate no Virtual_Sensor.
 
 ### Requirement 9: Spatial Correlation
 
@@ -662,9 +692,9 @@ can demo real-time behavior and also seed Service 2's store with history.
 
 #### Acceptance Criteria
 
-1. WHILE the Simulator runs in real-time mode, THE Simulator SHALL compute exactly one Tick per
-   Virtual_Sensor per wall-clock minute, with each Tick's simulated timestamp aligned to the start of
-   that minute and computed within 5 seconds of that minute boundary.
+1. WHILE the Simulator runs in real-time mode, THE Simulator SHALL produce exactly one Tick per
+   Virtual_Sensor per elapsed wall-clock minute, with each Tick's simulated timestamp aligned to the
+   start of that minute.
 2. THE Simulator SHALL compute each emitted `ScaledValue` as the arithmetic mean of every Tick value
    within the Publish_Interval the record covers, which is 60 Tick values for the default 1-hour
    Publish_Interval, rounded to 2 decimal places.
@@ -714,23 +744,29 @@ publishing over MQTT, so that my IoT ingestion path is exercised end to end.
    failure, and SHALL authenticate each Virtual_Sensor with a certificate and private key used by no
    other Virtual_Sensor.
 4. THE Config_Loader SHALL accept an MQTT endpoint host, a port in the range 1 to 65535 with default
-   8883, a broker certificate authority path, and one certificate path and one private key path per
-   Virtual_Sensor, so that the same build targets a local broker or AWS IoT Core with no source
-   change.
-5. IF a connection attempt fails or an established connection drops, THEN THE MQTT_Publisher SHALL
-   retry with an interval starting at 1 second and doubling on each consecutive failure up to the
-   configured maximum interval, with default 60 seconds, and SHALL keep retrying at that maximum
-   interval for as long as the Simulator runs.
-6. WHILE the MQTT connection is unavailable, THE Simulator SHALL continue computing Ticks and
-   generating Sensor_Data_Record values at the configured cadence, and THE MQTT_Publisher SHALL hold
-   them in an in-memory buffer whose configured maximum is in the range 1 to 100,000 records, with
-   default 1000.
-7. IF a Sensor_Data_Record is generated while the buffer already holds its configured maximum, THEN
-   THE MQTT_Publisher SHALL discard the oldest buffered record, SHALL retain the newly generated
-   record, and SHALL increment a dropped-record counter by 1 per discarded record.
-8. WHEN the MQTT connection is restored, THE MQTT_Publisher SHALL publish every buffered
-   Sensor_Data_Record exactly once, in non-decreasing `DateTime` order per Virtual_Sensor, before
-   publishing any Sensor_Data_Record generated after the restore.
+   8883, a broker certificate authority path, a per-Virtual_Sensor credential path template
+   containing a `{SiteCode}` placeholder from which it resolves one certificate path and one private
+   key path for every Virtual_Sensor, with defaults `certs/{SiteCode}/client.crt` and
+   `certs/{SiteCode}/client.key`, and an optional explicit certificate path and private key path for
+   an individual `SiteCode` that overrides the template for that Virtual_Sensor, so that the same
+   build targets a local broker or AWS IoT Core with no source change.
+5. WHERE the Simulator runs in a Long_Running_Deployment, IF a connection attempt fails or an
+   established connection drops, THEN THE MQTT_Publisher SHALL retry with an interval starting at 1
+   second and doubling on each consecutive failure up to the configured maximum interval, with
+   default 60 seconds, and SHALL keep retrying at that maximum interval for as long as the Simulator
+   runs.
+6. WHERE the Simulator runs in a Long_Running_Deployment, WHILE the MQTT connection is unavailable,
+   THE Simulator SHALL continue computing Ticks and generating Sensor_Data_Record values at the
+   configured cadence, and THE MQTT_Publisher SHALL hold them in an in-memory buffer whose configured
+   maximum is in the range 1 to 100,000 records, with default 1000.
+7. WHERE the Simulator runs in a Long_Running_Deployment, IF a Sensor_Data_Record is generated while
+   the buffer already holds its configured maximum, THEN THE MQTT_Publisher SHALL discard the oldest
+   buffered record, SHALL retain the newly generated record, and SHALL increment a dropped-record
+   counter by 1 per discarded record.
+8. WHERE the Simulator runs in a Long_Running_Deployment, WHEN the MQTT connection is restored, THE
+   MQTT_Publisher SHALL publish every buffered Sensor_Data_Record exactly once, in non-decreasing
+   `DateTime` order per Virtual_Sensor, before publishing any Sensor_Data_Record generated after the
+   restore.
 9. IF the `mqtt` interface is selected and a configured certificate authority path, Virtual_Sensor
    certificate path, or private key path is absent or unreadable at startup, THEN THE Config_Loader
    SHALL exit with a non-zero status code, SHALL report one error per affected value naming the
@@ -740,17 +776,24 @@ publishing over MQTT, so that my IoT ingestion path is exercised end to end.
     reasons, THEN THE MQTT_Publisher SHALL stop attempting to connect for that Virtual_Sensor, SHALL
     report an error identifying the `SiteCode` and the rejection category, and SHALL continue
     publishing for the remaining Virtual_Sensor instances.
+11. WHERE the Simulator runs in an invocation-scoped deployment, IF the MQTT connection is unavailable
+    or a Sensor_Data_Record remains unpublished when the invocation's time budget is exhausted, THEN
+    THE MQTT_Publisher SHALL report each unpublished record with its `SiteCode`, `Species`, and
+    `DateTime`, and SHALL NOT rely on in-memory buffered records surviving the end of the invocation,
+    so that a later invocation can republish that Publish_Interval.
 
 ### Requirement 14: Pull Mode over an Authenticated REST API
 
-**User Story:** As a Service 2 developer, I want a Breathe-London-compatible REST endpoint, so that
-my scheduled poller path works against the simulator and the real feed alike.
+**User Story:** As a Service 2 developer, I want a reference-contract-compatible REST endpoint, so
+that my scheduled poller path works against the simulator and the real feed alike.
 
 #### Acceptance Criteria
 
 1. WHEN the Simulator starts with the `rest` interface selected, THE REST_API SHALL accept
-   `GET /ListSensors` and `GET /SensorData` requests over HTTP on the configured host and port before
-   emitting its first Sensor_Data_Record.
+   `GET /ListSensors` and `GET /SensorData` requests over HTTP at the configured listen address,
+   being a host and port where the Simulator hosts the listener itself, or the deployment-provided
+   endpoint where the REST_API is fronted by a managed HTTP endpoint, before emitting its first
+   Sensor_Data_Record.
 2. THE REST_API SHALL require every `/ListSensors` and `/SensorData` request to carry an `X-API-KEY`
    header whose full value matches the configured API key exactly, compared case-sensitively.
 3. IF a request to `/ListSensors` or `/SensorData` omits the `X-API-KEY` header, supplies an empty
@@ -794,8 +837,10 @@ can change fleet size, geography, cadence, and scenarios without editing code.
 2. THE Config_Loader SHALL accept Swarm size, Geography_Profile name, geographic bounding box,
    optional site list, classification mix, Tick interval in minutes, Publish_Interval in minutes,
    Seed, time mode, Backfill_Mode start and end timestamps, scenario schedule, index breakpoint
-   table, interface selection, MQTT settings, and REST settings, and SHALL reject any unrecognized
-   configuration key by name.
+   table, interface selection, MQTT settings, REST settings, and the Geography_Profile value keys
+   local timezone, sub-area name list, elevation, `SiteCode` prefix, `SponsorName`, `SensorContract`,
+   temperature range, RH range, pressure range, and seasonal PM2.5 multiplier, and SHALL reject any
+   unrecognized configuration key by name.
 3. THE Config_Loader SHALL default the Geography_Profile to `cochabamba`, and WHEN an individual
    profile value is supplied, THE Config_Loader SHALL apply that value over the named profile's
    default while retaining every profile value that was not supplied.
@@ -823,13 +868,18 @@ can change fleet size, geography, cadence, and scenarios without editing code.
 8. IF a configuration file path is supplied at startup and that path cannot be read or its contents
    cannot be parsed, THEN THE Config_Loader SHALL write a message naming the path and the failure
    kind, SHALL exit with a non-zero status code, and SHALL NOT fall back to documented defaults.
-9. IF the resolved Geography_Profile name is neither `cochabamba` nor `london`, THEN THE Config_Loader
-   SHALL reject the configuration with a message naming the supplied value and both permitted profile
-   names, and SHALL exit with a non-zero status code.
+9. IF the resolved Geography_Profile name is not the name of a registered Geography_Profile, whether
+   built in or declared in configuration, THEN THE Config_Loader SHALL reject the configuration with
+   a message naming the supplied value and listing every registered profile name, and SHALL exit with
+   a non-zero status code.
 10. IF the interface selection includes `mqtt` and the MQTT endpoint, the MQTT port, or any
     per-Virtual_Sensor credential path is absent, THEN THE Config_Loader SHALL write one message per
     absent value naming that value, SHALL exit with a non-zero status code, and SHALL open no
     interface.
+11. WHEN configuration declares a Geography_Profile whose name is not already registered and whose
+    value set is complete and valid as defined in Requirement 8 criterion 13, THE Config_Loader SHALL
+    register that profile in the Geography_Profile registry and SHALL make that profile selectable by
+    name, so that retargeting the Swarm to a new region requires no source change.
 
 ### Requirement 16: Project Scaffolding and Local Development
 
@@ -855,17 +905,19 @@ runnable, testable project, so that I can start it and its tests with documented
    `endTime`, a `Species` value outside the four permitted values, an omitted `X-API-KEY` header, and
    a non-matching `X-API-KEY` value, each asserting the HTTP status code documented in those
    requirements and a JSON error body naming the offending parameter or the permitted values.
-5. WHEN the committed container image definition is built and run with no configuration file
-   supplied, THE Simulator SHALL run the whole Swarm in one process in REST-only mode and SHALL
-   answer `GET /health` with HTTP status 200 within 30 seconds of container start.
+5. WHERE the Simulator runs in a Long_Running_Deployment, WHEN the committed container image
+   definition is built and run with no configuration file supplied, THE Simulator SHALL run the whole
+   Swarm in one process in REST-only mode and SHALL answer `GET /health` with HTTP status 200 within
+   30 seconds of container start.
 6. WHEN a developer runs the documented Docker Compose command with no AWS credentials present, THE
    Docker Compose definition SHALL start the Simulator container together with a local MQTT broker,
    and THE MQTT_Publisher SHALL establish a broker connection within 60 seconds of container start
    and publish one Sensor_Data_Record per Virtual_Sensor within one Publish_Interval.
 7. THE Simulator SHALL provide a README documenting the run commands for real-time mode and
    Backfill_Mode, every configuration value named in Requirement 15 with its default, every scenario
-   name named in Requirement 10, both Geography_Profile names with their values, and the
-   `/ListSensors` and `/SensorData` contract fields it reproduces.
+   name named in Requirement 10, every built-in Geography_Profile name with its values, how to
+   declare an additional Geography_Profile in configuration, and the `/ListSensors` and `/SensorData`
+   contract fields it reproduces.
 8. THE Simulator SHALL contain no committed file holding an API key, X.509 client certificate, or
    private key, SHALL load each of those from a path or environment value supplied at runtime, and
    THE Docker Compose definition SHALL obtain local broker credentials from runtime-supplied or
@@ -877,6 +929,10 @@ runnable, testable project, so that I can start it and its tests with documented
 10. WHEN the documented test command runs on a machine with no AWS credentials and no network access
     beyond the local host, THE test suite SHALL pass every test other than the Docker Compose
     integration check.
+11. THE Simulator SHALL provide a documented command that generates local development certificate and
+    private key material for every Virtual_Sensor in the configured Swarm at the locations resolved
+    from the Requirement 13 criterion 4 credential path template, and SHALL exclude every generated
+    credential file from version control.
 
 ### Requirement 17: Observability
 
