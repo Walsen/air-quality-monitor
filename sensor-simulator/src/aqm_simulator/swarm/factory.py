@@ -122,3 +122,77 @@ def build_swarm(
         _make_sensor(i, classifications[i - 1], profile, factory)
         for i in range(1, size + 1)
     ]
+
+
+class SiteListError(ValueError):
+    """Raised when a supplied site list is invalid (names the entry and field)."""
+
+
+_REQUIRED_SITE_FIELDS = ("SiteCode", "DeviceCode", "Latitude", "Longitude")
+
+
+def build_swarm_from_sites(
+    entries: list[dict[str, object]],
+    profile: GeographyProfile,
+    factory: RandomStreamFactory | None = None,
+) -> list[VirtualSensor]:
+    """Build a swarm from supplied entries, size = entry count (Requirement 8.8).
+
+    Uses each entry's supplied SiteCode/DeviceCode/Latitude/Longitude in place of
+    generated values; the non-supplied fields (Borough, classification, height,
+    kerb, PowerTag) are derived deterministically. Rejects a duplicate SiteCode
+    or DeviceCode, an entry missing a required field, or coordinates outside the
+    profile bounding box, naming the offending entry and field (Requirement 8.11).
+    """
+    factory = factory or RandomStreamFactory(seed=0)
+    seen_sites: set[str] = set()
+    seen_devices: set[str] = set()
+    classifications = _classification_quota(len(entries))
+    swarm: list[VirtualSensor] = []
+
+    for position, entry in enumerate(entries):
+        for field_name in _REQUIRED_SITE_FIELDS:
+            if field_name not in entry or entry[field_name] in (None, ""):
+                raise SiteListError(
+                    f"site-list entry {position} is missing required field {field_name!r}"
+                )
+        site_code = str(entry["SiteCode"])
+        device_code = str(entry["DeviceCode"])
+        if site_code in seen_sites:
+            raise SiteListError(f"site-list entry {position}: duplicate SiteCode {site_code!r}")
+        if device_code in seen_devices:
+            raise SiteListError(
+                f"site-list entry {position}: duplicate DeviceCode {device_code!r}"
+            )
+        seen_sites.add(site_code)
+        seen_devices.add(device_code)
+
+        lat = float(str(entry["Latitude"]))
+        lon = float(str(entry["Longitude"]))
+        in_box = (
+            profile.lat_min <= lat <= profile.lat_max
+            and profile.lon_min <= lon <= profile.lon_max
+        )
+        if not in_box:
+            raise SiteListError(
+                f"site-list entry {position} ({site_code}): coordinates ({lat}, {lon}) "
+                f"fall outside the profile bounding box"
+            )
+
+        rng = factory.stream(site_code, Purpose.IDENTITY)
+        swarm.append(
+            VirtualSensor(
+                site_code=site_code,
+                site_name=str(entry.get("SiteName", f"{profile.name.title()} {site_code}")),
+                device_code=device_code,
+                installation_code=str(entry.get("InstallationCode", f"INST-{site_code}")),
+                latitude=str(entry["Latitude"]),
+                longitude=str(entry["Longitude"]),
+                borough=_borough_for(lat, profile),
+                classification=classifications[position],
+                power_tag="Solar" if rng.random() < 0.25 else "Mains",
+                sensor_height_m=round(float(rng.uniform(2.0, 3.0)), 2),
+                distance_to_kerb_m=round(float(rng.uniform(0.5, 30.0)), 2),
+            )
+        )
+    return swarm
