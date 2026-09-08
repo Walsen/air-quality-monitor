@@ -25,6 +25,7 @@ import numpy as np
 from aqm_simulator.observability.logging import get_logger
 from aqm_simulator.rng.streams import Purpose, RandomStreamFactory
 from aqm_simulator.signal.regional_field import RegionalField
+from aqm_simulator.signal.spatial_field import SpatialField
 
 _logger = get_logger("signal.pollutants")
 
@@ -111,24 +112,36 @@ class PM25Signal:
         regional: RegionalField,
         site_code: str,
         factory: RandomStreamFactory,
+        latitude: float | None = None,
+        longitude: float | None = None,
+        spatial: SpatialField | None = None,
     ) -> None:
         self._regional = regional
         self._site = site_code
         rng = factory.stream(site_code, Purpose.SIGNAL)
-        # Per-site offset is BOUNDED (not an unbounded normal) so the composed
-        # wet-season value provably stays inside the clean 3..35 band (Req 4.5)
-        # for every seed: regional wet floor ~6 minus this offset minus the
-        # diurnal term stays >=3.
+        # Local PM2.5 component. When a shared SpatialField and this sensor's
+        # location are supplied, the local part is the field sampled at (lat,lon)
+        # — SMOOTH in space, so nearby sensors share it and correlate (Req 9.2)
+        # while distant ones decorrelate (Req 9.3). Otherwise fall back to a
+        # BOUNDED independent offset (keeps the clean-range guarantee, Req 4.5).
+        self._spatial = spatial
+        self._lat = latitude
+        self._lon = longitude
         self._local_offset = float(rng.uniform(-_LOCAL_MODIFIER_MAX, _LOCAL_MODIFIER_MAX))
         self._diurnal_phase = float(rng.uniform(0.0, 2.0 * math.pi))
         self._clamp_events: list[ClampEvent] = []
+
+    def _local_component(self, when: dt.datetime) -> float:
+        if self._spatial is not None and self._lat is not None and self._lon is not None:
+            return self._spatial.sample(self._lat, self._lon, when)
+        return self._local_offset
 
     def dry_value(self, when: dt.datetime) -> float:
         """PM2.5 dry concentration (µg/m³) before the humidity artifact."""
         baseline = self._regional.baseline(when)
         hour = when.hour + when.minute / 60.0
         diurnal = _PM_DIURNAL_AMPLITUDE * math.sin(2 * math.pi * hour / 24.0 + self._diurnal_phase)
-        return max(0.0, baseline + self._local_offset + diurnal)
+        return max(0.0, baseline + self._local_component(when) + diurnal)
 
     def clamp(self, species: str, value: float, site_code: str, when: dt.datetime) -> float:
         """Clamp a value to 0..max_plausible, recording+logging any clamp (Req 4.11)."""
