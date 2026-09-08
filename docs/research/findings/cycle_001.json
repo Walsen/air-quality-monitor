@@ -1,0 +1,28 @@
+{
+  "cycle": 1,
+  "sub_question": "SQ1: Standards & indices — how do raw concentrations map to user-facing respiratory-risk categories?",
+  "summary": "The US EPA Air Quality Index (AQI) is the standard translation layer from raw µg/m³ to six color-coded risk categories (Good 0-50 → Hazardous 301+). AQI=100 for any pollutant equals its short-term NAAQS. The 'Unhealthy for Sensitive Groups' band (101-150, Orange) is the pivotal trigger for respiratory-patient advice; the reported AQI = the single worst pollutant's sub-index.",
+  "key_insight": "For a respiratory-focused agent the actionable threshold is LOWER than for the public: the AQI is intentionally built so that 'Unhealthy for Sensitive Groups' (101-150) fires FIRST for people with asthma/COPD. So the agent should escalate advice at AQI ~100+ (and per-pollutant), not wait for the 'Unhealthy' (151+) public threshold. The device reports the MAX sub-index across pollutants, so it must compute each pollutant's sub-index and surface which pollutant is driving the number.",
+  "detail": {
+    "aqi_categories": [
+      {"color": "Green",  "level": "Good", "range": "0-50",   "meaning": "little/no risk"},
+      {"color": "Yellow", "level": "Moderate", "range": "51-100", "meaning": "risk for unusually sensitive people"},
+      {"color": "Orange", "level": "Unhealthy for Sensitive Groups", "range": "101-150", "meaning": "sensitive groups (incl. respiratory) may have effects; general public less likely — KEY respiratory trigger"},
+      {"color": "Red",    "level": "Unhealthy", "range": "151-200", "meaning": "general public may have effects; sensitive groups more serious"},
+      {"color": "Purple", "level": "Very Unhealthy", "range": "201-300", "meaning": "health alert: increased risk for everyone"},
+      {"color": "Maroon", "level": "Hazardous", "range": "301+", "meaning": "emergency conditions"}
+    ],
+    "anchor_rule": "AQI value of 100 for a pollutant = its short-term National Ambient Air Quality Standard (NAAQS); <=100 generally satisfactory.",
+    "epa_aqi_pollutants": ["ground-level ozone", "PM2.5", "PM10", "CO", "SO2", "NO2"],
+    "reporting_rule": "Overall AQI = the highest individual pollutant sub-index; agent should expose the driving pollutant, not just the composite number.",
+    "index_variants_to_compare_later": ["EU EAQI (1-6 scale, uses WHO-aligned bands)", "UK DAQI (1-10)", "WHO AQG (limit values, not an index)"]
+  },
+  "sources_checked": [
+    "https://www.airnow.gov/aqi/aqi-basics/",
+    "https://document.airnow.gov/air-quality-index-aqi-basics.pdf"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 4,
+  "evidence_strength": "strong",
+  "notes": "AirNow/EPA is authoritative for the US AQI; category ranges + descriptions quoted verbatim from the page table. Exact per-pollutant breakpoint concentrations (the piecewise-linear sub-index formula) not yet captured — defer to a later cycle only if the schema (SQ5) needs them."
+}

@@ -1,0 +1,29 @@
+{
+  "cycle": 5,
+  "sub_question": "SQ5: Data architecture/telemetry & integrations enabling the agent (+ SQ6 sensor-accuracy caveat)",
+  "summary": "A 7-layer pipeline: (1) sensing (optical PM, electrochemical gases, NDIR CO2 + T/RH); (2) a MANDATORY edge/cloud CORRECTION layer (RH/T compensation + model-based calibration vs reference) — without it low-cost PM2.5 has MAE ~17 µg/m³, larger than the WHO 24h limit itself; (3) timestamped telemetry ingest (MQTT/HTTP) with device+location metadata; (4) context fusion (GPS microenvironment, physical-activity for inhaled dose, symptom/med log); (5) time-series storage; (6) reasoning (NowCast/AQI compute, threshold engine, forecast-API ingest, LLM agent); (7) interop output (JSON schema, FHIR for clinician/EHR, API, alerts).",
+  "key_insight": "The calibration layer is load-bearing, not optional garnish: peer-reviewed work shows uncalibrated low-cost PM2.5 MAE ~17.40 µg/m³ dropping to ~5.85 after model-based correction (~3x), and humidity is the dominant confounder for optical PM sensors (they read swelled hygroscopic particles as more mass). PurpleAir needs a US-EPA correction factor (~3.4 / national equation). If the agent reasons on raw uncorrected data it will systematically OVER-warn in humid conditions and mis-time advice — so the architecture must place RH-aware calibration BEFORE any AQI computation or agent inference, and must attach a data-quality/confidence flag that the agent surfaces to the user.",
+  "detail": {
+    "architecture_layers": {
+      "1_sensing": ["optical (laser scattering) PM2.5/PM10", "electrochemical NO2/O3/SO2/CO", "NDIR CO2 (indoor)", "T/RH/pressure", "optional: PID for TVOC, GPS"],
+      "2_correction_QA": ["RH & T compensation", "model-based calibration vs reference-grade (linear correction factor → ML/ensemble)", "separate low/high concentration models", "drift correction over time", "per-reading confidence/quality flag"],
+      "3_telemetry": ["MQTT or HTTPS", "record = {ts, device_id, lat/lon, per-pollutant conc, T/RH, quality_flag}", "buffering for offline"],
+      "4_context_fusion": ["GPS→microenvironment (home/transit/work)", "physical-activity from wearable/phone → breathing-rate for inhaled dose (ADD)", "user profile: condition, meds, symptom log"],
+      "5_storage": ["time-series DB (per-pollutant + derived AQI/dose)"],
+      "6_reasoning": ["NowCast + AQI sub-index compute", "personalized threshold engine (Orange/100+)", "external forecast ingest (AirNow / OpenAQ API)", "LLM agent for advice + symptom correlation"],
+      "7_interop": ["machine-readable JSON/CSV schema for the agent", "FHIR Observation resources for clinician/EHR sharing", "REST API", "push alerts"]
+    },
+    "sensor_accuracy_caveat_SQ6": "Uncalibrated LCS unreliable: MAE 17.40→5.85 µg/m³ after ML calibration; RH is main confounder; requires periodic co-location/drift correction. Agent must communicate uncertainty, not present raw LCS as reference-grade.",
+    "integration_points": ["AirNow API (US forecast/current)", "OpenAQ (global)", "wearables/HealthKit-Google Fit (activity, respiratory rate)", "EHR via FHIR"]
+  },
+  "sources_checked": [
+    "https://egusphere.copernicus.org/preprints/2026/egusphere-2025-6203/",
+    "https://amt.copernicus.org/articles/17/6735/2024/",
+    "https://www.mdpi.com/1424-8220/22/13/4741/xml",
+    "https://amt.copernicus.org/articles/19/603/2026/"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 4,
+  "evidence_strength": "strong",
+  "notes": "Calibration numbers (MAE 17.40→5.85; PurpleAir CF ~3.4; RH confounding; multi-stage/ML frameworks) corroborated across 4 peer-reviewed sources → strong, and this doubles as the core of SQ6's sensor-accuracy caveat. The 7-layer architecture is organized synthesis on top. FHIR/OpenAQ integration named but not deeply verified — adequate for design-level answer."
+}

@@ -1,0 +1,28 @@
+{
+  "cycle": 2,
+  "sub_question": "SQ3: How do specific pollutants affect respiratory illness (asthma, COPD)?",
+  "summary": "A 59-study meta-analysis confirms short-term exposure to all major pollutants significantly raises COPD exacerbation risk, with NO2 (RR 1.04, 95% CI 1.03-1.06) and O3 (RR 1.03, 1.01-1.04) per 10 µg/m³ the strongest gaseous drivers; PM raises risk too. Shared mechanism = oxidative stress + airway inflammation. Critically, gaseous pollutants peak at lag0 (same day) and particulates at lag3 (3-day delay).",
+  "key_insight": "Two agent-actionable facts: (1) NO2 and O3 are the dominant COPD-exacerbation triggers among gases — the agent should weight them heavily for COPD users (NO2=traffic proxy, O3=hot sunny afternoons). (2) The LAG STRUCTURE is a design gift: gaseous effects hit same-day (lag0) so alerts must be real-time, but PARTICULATE effects peak ~3 days later (lag3) — meaning the agent can WARN a PM-sensitive patient days ahead of their symptom peak, and should attribute today's symptoms to particulate exposure from ~3 days prior.",
+  "detail": {
+    "copd_meta_analysis_RR_per_10ug_m3": {
+      "NO2": "1.04 (1.03-1.06) — strongest",
+      "O3": "1.03 (1.01-1.04)",
+      "SO2": "1.012 (LMICs) / weaker in high-income",
+      "CO": "weak (per 100 µg/m³); confounded by seasonality",
+      "PM2.5_PM10": "significant positive association (particulate, lag3-dominant)"
+    },
+    "lag_structure": {"gaseous": "strongest at lag0 (same day)", "particulate": "strongest at lag3 (3-day delayed)"},
+    "mechanism": ["oxidative stress (ROS overwhelms antioxidant defense)", "airway epithelial injury", "lung inflammation → reduced pulmonary function", "increased susceptibility to further damage/infection"],
+    "asthma_note": "PM2.5 linked to asthma development AND exacerbation via oxidative stress (per parallel sources: PMC9001082, PMC10990824); ozone worsens asthma airway reactivity (EPA).",
+    "high_risk_modifiers": ["age >65", "existing lung disease", "living in high-traffic / high-PM areas"]
+  },
+  "sources_checked": [
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC5161337/",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC9001082/",
+    "https://www.epa.gov/ozone-pollution-and-your-patients-health/health-effects-ozone-patients-asthma-and-other-chronic"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 5,
+  "evidence_strength": "strong",
+  "notes": "COPD RR values from the 59-study Li et al. 2016 meta-analysis (Int J COPD). Mechanism corroborated across meta-analysis + PM2.5-asthma oxidative-stress review + EPA ozone/asthma page. Asthma-specific quantitative RRs not yet pulled per-pollutant — could deepen later but mechanism + development link is established."
+}

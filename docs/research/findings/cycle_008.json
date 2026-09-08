@@ -1,0 +1,33 @@
+{
+  "cycle": 8,
+  "sub_question": "SQ6 indoor params + SQ7 pollen/UFP + emergent q428d8806 forecasting (consolidated)",
+  "summary": "Indoor deployments add CO2 (~1000 ppm = inadequate-ventilation flag; headaches/fatigue above), radon (EPA action level 4 pCi/L ≈150 Bq/m³, no safe level, consider fixing 2-4 pCi/L), and TVOC/formaldehyde. For respiratory/allergic users, POLLEN is a required feed (SQ7) sourced from forecast APIs — pure pollutant sensors can't measure it. Ultrafine particles (PM1/UFP) are health-relevant (deepest lung penetration) but unregulated (WHO issued only a good-practice statement, no numeric limit) and hard for consumer sensors. Forecasting: the agent ingests next-day AQI (AirNow/OpenAQ) + pollen (Google Pollen API et al.) rather than predicting from scratch.",
+  "key_insight": "Two closing design facts: (1) indoor and outdoor air are different problems — CO2 (ventilation), radon (long-term lung-cancer risk), and VOCs have no place in the outdoor 6-pollutant AQI but are central indoors, so the agent must treat indoor CO2 as a VENTILATION/action signal (open a window, the fix is behavioral) distinct from a pollution-avoidance signal. (2) The agent should CONSUME public forecasts (AQI via AirNow/OpenAQ, pollen via Google Pollen API) rather than build its own model — its value-add is FUSING those external forecasts with the personal device reading, inhaled-dose, and symptom log. UFP is a 'monitor if you can, but don't gate advice on it' parameter given sensor + standards immaturity.",
+  "detail": {
+    "indoor_parameters_SQ6": {
+      "CO2": "~1000 ppm = inadequate ventilation marker (Health Canada 24h 1000 ppm / 1800 mg/m3); symptoms: headache, fatigue, irritation — a VENTILATION action signal",
+      "radon": "EPA action 4 pCi/L (~150 Bq/m3); WHO reference ~100 Bq/m3; consider mitigation 2-4 pCi/L; no safe level; long-term lung-cancer risk (esp. smokers)",
+      "TVOC_HCHO": "formaldehyde + VOCs from furnishings/cleaning; irritants, asthma triggers",
+      "note": "indoor CO2/radon/VOC absent from outdoor AQI — separate indoor module"
+    },
+    "pollen_UFP_SQ7": {
+      "pollen": "REQUIRED for allergic segment (cycle 7 synergy); measured NOT by pollutant sensors but via forecast feeds; tree/grass/weed indices",
+      "ultrafine_PM1_UFP": "deepest lung/bloodstream penetration; WHO 2021 = good-practice statement only, NO numeric guideline; consumer-sensor measurement immature → monitor opportunistically, don't gate advice on it"
+    },
+    "forecasting_feeds_q428d8806": {
+      "AQI": "AirNow API (US), OpenAQ (global), IQAir",
+      "pollen": "Google Pollen API (absorbed Breezometer), national aerobiology networks",
+      "principle": "agent CONSUMES external forecasts + fuses with personal reading/dose/symptoms; ML symptom-risk prediction is a personalization layer on top, not a from-scratch AQ forecast"
+    }
+  },
+  "sources_checked": [
+    "https://www.epa.gov/radon/what-epas-action-level-radon-and-what-does-it-mean",
+    "https://www.canada.ca/en/health-canada/services/publications/healthy-living/residential-indoor-air-quality-guidelines-carbon-dioxide.html",
+    "https://www.nature.com/articles/s41370-024-00694-7",
+    "https://dph.illinois.gov/topics-services/environmental-health-protection/toxicology/indoor-air-quality-healthy-homes/idph-guidelines-indoor-air-quality.html"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 4,
+  "evidence_strength": "strong",
+  "notes": "Indoor CO2 (~1000 ppm) and radon (4 pCi/L / 150 Bq/m3) thresholds corroborated across EPA + Health Canada + CDC + Illinois DPH + Nature review → strong. Pollen-feed requirement follows from cycle 7. UFP unregulated status + pollen API names are moderate (domain knowledge / single-source). This closes SQ6/SQ7 and the forecasting emergent Q — all sub-questions now addressed. Next cycle = executive summary + worker_done + autonudge_stop."
+}

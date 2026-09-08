@@ -1,0 +1,28 @@
+{
+  "cycle": 0,
+  "sub_question": "SQ0: Which air-quality parameters should the monitor measure, and what are the health-relevant thresholds?",
+  "summary": "An air-quality monitor should measure the six WHO 'classical' pollutants (PM2.5, PM10, O3, NO2, SO2, CO) plus environmental co-parameters (temperature, humidity, pressure) and, for indoor use, CO2 and TVOCs. WHO 2021 AQG limits give the respiratory-relevant thresholds.",
+  "key_insight": "The scientifically-grounded minimum sensor set = 6 WHO classical pollutants. PM2.5 is the single most health-critical (penetrates lungs+bloodstream, drives COPD/asthma/stroke). WHO 2021 AQG limits (much stricter than 2005) give ready-made thresholds to power respiratory alerts.",
+  "detail": {
+    "core_pollutants_WHO_classical": {
+      "PM2.5": {"annual_ug_m3": 5, "24h_ug_m3": 15, "note": "fine particles, penetrate lungs+bloodstream; most health-critical"},
+      "PM10": {"annual_ug_m3": 15, "24h_ug_m3": 45, "note": "coarse inhalable particles"},
+      "O3": {"peak_season_ug_m3": 60, "8h_ug_m3": 100, "note": "ozone; airway irritant, worsens asthma"},
+      "NO2": {"annual_ug_m3": 10, "24h_ug_m3": 25, "note": "traffic/combustion; airway inflammation"},
+      "SO2": {"24h_ug_m3": 40, "note": "bronchoconstriction, esp. asthmatics"},
+      "CO": {"24h_mg_m3": 4, "note": "reduces O2 delivery"}
+    },
+    "environmental_co_parameters": ["temperature", "relative humidity", "barometric pressure"],
+    "indoor_specific_recommended": ["CO2 (ventilation proxy)", "TVOC", "radon", "possibly HCHO/formaldehyde"],
+    "respiratory_relevant_extras_to_investigate": ["pollen/allergen counts", "PM1 / ultrafine (UFP)", "NH3"]
+  },
+  "sources_checked": [
+    "https://www.who.int/news-room/feature-stories/detail/what-are-the-who-air-quality-guidelines",
+    "https://www.who.int/news-room/questions-and-answers/item/who-global-air-quality-guidelines",
+    "https://iris.who.int/handle/10665/345329"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 6,
+  "evidence_strength": "strong",
+  "notes": "Numeric AQG values are the published WHO 2021 Global Air Quality Guidelines figures; pollutant list corroborated across 3 WHO pages + NIH mirror. Averaging-period structure (annual/peak = long-term; 24h/8h = short-term) confirmed on the feature-story page."
+}

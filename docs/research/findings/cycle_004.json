@@ -1,0 +1,28 @@
+{
+  "cycle": 4,
+  "sub_question": "SQ2: What reports/data should the monitoring system generate?",
+  "summary": "The system should emit a layered data taxonomy, not just a single AQI number: (1) real-time per-pollutant concentration + NowCast AQI; (2) PERSONAL exposure metrics — time/location-resolved and, crucially, activity-adjusted inhaled dose (ADD), because personal exposure diverges massively from the nearest ambient station; (3) historical trends & exceedance logs vs WHO/AQI thresholds; (4) periodic summaries; (5) alerts/forecasts; (6) an exportable machine-readable schema for the AI agent + clinician/EHR.",
+  "key_insight": "The single most important output that separates a PERSONAL monitor from a public AQI app is INHALED DOSE, not ambient concentration. Peer-reviewed work shows personal exposure can differ from the nearest outdoor station by >1000%, and inhaled dose = concentration × activity-adjusted breathing rate × time (physical activity mediates dose — a jog in Moderate air can inhale more than resting in Unhealthy air). So the report must be time- and location-resolved (home/commute/work microenvironments) and PA-aware. A personalized PM2.5→respiratory-rate exposure-response has already been demonstrated in asthmatic adolescents, validating the symptom-correlation output.",
+  "detail": {
+    "report_data_taxonomy": {
+      "1_realtime": ["per-pollutant concentration (PM2.5/PM10/O3/NO2/SO2/CO, +CO2/TVOC indoor)", "NowCast AQI + driving pollutant", "temp/RH/pressure context"],
+      "2_personal_exposure": ["time-resolved exposure timeline", "location/microenvironment tagging (home/transit/work/outdoor)", "activity-adjusted Average Daily Inhaled Dose (ADD)", "cumulative AQI-hours above threshold"],
+      "3_historical": ["hourly/daily trends", "exceedance log vs WHO AQG + AQI breakpoints", "peak events & duration"],
+      "4_summaries": ["daily/weekly/monthly exposure report", "personal-best low-exposure windows", "symptom-vs-exposure correlation chart"],
+      "5_alerts_forecast": ["threshold-cross alerts (personalized, Orange/100+)", "next-day AQI forecast", "lag3 particulate pre-warning"],
+      "6_export": ["machine-readable JSON/CSV for the AI agent", "clinician/EHR-shareable summary (FHIR-aligned later)", "API endpoint"]
+    },
+    "why_personal_dose": "Ambient station ≠ what the person breathes; ADD integrates concentration, mobility, and PA-adjusted inhalation rate. Gender/education/activity differences show up ONLY in dose-based metrics, not concentration-based ones.",
+    "validation": "arXiv 2301.06300 demonstrated a personalised PM2.5→respiratory-rate relationship in asthmatic adolescents in everyday life — the symptom-correlation report is evidence-backed, not speculative."
+  },
+  "sources_checked": [
+    "https://link.springer.com/article/10.1007/s10661-026-15090-x",
+    "https://www.sciopen.com/article_pdf/10.1007/s12273-024-1163-0.pdf",
+    "https://arxiv.org/html/2301.06300v1",
+    "https://stacks.cdc.gov/view/cdc/230307"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 4,
+  "evidence_strength": "strong",
+  "notes": "Personal-exposure/inhaled-dose concepts (ADD, ambient≠personal, PA-mediation, microenvironment resolution) corroborated across 3+ peer-reviewed sources → strong. The 6-layer taxonomy is organized synthesis on top of those + prior cycles' data products. FHIR/EHR export noted as a forward pointer for SQ5."
+}

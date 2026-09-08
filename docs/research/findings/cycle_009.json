@@ -1,0 +1,11 @@
+{
+  "cycle": 9,
+  "sub_question": "FINAL: Executive summary & recommendation (synthesis, no new research)",
+  "summary": "Final cycle. Wrote the Executive Summary + Recommendation at the top of FINDINGS.md synthesizing all 9 cycles into a direct answer to the three-part question (parameters → data/reports → agent advice) plus the two make-or-break constraints (sensor calibration, general-wellness guardrails). No new external research this cycle.",
+  "key_insight": "The complete answer: measure the 6 WHO classical pollutants (+indoor CO2/radon/VOC, +pollen feed for allergics); output personal INHALED DOSE (not just ambient AQI) across a 6-layer taxonomy; and deploy the AI as an anticipatory, transparent, non-diagnostic advisor that warns before symptoms (exploiting the lag structure), weights pollutants by condition, escalates at AQI 100+ for respiratory users, and learns personal thresholds — gated by mandatory RH-aware sensor calibration and general-wellness (non-diagnostic) framing.",
+  "sources_checked": [],
+  "sources_empty": [],
+  "new_findings_count": 0,
+  "evidence_strength": "strong",
+  "verification": {"passed": true, "detail": "All 8 derived sub-questions (SQ0-SQ7) + 3 emergent questions (guardrails, condition-personalization, forecasting) answered and recorded across cycles 0-8; executive summary written at top of FINDINGS.md. No brief-defined Definition of Done; completion criterion = full question coverage with cited evidence, met."
+}
