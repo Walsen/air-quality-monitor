@@ -1,0 +1,23 @@
+{
+  "cycle": 7,
+  "sub_question": "Emergent qd724681a: How should the agent personalize advice by condition (asthma vs COPD vs allergic rhinitis)?",
+  "summary": "The three conditions need different pollutant weightings, trigger sets, and action logic. Asthma (often allergic/reversible) is driven by O3, NO2, PM AND allergens/pollen — needs pre-exertion reliever prompts + pollen integration. COPD (irreversible, older, smoking-linked) is driven most by NO2 & O3 (per cycle 2 RRs) — needs exacerbation-prevention + infection watch. Allergic rhinitis is dominated by the pollen×pollution SYNERGY (pollution makes pollen more allergenic). So pollen data is NOT optional for the allergic segment — pure AQI misses their main trigger.",
+  "key_insight": "Personalization is two-dimensional: (1) pollutant WEIGHTING (COPD→NO2/O3 gaseous, allergic asthma/rhinitis→PM + pollen), and (2) TRIGGER SET (allergic conditions require pollen/aeroallergen data that the 6-pollutant AQI does not contain). The documented pollution×pollen synergy — diesel exhaust particles act as an adjuvant and damage pollen grains so they release more allergen — means for allergic users the agent must fuse an aeroallergen/pollen feed with the pollutant feed and warn hardest on high-pollen + high-PM/NO2 co-occurrence days. COPD advice centers on avoiding exertion during gaseous peaks and escalating on the classic dyspnea/sputum-change signs; asthma advice centers on pre-emptive reliever use and allergen avoidance.",
+  "detail": {
+    "asthma": {"drivers": "O3, NO2, PM2.5 + allergens/pollen", "traits": "reversible, often allergic/eosinophilic, any age", "agent_advice": "pre-exertion reliever prompt, allergen+pollen avoidance, timing outdoor activity to low-O3 windows, reinforce written asthma action plan zones"},
+      "copd": {"drivers": "NO2 & O3 strongest (RR 1.04/1.03 per 10µg/m³, cycle 2), PM", "traits": "irreversible airflow limitation, older, smoking history", "agent_advice": "avoid exertion during gaseous peaks, exacerbation-prevention, watch dyspnea/sputum volume+purulence, infection/season awareness, escalate early"},
+    "allergic_rhinitis": {"drivers": "pollen × pollution SYNERGY (PM/NO2/O3 amplify pollen allergenicity)", "traits": "upper-airway, allergic; comorbid with allergic asthma", "agent_advice": "REQUIRES pollen/aeroallergen feed; warn hardest on high-pollen+high-pollutant co-days; antihistamine/pre-medication timing; keep windows closed during pollen peaks"},
+    "cross_cutting": "Asthma-COPD overlap (ACO) exists — agent should support a per-user trigger profile learned from symptom logs rather than assume a clean category.",
+    "synergy_evidence": "Multiple sources: diesel/traffic PM acts as adjuvant to pollen; pollution damages pollen releasing more allergen; air pollution causally linked to rising asthma+allergic-rhinitis incidence."
+  },
+  "sources_checked": [
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC3192198/",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC8638356/",
+    "https://www.frontiersin.org/journals/allergy/articles/10.3389/falgy.2024.1521072/full",
+    "https://pmc.ncbi.nlm.nih.gov/articles/PMC9683358"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 4,
+  "evidence_strength": "moderate",
+  "notes": "Pollution×pollen synergy and per-condition driver differences corroborated across 3+ sources (moderate→strong on synergy). Per-condition action mappings are clinically-standard synthesis grounded in those + cycle-2 COPD RRs — labeled moderate. Surfaces that SQ7 (pollen) is a hard requirement for the allergic segment, not an optional extra — pursue next."
+}

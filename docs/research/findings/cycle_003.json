@@ -1,0 +1,33 @@
+{
+  "cycle": 3,
+  "sub_question": "SQ4: What can an AI agent do with the data to advise people with respiratory illness?",
+  "summary": "The agent's value is turning raw monitor data + public AQI data products into anticipatory, condition-specific advice. Three real EPA data products form the backbone: NowCast AQI (current hour, adaptive averaging — real-time 'is now OK to go out?'), AQI Forecast (next-day, issued each afternoon — activity planning), and the AirNow API (integration feed). The agent layers personalization (condition, symptom log, meds), the SQ3 lag structure, and the SQ1 'Orange/100+' respiratory trigger on top.",
+  "key_insight": "The agent is not a dashboard — it is an ANTICIPATORY, PERSONALIZED translation layer. Its distinctive capabilities: (1) fuse live device readings with NowCast (now) + Forecast (tomorrow) + lag3 particulate delay to WARN before symptoms, not after; (2) attribute cause per-pollutant (weight NO2/O3 for COPD, PM2.5 for asthma) and name the driving pollutant; (3) escalate on the respiratory-specific Orange band (AQI 100+), not the public 150+; (4) correlate the user's own symptom/rescue-inhaler log against exposure to learn personal trigger thresholds; (5) convert category → concrete action ('reschedule your run to this morning when O3 is lower', 'keep your reliever inhaler with you', 'run the purifier, close windows').",
+  "detail": {
+    "data_products_backbone": {
+      "NowCast_AQI": "current-hour AQI (O3+PM); adaptive averaging (shorter windows when air changes fast, e.g. wildfire) — powers real-time go/no-go",
+      "AQI_Forecast": "next-day prediction issued each afternoon; ozone forecast targets the peak 8-h window; includes 'forecast discussion' of WHEN pollution peaks during the day — powers activity timing",
+      "AirNow_API": "docs.airnowapi.org — programmatic current + forecast feed for integration"
+    },
+    "agent_capability_stack": [
+      "Real-time alerting keyed to personal thresholds (not just national breakpoints)",
+      "Anticipatory warnings using next-day forecast + lag3 particulate delay",
+      "Per-pollutant attribution & condition weighting (COPD→NO2/O3; asthma→PM2.5/O3)",
+      "Activity-timing optimization (find the low-pollution window in the day)",
+      "Symptom-exposure correlation to personalize trigger levels over time",
+      "Actionable, plain-language guidance mapped from AQI category",
+      "Medication/action reminders (reliever inhaler, purifier, mask, close windows)",
+      "Escalation logic: nudge → strong caution → advise contacting clinician on sustained high exposure + worsening symptoms"
+    ],
+    "personal_context_inputs": ["diagnosed condition", "symptom & rescue-med log", "location/commute", "activity plans", "indoor sensor data", "sensitivity threshold learned over time"],
+    "addresses_emergent": "Partly answers q428d8806 (forecasting): AirNow API + AQI Forecast is the feed; deeper forecasting (pollen, ML symptom-risk) still open."
+  },
+  "sources_checked": [
+    "https://www.airnow.gov/aqi/aqi-basics/using-air-quality-index/",
+    "https://docs.airnowapi.org/"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 3,
+  "evidence_strength": "moderate",
+  "notes": "The three data products (NowCast/Forecast/API) and their behavior are STRONG (EPA/AirNow authoritative). The agent-capability mapping is reasoned SYNTHESIS grounding those products + SQ1/SQ3 findings — hence moderate. Verbatim per-category EPA cautionary action statements (e.g. exact 'reduce prolonged or heavy exertion' wording) not captured this cycle; the /all-activity-guides page can supply exact text if the deliverable needs it."
+}

@@ -1,0 +1,34 @@
+{
+  "cycle": 6,
+  "sub_question": "Emergent qcbf6d3b3: What safety/medical-liability guardrails must the AI advice agent respect?",
+  "summary": "The regulatory line between an unregulated general-wellness product and an FDA-regulated medical device is drawn by INTENDED USE and CLAIMS, not by the technology — the same code is a device or not depending on what it claims to do. To stay in the safe (general-wellness / Cures Act enforcement-discretion) lane, the agent must frame advice as exposure-reduction, keep recommendations transparent (show the basis), never diagnose or direct medication changes, defer to the clinician's asthma/COPD action plan, and escalate red-flag symptoms to emergency care.",
+  "key_insight": "The single design decision that keeps the agent legally and ethically safe is CLAIM/INTENDED-USE FRAMING. 'Air quality is high for you today — consider limiting outdoor exertion and keep your reliever inhaler handy' is exposure/wellness guidance (exempt). 'Increase your steroid dose' or 'you are having an asthma attack' is a device/diagnostic-treatment claim (regulated + liability). FDA's 2026 CDS guidance also grants enforcement discretion only when the recommendation's BASIS is transparent so a user/clinician can independently review it — so the agent must NOT be a black box: it must state which pollutant, which threshold, and why. Guardrails are therefore a product requirement, not a disclaimer.",
+  "detail": {
+    "regulatory_frame": {
+      "device_vs_wellness": "Intended use / claims determine regulation, not the tech (21st Century Cures Act statutory exemption for software-only general-wellness).",
+      "general_wellness_safe_lane": "Low-risk, no disease diagnosis/treatment claims → outside FDA device oversight.",
+      "CDS_enforcement_discretion": "FDA (2026 guidance) exercises discretion for CDS whose recommendation basis is transparent and independently reviewable; drto-single-treatment-option cases can still be regulated."
+    },
+    "agent_guardrails": [
+      "Intended-use framing: exposure-reduction/lifestyle language, NOT diagnosis or medication dosing",
+      "Non-diagnostic: never claim the user is having/attack; describe air conditions + general precautions",
+      "Transparency: always show the basis (driving pollutant, threshold crossed, confidence flag) — no black-box advice",
+      "Defer to clinician: reinforce the user's existing written asthma/COPD action plan; never override it",
+      "Emergency escalation: red-flag symptoms (severe breathlessness, reliever not working, blue lips) → direct to emergency services immediately, do not self-manage",
+      "Uncertainty comms: surface low-cost-sensor confidence flag (per SQ5); never present LCS as reference-grade",
+      "Privacy: health + location data → HIPAA (if shared with providers) / GDPR; explicit consent, on-device where possible",
+      "No autonomous action: advice only; the human decides"
+    ],
+    "liability_principle": "Position as a decision-SUPPORT & exposure-awareness tool augmenting (not replacing) clinical care; keep audit log of what was advised and on what data."
+  },
+  "sources_checked": [
+    "https://www.morganlewis.com/zh-tw/blogs/asprescribed/2026/02/new-year-new-guidance-fda-revisits-wellness-and-cds-boundaries",
+    "https://www.mintz.com/insights-center/viewpoints/2791/2026-01-20-fda-flux-january-2026-newsletter",
+    "https://rhizomeai.com/articles/software-as-a-regulated-medical-device-vs-wellness",
+    "https://www.fda.gov/medical-devices/digital-health/guidances-digital-health-content"
+  ],
+  "sources_empty": [],
+  "new_findings_count": 5,
+  "evidence_strength": "strong",
+  "notes": "Device-vs-wellness (intended-use test), Cures Act general-wellness exemption, and 2026 CDS enforcement-discretion + transparency requirement corroborated across FDA + 3 health-law analyses → strong. HIPAA/GDPR privacy is standard domain knowledge, cited generally. This closes the highest-value remaining emergent Q."
+}
