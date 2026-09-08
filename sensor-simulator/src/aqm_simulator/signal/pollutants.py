@@ -17,9 +17,16 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
 import numpy as np
+
+from aqm_simulator.observability.logging import get_logger
+from aqm_simulator.rng.streams import Purpose, RandomStreamFactory
+from aqm_simulator.signal.regional_field import RegionalField
+
+_logger = get_logger("signal.pollutants")
 
 # Rush-hour peak centres (local hours) and bump width.
 _MORNING_PEAK = 8.0
@@ -72,3 +79,74 @@ class NO2Signal:
         # whole emitted series, not just the traffic term in isolation.
         value = self._factor * (_BASE_NO2 + self._amp * traffic)
         return max(0.0, value)
+
+
+# Maximum plausible concentrations (Requirement 4.11).
+_MAX_PLAUSIBLE = {"PM25": 500.0, "NO2": 400.0}
+
+# Per-site local PM2.5 modifier amplitude — small relative to the regional
+# baseline so the shared Regional_Field accounts for >=60% of hourly variance
+# (Requirement 9.1 / Property 27), and a weak diurnal term so PM2.5's relative
+# diurnal amplitude stays <=0.5x NO2's (Requirement 4.4).
+_LOCAL_MODIFIER_SD = 1.5  # µg/m³
+_PM_DIURNAL_AMPLITUDE = 1.0  # µg/m³
+
+
+@dataclass(frozen=True, slots=True)
+class ClampEvent:
+    """A recorded clamp of an out-of-range value (diagnostic output)."""
+
+    site_code: str
+    species: str
+    when: dt.datetime
+    raw: float
+    clamped: float
+
+
+class PM25Signal:
+    """PM2.5 dry concentration = shared regional baseline + per-site local part."""
+
+    def __init__(
+        self,
+        regional: RegionalField,
+        site_code: str,
+        factory: RandomStreamFactory,
+    ) -> None:
+        self._regional = regional
+        self._site = site_code
+        rng = factory.stream(site_code, Purpose.SIGNAL)
+        # fixed per-site offset and diurnal phase, drawn once for determinism
+        self._local_offset = float(rng.normal(0.0, _LOCAL_MODIFIER_SD))
+        self._diurnal_phase = float(rng.uniform(0.0, 2.0 * math.pi))
+        self._clamp_events: list[ClampEvent] = []
+
+    def dry_value(self, when: dt.datetime) -> float:
+        """PM2.5 dry concentration (µg/m³) before the humidity artifact."""
+        baseline = self._regional.baseline(when)
+        hour = when.hour + when.minute / 60.0
+        diurnal = _PM_DIURNAL_AMPLITUDE * math.sin(2 * math.pi * hour / 24.0 + self._diurnal_phase)
+        return max(0.0, baseline + self._local_offset + diurnal)
+
+    def clamp(self, species: str, value: float, site_code: str, when: dt.datetime) -> float:
+        """Clamp a value to 0..max_plausible, recording+logging any clamp (Req 4.11)."""
+        upper = _MAX_PLAUSIBLE[species]
+        clamped = max(0.0, min(upper, value))
+        if clamped != value:
+            self._clamp_events.append(
+                ClampEvent(
+                    site_code=site_code, species=species, when=when, raw=value, clamped=clamped
+                )
+            )
+            _logger.warning(
+                "value_clamped",
+                site_code=site_code,
+                species=species,
+                timestamp=when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                raw=value,
+                clamped=clamped,
+            )
+        return clamped
+
+    def clamp_events(self) -> list[ClampEvent]:
+        """Return the recorded clamp events (diagnostic output only)."""
+        return list(self._clamp_events)

@@ -28,7 +28,7 @@ from aqm_simulator.geography.profiles import GeographyProfile
 from aqm_simulator.rng.streams import Purpose, RandomStreamFactory
 
 _REGIONAL_SITE = "_REGIONAL"
-_MEAN_PM = 12.0  # µg/m³ central baseline before seasonal scaling
+_MEAN_PM = 15.0  # µg/m³ central baseline before seasonal scaling
 _MAX_HOURLY_CHANGE = 5.0  # Requirement 4.4
 
 # Dry-season (high) and wet-season (low) month sets, local calendar months.
@@ -46,18 +46,32 @@ class RegionalField:
     ) -> None:
         # A few slow harmonics (periods 96h, 48h, 24h) with seeded phase and
         # amplitude. Amplitudes are scaled so the summed per-hour slope stays
-        # under the 5 µg/m³ bound.
-        self._periods_h = (96.0, 48.0, 24.0)
+        # Slow, multi-day harmonics (10d / 7d / 5d): the shared field drifts over
+        # days, not hours, so it barely contributes to the 24h-folded DIURNAL
+        # amplitude of PM2.5 (keeping it well under 0.5x NO2's — Req 4.4) while
+        # still dominating the total hourly variance (Req 9.1). Long periods also
+        # make the <=5 µg/m³ per-hour bound (Req 4.4) easy to satisfy.
+        # Supra-diurnal harmonics (48h / 60h / 72h): long enough that the field's
+        # 24h-folded diurnal amplitude stays well under 0.5x NO2's (Req 4.4 /
+        # Property 13), but short enough to complete cycles within a 72h window so
+        # the shared field dominates TOTAL hourly variance (Req 9.1 / Property 27).
+        self._periods_h = (48.0, 60.0, 72.0)
         self._phases = tuple(float(rng.uniform(0, 2 * math.pi)) for _ in self._periods_h)
-        raw_amps = [float(rng.uniform(0.5, 1.0)) for _ in self._periods_h]
-        # cap total amplitude so max slope (sum of a_i * 2π/T_i) < MAX_HOURLY_CHANGE
-        max_slope = sum(a * 2 * math.pi / t for a, t in zip(raw_amps, self._periods_h, strict=True))
-        # The seasonal factor multiplies the wave, so budget against the largest
-        # factor (dry season) to keep the SCALED per-hour change under the bound.
-        max_factor = max(seasonal_multiplier, 1.0)
-        budget = (_MAX_HOURLY_CHANGE * 0.9) / (max_slope * max_factor)
-        self._amps = tuple(a * budget for a in raw_amps)
+        # Amplitudes sized so the seasonal-scaled baseline stays inside the wet
+        # clean band 3..35 (Req 4.5) around the _MEAN_PM centre.
+        self._amps = tuple(float(rng.uniform(2.0, 3.5)) for _ in self._periods_h)
         self._seasonal = seasonal_multiplier
+
+        # Defence in depth: verify the scaled per-hour slope stays under the
+        # Requirement 4.4 bound for these fixed amplitudes and periods.
+        max_slope = sum(
+            a * 2 * math.pi / t for a, t in zip(self._amps, self._periods_h, strict=True)
+        ) * max(seasonal_multiplier, 1.0)
+        if max_slope > _MAX_HOURLY_CHANGE:
+            raise ValueError(
+                f"regional-field max hourly slope {max_slope:.3f} exceeds the "
+                f"{_MAX_HOURLY_CHANGE} µg/m³ bound"
+            )
 
     @classmethod
     def from_profile(
