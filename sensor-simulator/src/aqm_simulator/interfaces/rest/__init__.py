@@ -26,6 +26,12 @@ from collections.abc import Awaitable, Callable
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 
+from aqm_simulator.interfaces.rest.list_sensors import (
+    QueryError,
+    metadata_for,
+    parse_list_sensors_query,
+    select_sensors,
+)
 from aqm_simulator.pipeline.publish import PublishPipeline
 
 _EXEMPT_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
@@ -45,6 +51,14 @@ def _unauthorized() -> JSONResponse:
     return JSONResponse(
         status_code=401,
         content={"error": "authentication failed", "parameter": "X-API-KEY"},
+    )
+
+
+def _bad_request(error: QueryError) -> JSONResponse:
+    """400 naming every offending parameter, with no records (Req 1.11/1.13)."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": "invalid query parameter", "problems": error.problems},
     )
 
 
@@ -96,9 +110,22 @@ def build_app(
         }
 
     @app.get("/ListSensors")
-    async def list_sensors() -> list[dict[str, object]]:
-        """Placeholder returning an empty array until task 18.2 fills it in."""
-        return []
+    async def list_sensors(request: Request) -> Response:
+        """Sensor_Metadata_Records, filtered and ordered (Req 1.8-1.11, 1.13, 1.14).
+
+        The raw query mapping is read directly rather than through a strict model
+        because Requirement 1.14 requires an unrecognized parameter name to be
+        IGNORED; a strict model would reject it.
+        """
+        try:
+            query = parse_list_sensors_query(dict(request.query_params))
+        except QueryError as error:
+            return _bad_request(error)
+        records = [metadata_for(s, pipeline.sensor_contract) for s in pipeline.swarm]
+        selected = select_sensors(records, query)
+        return JSONResponse(
+            content=[r.model_dump(mode="json") for r in selected]
+        )
 
     @app.get("/SensorData")
     async def sensor_data() -> list[dict[str, object]]:

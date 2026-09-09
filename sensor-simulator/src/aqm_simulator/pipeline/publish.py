@@ -158,6 +158,16 @@ class PublishPipeline:
         """Number of Virtual_Sensors in the swarm."""
         return len(self._swarm)
 
+    @property
+    def swarm(self) -> list[VirtualSensor]:
+        """The Virtual_Sensors, in their deterministic construction order."""
+        return list(self._swarm)
+
+    @property
+    def sensor_contract(self) -> str:
+        """The profile's Sensor_Contract label carried on every record."""
+        return self._profile.sensor_contract
+
     def run_interval(
         self, start: dt.datetime, reference_time: dt.datetime
     ) -> list[SensorDataRecord]:
