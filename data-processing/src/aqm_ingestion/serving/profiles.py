@@ -162,4 +162,21 @@ class ProfileService:
         """
         return dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 
-__all__ = ["DeletionReceipt", "ProfileService", "ResolvedProfile"]
+def query_positions(resolved: ResolvedProfile) -> tuple[tuple[float, float], ...]:
+    """The positions a geographic query may be built from, in declared order.
+
+    Takes ONE resolved profile and nothing else, which is what makes Requirement 17.10's
+    selection half structural: there is no second profile to consult, so a query cannot be built
+    from another user's locations even by mistake. Geographic selection itself is task 21; this
+    is only the boundary it must draw its inputs across.
+
+    Order follows the profile's own location order rather than being sorted here, because the
+    order reaches a query and §2 requires it be defined rather than incidental.
+    """
+    return tuple(
+        (location.latitude, location.longitude)
+        for location in resolved.profile.locations
+    )
+
+
+__all__ = ["DeletionReceipt", "ProfileService", "ResolvedProfile", "query_positions"]
