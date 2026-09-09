@@ -56,5 +56,8 @@ select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
+# scripts/ holds standalone dev tools that are imported by their own tests, so
+# the directory must be importable for mypy to resolve them.
+mypy_path = "scripts"
 warn_unused_configs = true
