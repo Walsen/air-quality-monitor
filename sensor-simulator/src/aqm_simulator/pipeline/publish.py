@@ -153,6 +153,11 @@ class PublishPipeline:
         """The configured Publish_Interval length in minutes."""
         return self._publish_minutes
 
+    @property
+    def swarm_size(self) -> int:
+        """Number of Virtual_Sensors in the swarm."""
+        return len(self._swarm)
+
     def run_interval(
         self, start: dt.datetime, reference_time: dt.datetime
     ) -> list[SensorDataRecord]:

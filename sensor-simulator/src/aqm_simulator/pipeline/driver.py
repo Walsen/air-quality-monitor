@@ -24,7 +24,9 @@ import datetime as dt
 from collections.abc import Iterator
 
 from aqm_simulator.contract.records import SensorDataRecord
+from aqm_simulator.observability.logging import _EventLogger
 from aqm_simulator.pipeline.publish import PublishPipeline
+from aqm_simulator.pipeline.reporter import IntervalReport, report_interval
 from aqm_simulator.time.clock import Clock, SystemClock
 
 
@@ -37,12 +39,15 @@ def backfill(
     start: dt.datetime,
     end: dt.datetime,
     reference_time: dt.datetime,
+    logger: _EventLogger | None = None,
 ) -> Iterator[SensorDataRecord]:
     """Yield records for every Publish_Interval whose start is in [start, end)."""
     step = _interval(pipeline.publish_minutes)
     current = start
     while current < end:
-        yield from pipeline.run_interval(current, reference_time=reference_time)
+        records = pipeline.run_interval(current, reference_time=reference_time)
+        _maybe_report(logger, pipeline, current, records)
+        yield from records
         current = current + step
 
 
@@ -52,6 +57,7 @@ def real_time(
     max_intervals: int,
     reference_time: dt.datetime,
     clock: Clock | None = None,
+    logger: _EventLogger | None = None,
 ) -> Iterator[SensorDataRecord]:
     """Yield records for successive Publish_Intervals, waiting on each boundary.
 
@@ -64,5 +70,31 @@ def real_time(
     current = start
     for _ in range(max_intervals):
         driving_clock.wait_until(current + step)  # wait for the interval to close
-        yield from pipeline.run_interval(current, reference_time=reference_time)
+        records = pipeline.run_interval(current, reference_time=reference_time)
+        _maybe_report(logger, pipeline, current, records)
+        yield from records
         current = current + step
+
+
+def _maybe_report(
+    logger: _EventLogger | None,
+    pipeline: PublishPipeline,
+    interval_start: dt.datetime,
+    records: list[SensorDataRecord],
+) -> None:
+    """Emit the per-interval summary when a logger is supplied (Req 17.2)."""
+    if logger is None:
+        return
+    generated = len(records)
+    # a full interval emits four Species per sensor; the shortfall was dropped
+    expected = pipeline.swarm_size * 4
+    report_interval(
+        logger,
+        IntervalReport(
+            date_time=interval_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            generated=generated,
+            published=generated,  # no buffering transport yet
+            buffered=0,
+            dropped=max(0, expected - generated),
+        ),
+    )
