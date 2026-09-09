@@ -72,7 +72,7 @@ def _loud_fields(user_id: str = "user-sentinel") -> dict[str, object]:
         "user_id": user_id,
         "condition": Condition.ASTHMA,
         "sensitivity_level": SensitivityLevel.ELEVATED,
-        "personal_thresholds": {"PM25": 37.5},
+        "personal_thresholds": {"PM25": {"kind": "sub_index", "value": 37.5}},
         "locations": [
             {"name": LocationName.COMMUTE, "latitude": 51.5074, "longitude": -0.1278}
         ],

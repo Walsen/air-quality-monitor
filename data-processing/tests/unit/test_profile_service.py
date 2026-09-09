@@ -35,7 +35,7 @@ def _fields(user_id: str = "user-123", **overrides: object) -> dict[str, object]
         "user_id": user_id,
         "condition": Condition.ASTHMA,
         "sensitivity_level": SensitivityLevel.ELEVATED,
-        "personal_thresholds": {"PM25": 35.0},
+        "personal_thresholds": {"PM25": {"kind": "sub_index", "value": 35.0}},
         "locations": [{"name": "home", "latitude": 51.5074, "longitude": -0.1278}],
         "consent": {
             "version": next(iter(sorted(RECOGNIZED_CONSENT_VERSIONS))),

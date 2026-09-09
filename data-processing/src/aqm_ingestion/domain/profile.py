@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DEFAULT_LOCATION_PRECISION = 3
 """Requirement 17.5's default rounding, about 110 m."""
@@ -42,6 +42,26 @@ DEFAULT_LOCATION_LIMIT = 5
 """Requirement 17.6's default maximum User_Location count."""
 
 RECOGNIZED_CONSENT_VERSIONS: frozenset[str] = frozenset({"2026-01-01"})
+
+DEFAULT_THRESHOLD_SPECIES: tuple[str, ...] = ("PM25", "NO2")
+"""Species a Personal_Threshold may name by default (Requirement 22.4).
+
+Mirrors the shipped Breakpoint_Tables. Deliberately NOT imported from the AQI layer: the profile
+model is validated against configuration handed to it, so it keeps no dependency on a registry.
+The caller overrides this via ``ProfileLimits.threshold_species``, and a test asserts the two
+agree so this constant cannot drift from the tables that actually ship.
+"""
+
+SPECIES_THRESHOLD_UNITS: Mapping[str, str] = {"PM25": "ug.m-3", "NO2": "ppb"}
+"""The unit each species' Breakpoint_Table interpolates in (Requirement 22.5).
+
+The strings are the CONTRACT's own spellings — `ug.m-3`, as Requirement 1.8's Units field and
+the shipped table both write it, not the `ug/m3` one would guess. A test asserts each entry
+equals its table's own unit, which is how that guess was caught.
+
+A concentration threshold in any other unit is REJECTED rather than converted, because silently
+reinterpreting ppb as µg/m³ would move the user's trigger point instead of failing.
+"""
 """Requirement 17.7's recognized consent versions.
 
 Configuration rather than a constant in spirit: an unrecognised version must be REJECTED, so
@@ -75,6 +95,18 @@ class LocationName(StrEnum):
     COMMUTE = "commute"
 
 
+class ThresholdKind(StrEnum):
+    """Which of Requirement 22.4's two forms a Personal_Threshold takes.
+
+    This enum exists because a bare number cannot say. PM2.5 at 35 µg/m³ is a Sub_Index around
+    100 — the bottom of the Orange band — while Sub_Index 35 is comfortably Good, so reading one
+    as the other either warns a user almost continuously or never warns them at all.
+    """
+
+    SUB_INDEX = "sub_index"
+    CONCENTRATION = "concentration"
+
+
 class ActivityLevel(StrEnum):
     """Requirement 23.2's permitted activity levels."""
 
@@ -98,6 +130,13 @@ class ProfileLimits:
     location_precision: int = DEFAULT_LOCATION_PRECISION
     location_limit: int = DEFAULT_LOCATION_LIMIT
     consent_versions: frozenset[str] = RECOGNIZED_CONSENT_VERSIONS
+    threshold_species: frozenset[str] = frozenset(DEFAULT_THRESHOLD_SPECIES)
+    """Species a Personal_Threshold may name (Requirement 22.4).
+
+    Passed IN rather than read from a Breakpoint_Table registry here, so the profile model keeps
+    no dependency on the AQI layer and §1's narrow-parameter rule holds. The caller supplies
+    ``registry.species_for(table_id)``.
+    """
 
 
 DEFAULT_PROFILE_LIMITS = ProfileLimits()
@@ -124,6 +163,41 @@ class ConsentRecord(_MinimalModel):
         return value.astimezone(dt.UTC)
 
 
+class PersonalThreshold(_MinimalModel):
+    """One species' trigger point, in whichever of Requirement 22.4's forms the user gave.
+
+    ``unit`` is REQUIRED for a concentration and REFUSED for a Sub_Index. A unit on a Sub_Index
+    means the caller has confused the two forms, which is precisely the confusion this model
+    exists to prevent, so it is a rejection rather than an ignored extra.
+    """
+
+    kind: ThresholdKind
+    value: float
+    unit: str | None = None
+
+    @model_validator(mode="after")
+    def _check_form(self) -> PersonalThreshold:
+        """Enforce Requirement 22.4's ranges and the unit's presence per form."""
+        if self.kind is ThresholdKind.SUB_INDEX:
+            if self.unit is not None:
+                raise ValueError(
+                    "a Sub_Index threshold must not carry a unit; use kind='concentration' "
+                    "to express a threshold in µg/m³ or ppb"
+                )
+            # Requirement 22.4: "from 1 to 500", both ends inclusive.
+            if not 1 <= self.value <= 500:
+                raise ValueError("a Sub_Index threshold must be between 1 and 500 inclusive")
+        else:
+            if self.unit is None:
+                raise ValueError(
+                    "a concentration threshold must name its unit, so it can be converted "
+                    "through the same Breakpoint_Table the response uses"
+                )
+            if self.value < 0:
+                raise ValueError("a concentration threshold cannot be negative")
+        return self
+
+
 class UserLocation(_MinimalModel):
     """One saved location, at reduced precision (Requirement 17.5)."""
 
@@ -141,7 +215,7 @@ class UserProfile(_MinimalModel):
     user_id: str
     condition: Condition
     sensitivity_level: SensitivityLevel
-    personal_thresholds: Mapping[str, float] = Field(default_factory=dict)
+    personal_thresholds: Mapping[str, PersonalThreshold] = Field(default_factory=dict)
     locations: tuple[UserLocation, ...] = ()
     activity_level: ActivityLevel | None = None
     activity_duration_hours: Annotated[float | None, Field(ge=0.0)] = None
@@ -192,6 +266,14 @@ def build_profile(
 
     if profile.consent.version not in limits.consent_versions:
         raise _consent_error()
+
+    # Requirement 22.4: a threshold must name a species the Breakpoint_Table defines, since
+    # Requirement 22.5 converts it through that table. Checked here rather than on the model
+    # because the permitted set is configuration the model must not reach for (§1).
+    for species in sorted(profile.personal_thresholds):
+        if species not in limits.threshold_species:
+            raise _threshold_species_error(species, limits.threshold_species)
+        _check_threshold_unit(species, profile.personal_thresholds[species])
     return profile
 
 
@@ -263,6 +345,69 @@ def _limit_error(limit: int, received: int) -> Exception:
             )
         ],
     )
+
+
+def _threshold_species_error(species: str, permitted: frozenset[str]) -> Exception:
+    """A Requirement 22.4 rejection for a species no Breakpoint_Table defines.
+
+    Names the SPECIES and the permitted set, which Requirement 17.9 allows: a species name is
+    not health-adjacent in the way a threshold VALUE is, and without it the operator cannot tell
+    a typo from a genuinely unsupported pollutant (§5).
+    """
+    from pydantic_core import InitErrorDetails, ValidationError
+
+    return ValidationError.from_exception_data(
+        "UserProfile",
+        [
+            InitErrorDetails(
+                type="value_error",
+                loc=("personal_thresholds", species),
+                input=None,
+                ctx={
+                    "error": ValueError(
+                        f"no Breakpoint_Table defines {species!r}, so a threshold for it "
+                        f"could not be compared to a Sub_Index; permitted: "
+                        f"{', '.join(sorted(permitted))}"
+                    )
+                },
+            )
+        ],
+    )
+
+
+def _threshold_unit_error(species: str, expected: str) -> Exception:
+    """A Requirement 22.4 rejection for a concentration threshold in the wrong unit."""
+    from pydantic_core import InitErrorDetails, ValidationError
+
+    return ValidationError.from_exception_data(
+        "UserProfile",
+        [
+            InitErrorDetails(
+                type="value_error",
+                loc=("personal_thresholds", species, "unit"),
+                input=None,
+                ctx={
+                    "error": ValueError(
+                        f"a concentration threshold for {species} must be expressed in "
+                        f"{expected}, the unit its Breakpoint_Table uses"
+                    )
+                },
+            )
+        ],
+    )
+
+
+def _check_threshold_unit(species: str, threshold: PersonalThreshold) -> None:
+    """Refuse a concentration threshold whose unit its table would not accept.
+
+    Converting ppb as though it were µg/m³ would silently move the user's trigger point rather
+    than fail, which is why a mismatch is a rejection and not a coercion.
+    """
+    if threshold.kind is not ThresholdKind.CONCENTRATION:
+        return
+    expected = SPECIES_THRESHOLD_UNITS.get(species)
+    if expected is not None and threshold.unit != expected:
+        raise _threshold_unit_error(species, expected)
 
 
 def _consent_error() -> Exception:
