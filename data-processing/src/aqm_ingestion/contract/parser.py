@@ -63,10 +63,17 @@ class Rejection:
 
 @dataclass(frozen=True, slots=True)
 class ParseResult:
-    """Accepted records plus one rejection per failed element."""
+    """Accepted records, per-record rejections, and diverted meteorology elements.
 
-    records: tuple[Any, ...]
-    rejections: tuple[Rejection, ...]
+    ``meteorology`` holds elements whose ``Species`` the configured mapping routes to a
+    meteorology channel (Requirement 3.6). They are returned UNINTERPRETED: the parser
+    decides whose an element is, while what it means belongs to the calibration stage
+    that owns the mapping (§1).
+    """
+
+    records: tuple[Any, ...] = ()
+    rejections: tuple[Rejection, ...] = ()
+    meteorology: tuple[Mapping[str, Any], ...] = ()
 
 
 class ParseError(Exception):
@@ -161,6 +168,7 @@ def _parse[RecordT](
     model: type[RecordT],
     max_batch: int,
     max_payload_bytes: int,
+    meteorology_species: frozenset[str] = frozenset(),
 ) -> ParseResult:
     loaded = _load(text, max_payload_bytes)
 
@@ -183,6 +191,7 @@ def _parse[RecordT](
 
     records: list[RecordT] = []
     rejections: list[Rejection] = []
+    meteorology: list[Mapping[str, Any]] = []
     for position, element in enumerate(elements):
         index = position if indexed else None
         if not isinstance(element, dict):
@@ -197,21 +206,45 @@ def _parse[RecordT](
                 )
             )
             continue
+        # Requirement 3.6: a Species the configured meteorology mapping recognises is
+        # ROUTED, not rejected. Checked BEFORE construction because the contract's
+        # Species is a closed literal, so the model could never hold one — and
+        # Requirement 3.7 forbids emitting a partially populated record.
+        if meteorology_species and element.get("Species") in meteorology_species:
+            meteorology.append(element)
+            continue
         try:
             records.append(model(**element))
         except ValidationError as error:
             # Continue past the failure so accepted siblings survive (Req 3.5).
             rejections.append(_reject_from_validation(error, index))
-    return ParseResult(records=tuple(records), rejections=tuple(rejections))
+    return ParseResult(
+        records=tuple(records),
+        rejections=tuple(rejections),
+        meteorology=tuple(meteorology),
+    )
 
 
 def parse_data_records(
     text: str,
     max_batch: int = DEFAULT_MAX_BATCH,
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
+    meteorology_species: frozenset[str] = frozenset(),
 ) -> ParseResult:
-    """Parse measurement records from JSON text."""
-    return _parse(text, SensorDataRecord, max_batch, max_payload_bytes)
+    """Parse measurement records from JSON text.
+
+    Args:
+        text: the payload.
+        max_batch: maximum array length (Requirement 3.1).
+        max_payload_bytes: maximum payload size (Requirement 3.2).
+        meteorology_species: `Species` values the configured meteorology channel
+            mapping recognises. An element carrying one is DIVERTED to
+            ``ParseResult.meteorology`` rather than rejected (Requirement 3.6), and is
+            never produced as a Reading.
+    """
+    return _parse(
+        text, SensorDataRecord, max_batch, max_payload_bytes, meteorology_species
+    )
 
 
 def parse_metadata_records(
@@ -219,5 +252,9 @@ def parse_metadata_records(
     max_batch: int = DEFAULT_MAX_BATCH,
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
 ) -> ParseResult:
-    """Parse metadata records from JSON text."""
+    """Parse metadata records from JSON text.
+
+    Metadata records carry no `Species`, so the Requirement 3.6 diversion does not
+    apply to them.
+    """
     return _parse(text, SensorMetadataRecord, max_batch, max_payload_bytes)
