@@ -442,21 +442,37 @@ class ScriptedMqttTransport:
 
 
 class ScriptedFeedClient:
-    """Returns a payload configured per polling window."""
+    """Returns a payload configured per polling window.
+
+    Holds no credential, matching the port: the offline suite must be able to drive the pull
+    path without one existing anywhere (Requirement 5.2, §7).
+    """
 
     def __init__(
-        self, payloads: Mapping[tuple[dt.datetime, dt.datetime], bytes] | None = None
+        self,
+        payloads: Mapping[tuple[dt.datetime, dt.datetime], bytes] | None = None,
+        sensors: bytes = b"[]",
     ) -> None:
-        """Hold the per-window payloads."""
+        """Hold the per-window payloads and the sensor-list payload."""
         self._payloads = dict(payloads or {})
+        self._sensors = sensors
         self.calls: list[tuple[dt.datetime, dt.datetime]] = []
+        self.sensor_calls = 0
 
-    def fetch(self, since: dt.datetime, until: dt.datetime) -> bytes:
+    def fetch_data(
+        self, since: dt.datetime, until: dt.datetime, species: frozenset[str]
+    ) -> bytes:
         """Return the configured payload, or an empty JSON array."""
+        del species  # the scripted client keys on the window alone
         self.calls.append((since, until))
         # An empty ARRAY rather than empty bytes: an unscripted window means "no
         # records", which the Parser must be able to accept as a valid payload.
         return self._payloads.get((since, until), b"[]")
+
+    def fetch_sensors(self) -> bytes:
+        """Return the configured sensor-list payload."""
+        self.sensor_calls += 1
+        return self._sensors
 
 
 class LocalAuthenticator:

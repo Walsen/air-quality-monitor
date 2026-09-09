@@ -323,10 +323,23 @@ class MqttTransport(Protocol):
 
 @runtime_checkable
 class FeedClient(Protocol):
-    """Polls an external reference-contract feed."""
+    """Polls an external reference-contract feed.
 
-    def fetch(self, since: dt.datetime, until: dt.datetime) -> bytes:
-        """Return the raw payload covering the half-open [since, until)."""
+    THE CREDENTIAL IS DELIBERATELY ABSENT from this interface. Requirement 5.2 puts it in an
+    `X-API-KEY` header and forbids it reaching any log, response body, or the archive — so it
+    belongs to the ADAPTER that makes the request, never to the poller that drives this port.
+    A poller that cannot obtain the credential cannot log it, which turns §7's rule from a
+    discipline into a structural guarantee.
+    """
+
+    def fetch_data(
+        self, since: dt.datetime, until: dt.datetime, species: frozenset[str]
+    ) -> bytes:
+        """Return the `/SensorData` payload for the half-open [since, until)."""
+        ...
+
+    def fetch_sensors(self) -> bytes:
+        """Return the `/ListSensors` payload for a registry refresh (Req 5.7)."""
         ...
 
 

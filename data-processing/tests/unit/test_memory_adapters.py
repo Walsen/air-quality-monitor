@@ -363,11 +363,24 @@ def test_scripted_mqtt_records_the_subscription() -> None:
 
 def test_scripted_feed_returns_the_configured_payload() -> None:
     feed = ScriptedFeedClient({(_T0, _T0 + dt.timedelta(hours=1)): b"[]"})
-    assert feed.fetch(_T0, _T0 + dt.timedelta(hours=1)) == b"[]"
+    window = feed.fetch_data(_T0, _T0 + dt.timedelta(hours=1), frozenset({"PM25"}))
+    assert window == b"[]"
 
 
 def test_scripted_feed_returns_empty_array_when_unscripted() -> None:
-    assert ScriptedFeedClient().fetch(_T0, _T0) == b"[]"
+    assert ScriptedFeedClient().fetch_data(_T0, _T0, frozenset()) == b"[]"
+
+
+def test_scripted_feed_serves_a_sensor_list() -> None:
+    # Requirement 5.7's /ListSensors, which the original port could not express
+    feed = ScriptedFeedClient(sensors=b'[{"SiteCode": "CB0001"}]')
+    assert feed.fetch_sensors() == b'[{"SiteCode": "CB0001"}]'
+    assert feed.sensor_calls == 1
+
+
+def test_scripted_feed_holds_no_credential() -> None:
+    # Req 5.2 / §7: the port carries none, so the offline suite needs none either
+    assert not [name for name in vars(ScriptedFeedClient()) if "key" in name.lower()]
 
 
 # --- LocalAuthenticator -------------------------------------------------
