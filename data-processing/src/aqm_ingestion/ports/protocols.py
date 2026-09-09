@@ -109,24 +109,50 @@ class MetObservation:
     relative_humidity_pct: float | None = None
 
 
+class PollenCategory(StrEnum):
+    """Requirement 24.7's closed set of per-taxon pollen categories.
+
+    The PROVIDER supplies the category, not a raw count this service classifies. That is not a
+    stylistic choice: the spec defines Breakpoint_Tables for PM2.5 and NO2 in full detail and
+    gives NO pollen thresholds anywhere, and Requirement 24.2 forbids this service deriving or
+    modelling either value. Classifying a count would mean inventing bands the spec withholds.
+    """
+
+    NONE = "none"
+    LOW = "low"
+    MODERATE = "moderate"
+    HIGH = "high"
+    VERY_HIGH = "very_high"
+
+
 @dataclass(frozen=True, slots=True)
 class ForecastResult:
     """An external forecast, with a flag for a degraded answer.
 
     ``degraded`` lets the serving layer disclose that enrichment failed instead of
     presenting a gap as a fact.
+
+    ``provider`` is required by Requirement 24.3, which asks for the provider identifier with
+    EVERY forecast. Without it on the port the requirement could not be expressed at all — the
+    serving layer would have to name a provider it had not been told about.
     """
 
     values: Mapping[str, float]
+    provider: str = ""
     issued_at: dt.datetime | None = None
     degraded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class PollenResult:
-    """External pollen data, with the same degradation disclosure."""
+    """External pollen data, with the same degradation disclosure.
 
-    values: Mapping[str, float]
+    ``values`` maps a taxon to a CATEGORY rather than a count — see PollenCategory for why the
+    provider owns that classification.
+    """
+
+    values: Mapping[str, PollenCategory]
+    provider: str = ""
     issued_at: dt.datetime | None = None
     degraded: bool = False
 

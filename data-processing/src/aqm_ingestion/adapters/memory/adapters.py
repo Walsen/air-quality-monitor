@@ -40,6 +40,7 @@ from aqm_ingestion.ports.protocols import (
     ForecastResult,
     MetObservation,
     NearestSite,
+    PollenCategory,
     PollenResult,
     RegistryEntry,
     RejectionCategory,
@@ -417,12 +418,18 @@ class InMemoryMeteorologyProvider:
 
 
 class InMemoryForecastClient:
-    """Forecast and pollen values configured per rounded coordinate."""
+    """Forecast and pollen values configured per rounded coordinate.
+
+    Requirement 24.9's deterministic local adapter: it invents nothing, so an unconfigured
+    coordinate answers DEGRADED rather than a plausible number.
+    """
+
+    DEFAULT_PROVIDER = "in-memory"
 
     def __init__(self) -> None:
         """Start with nothing configured, so every answer is degraded."""
         self._forecasts: dict[tuple[float, float], Mapping[str, float]] = {}
-        self._pollen: dict[tuple[float, float], Mapping[str, float]] = {}
+        self._pollen: dict[tuple[float, float], Mapping[str, PollenCategory]] = {}
 
     @staticmethod
     def _at(lat: float, lon: float) -> tuple[float, float]:
@@ -433,8 +440,14 @@ class InMemoryForecastClient:
         """Configure the forecast for a coordinate."""
         self._forecasts[self._at(lat, lon)] = values
 
-    def set_pollen(self, lat: float, lon: float, values: Mapping[str, float]) -> None:
-        """Configure the pollen values for a coordinate."""
+    def set_pollen(
+        self, lat: float, lon: float, values: Mapping[str, PollenCategory]
+    ) -> None:
+        """Configure the per-taxon pollen CATEGORIES for a coordinate.
+
+        Categories, not counts: Requirement 24.7 names a closed set and the spec gives no pollen
+        thresholds, so the provider owns that classification (see PollenCategory).
+        """
         self._pollen[self._at(lat, lon)] = values
 
     def forecast(self, lat: float, lon: float) -> ForecastResult:
@@ -442,14 +455,14 @@ class InMemoryForecastClient:
         values = self._forecasts.get(self._at(lat, lon))
         if values is None:
             return ForecastResult(values={}, degraded=True)
-        return ForecastResult(values=values)
+        return ForecastResult(values=values, provider=self.DEFAULT_PROVIDER)
 
     def pollen(self, lat: float, lon: float) -> PollenResult:
-        """Return the configured pollen values, or a DEGRADED empty result."""
+        """Return the configured pollen categories, or a DEGRADED empty result."""
         values = self._pollen.get(self._at(lat, lon))
         if values is None:
             return PollenResult(values={}, degraded=True)
-        return PollenResult(values=values)
+        return PollenResult(values=values, provider=self.DEFAULT_PROVIDER)
 
 
 class ScriptedMqttTransport:
