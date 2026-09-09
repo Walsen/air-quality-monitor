@@ -51,6 +51,12 @@ _SENSITIVE_KEY_MARKERS = (
     # User_Profile fields (health-adjacent; Requirement 18 criterion 7)
     "asthma", "copd", "pregnan", "condition", "age_band", "age-band",
     "home_location", "work_location", "profile", "sensitivit", "medication",
+    # The remaining Requirement 17.2 fields. NOTE the deliberate absence of a bare
+    # "latitude"/"longitude" marker: Requirement 15.9 REQUIRES logging a SITE's position
+    # while Requirement 17.9 forbids logging a USER's, and a key-name redactor cannot tell
+    # the two subjects apart. A user's coordinates are covered by "location" here and, more
+    # robustly, by UserProfile refusing to render its own contents at all.
+    "location", "personal_threshold", "consent", "activity_level",
 )
 
 _RESERVED = set(logging.makeLogRecord({}).__dict__) | {
