@@ -26,7 +26,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    StrictInt,
+    field_validator,
+)
 
 # Case-sensitive enumerations (Requirements 1.2, 2.4).
 SpeciesName = Literal["NO2", "PM25", "NO2Index", "PM25Index"]
@@ -42,6 +49,13 @@ Iso8601Utc = Annotated[str, Field(pattern=_UTC_SECOND_PATTERN)]
 # A signed decimal string with EXACTLY seven fractional digits (Requirement 2.2).
 _LATLON_PATTERN = r"^-?\d+\.\d{7}$"
 LatLonString = Annotated[str, Field(pattern=_LATLON_PATTERN)]
+
+# A JSON number that must ARRIVE as a number. Requirement 3.3 rejects a field
+# whose JSON value type does not match the contract, and lax coercion would let
+# the string "12" through as 12.0. Both strict members are allowed because JSON
+# has only one number type, so an integer is acceptable where the contract says
+# number — but a string is not.
+JsonNumber = StrictInt | StrictFloat
 
 # The species carrying a mass concentration, and the unit they must be in
 # (Requirements 1.6, 1.8). The index species are stored as received and never
@@ -89,9 +103,18 @@ _LONGITUDE_LIMIT = 180.0
 
 
 class _StrictModel(BaseModel):
-    """Rejects unknown fields, so an unexpected key is a rejection not a silent drop."""
+    """Rejects unknown fields, so an unexpected key is a rejection not a silent drop.
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=False)
+    Type strictness is applied PER FIELD rather than model-wide. Requirement 3.3
+    requires rejecting a field whose JSON value type does not match the contract,
+    and pydantic's lax mode would coerce the JSON string ``"12"`` into the number
+    ``12.0`` — a property test caught exactly that. Turning on model-wide strict
+    mode also refuses a JSON object for a nested model and a JSON array for a
+    tuple, which are legitimate STRUCTURAL mappings rather than type mismatches,
+    so the numeric fields carry ``strict=True`` individually instead.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class PointGeometry(_StrictModel):
@@ -120,7 +143,7 @@ class SensorDataRecord(_StrictModel):
     SiteCode: str = Field(min_length=1)  # non-empty, no other format rule (Req 1.9)
     DateTime: Iso8601Utc
     Duration: str = Field(min_length=1)
-    ScaledValue: float  # preserved as received; never rounded here (Req 1.5)
+    ScaledValue: JsonNumber  # preserved as received; never rounded here (Req 1.5)
     RatificationStatus: RatificationStatusName
     SensorContract: str
 
@@ -152,8 +175,8 @@ class SensorMetadataRecord(_StrictModel):
     Longitude: LatLonString
     Borough: str
     SiteClassification: SiteClassificationName
-    SensorHeightAboveGround: float
-    DistanceToKerb: float
+    SensorHeightAboveGround: JsonNumber
+    DistanceToKerb: JsonNumber
     SponsorName: str
     SiteLocationType: str | None
     StartDate: Iso8601Utc
