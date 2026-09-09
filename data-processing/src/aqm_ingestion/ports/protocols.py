@@ -170,12 +170,19 @@ class VerifiedIdentity:
 
 
 class RejectionCategory(StrEnum):
-    """Why a credential was refused, for the auth-rejection counters."""
+    """Why a credential was refused, for the auth-rejection counters.
+
+    ``WRONG_AUDIENCE`` is one of the three conditions Requirement 18.3 names explicitly
+    (unverifiable, expired, issued for a different audience), so the set has to be able to say
+    it — while Requirement 18.3 equally forbids disclosing WHICH applied beyond the category, so
+    the category is all that ever travels.
+    """
 
     MISSING = "missing"
     MALFORMED = "malformed"
     EXPIRED = "expired"
     UNTRUSTED_ISSUER = "untrusted_issuer"
+    WRONG_AUDIENCE = "wrong_audience"
     INVALID_SIGNATURE = "invalid_signature"
 
 
