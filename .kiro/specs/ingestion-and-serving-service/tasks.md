@@ -41,7 +41,9 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
       start, and route context; no `print()`
     - Implement the redaction rule in this one place so no call site can emit a profile field, a bearer
       credential, a resolved secret, or a claim beyond the user identity
-    - _Requirements: 29.1, 29.2, 29.3, 29.4_
+    - Provide the handled-error helper that logs the exception type and stack information so no failure is
+      silent, while never returning either to a client
+    - _Requirements: 29.1, 29.2, 29.3, 29.4, 29.8_
 
   - [ ] 1.3 Implement the metrics and gauge interface
     - Counters for records per transport, quarantines per reason, Readings per Quality_Flag, sites per
@@ -614,8 +616,9 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
     - _Requirements: 14.9, 15.10, 17.11_
 
   - [ ] 27.3 Implement the S3 raw archive adapter
-    - The time-ordered key layout, append-only writes, and byte-identical reads
-    - _Requirements: 16.5, 16.8_
+    - The time-ordered key layout, append-only writes, and byte-identical reads, imposing no expiry of the
+      service's own since archive retention and storage-class transition are deployment concerns
+    - _Requirements: 16.5, 16.8, 16.9_
 
   - [ ] 27.4 Implement the MQTT, feed, forecast, and meteorology adapters
     - Real transports behind the same ports, with credentials resolved only at runtime

@@ -538,9 +538,12 @@ computed, so that the hygroscopic inflation of optical PM2.5 readings does not p
    registered names.
 3. THE Service SHALL implement the default `rh_linear` Calibration_Strategy as
    `corrected = a * reported + b * RH + c`, clamped below at 0, with configurable coefficients whose
-   defaults are `a = 0.524`, `b = -0.0862`, and `c = 5.75` — the shape and default coefficients of the
-   published United States-wide humidity-compensated correction for low-cost optical PM2.5 sensors
-   (FINDINGS SQ5) — and SHALL declare its Calibration_Domain as a reported concentration of 0 to 250
+   defaults are `a = 0.524`, `b = -0.0862`, and `c = 5.75` — the form and published coefficients of the
+   United States-wide humidity-compensated correction derived for a widely deployed class of low-cost
+   optical PM2.5 sensor, adopted here as a documented starting point rather than as a validated fit for
+   this fleet; `docs/research/FINDINGS.md` SQ5 grounds the *need* for an RH-aware correction and the
+   attainable error reduction, not these specific coefficients, so they are configuration rather than a
+   pinned constant — and SHALL declare its Calibration_Domain as a reported concentration of 0 to 250
    µg/m³ and an RH of 20 to 90 percent.
 4. THE Service SHALL resolve the RH value for a Reading from the first available of these three sources,
    in this order: a meteorology channel record for the same `SiteCode` and interval received through the
@@ -596,8 +599,8 @@ between µg/m³ and ppb, so that NO2 sub-indices are correct at the altitude the
    temperature and pressure SHALL return the original value within a relative tolerance of 1e-9.
 5. FOR ALL temperature and pressure pairs, THE Service SHALL produce a conversion factor that is
    strictly increasing in pressure and strictly decreasing in absolute temperature.
-6. THE Service SHALL yield a conversion factor of 1.8806 µg/m³ per ppb, within a relative tolerance of
-   1e-4, at 25 °C and 101,325 Pa, and 1.4219 µg/m³ per ppb, within the same tolerance, at 15 °C and
+6. THE Service SHALL yield a conversion factor of 1.8804 µg/m³ per ppb, within a relative tolerance of
+   1e-4, at 25 °C and 101,325 Pa, and 1.4210 µg/m³ per ppb, within the same tolerance, at 15 °C and
    74,000 Pa, so that the altitude sensitivity the conversion exists to capture is pinned by test.
 7. THE Service SHALL record on every Calibrated_Reading whose Sub_Index required a conversion the
    temperature and pressure used and the source they came from, one of `channel`, `provider`, or
@@ -975,7 +978,7 @@ predictable failure modes, so that my tool call can rely on the shape of what co
           "units": "ug.m-3",
           "qualityFlag": "calibrated",
           "confidence": "high",
-          "subIndex": 63,
+          "subIndex": 68,
           "band": "Moderate",
           "method": "nowcast"
         },
@@ -992,7 +995,7 @@ predictable failure modes, so that my tool call can rely on the shape of what co
           "method": "hourly"
         }
       ],
-      "overallAqi": 63,
+      "overallAqi": 68,
       "band": "Moderate",
       "drivingPollutant": "PM25",
       "confidence": "medium"
@@ -1008,7 +1011,7 @@ predictable failure modes, so that my tool call can rely on the shape of what co
     "thresholdCrossed": true,
     "thresholdSource": "sensitivity_level",
     "crossings": [
-      { "siteCode": "CB0086", "species": "PM25", "subIndex": 63, "threshold": 51 }
+      { "siteCode": "CB0086", "species": "PM25", "subIndex": 68, "threshold": 51 }
     ],
     "pollen": { "grass": "high", "tree": "low", "weed": "moderate" },
     "inhaledDose": null

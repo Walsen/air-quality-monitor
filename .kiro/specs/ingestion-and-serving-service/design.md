@@ -23,7 +23,7 @@ Three properties of the problem shape almost every decision in this document:
    average. Neither can be fed an hourly µg/m³ value directly. The design therefore treats unit
    conversion (Req 9) and NowCast (Req 11) as first-class domain components with their own properties,
    rather than as inline arithmetic. The conversion is parameterized by temperature and pressure because
-   the fleet sits near 2,560 m, where the sea-level factor of 1.8806 µg/m³ per ppb becomes 1.4219 — a
+   the fleet sits near 2,560 m, where the sea-level factor of 1.8804 µg/m³ per ppb becomes 1.4210 — a
    24 percent error in the ppb value, enough to move a reading a whole AQI band.
 
 3. **The guardrails and the auth boundary are structural, not cosmetic.** The response carries
@@ -891,8 +891,8 @@ temperature.
 
 ### Property 15: Conversion factor is pinned at reference conditions
 
-*For all* evaluations, the NO2 conversion factor equals 1.8806 µg/m³ per ppb at 25 °C and 101,325 Pa and
-1.4219 µg/m³ per ppb at 15 °C and 74,000 Pa, each within a relative tolerance of 1e-4.
+*For all* evaluations, the NO2 conversion factor equals 1.8804 µg/m³ per ppb at 25 °C and 101,325 Pa and
+1.4210 µg/m³ per ppb at 15 °C and 74,000 Pa, each within a relative tolerance of 1e-4.
 
 **Validates: Requirements 9.6, 9.2**
 
@@ -1243,7 +1243,7 @@ as properties, because a self-consistent implementation of the wrong table would
 
 - **Breakpoints**: each PM2.5 and NO2 band boundary from Req 10.3 and 10.4 asserted as an exact
   concentration-to-Sub_Index pair, including both ends of every band.
-- **Conversion factors**: 1.8806 µg/m³ per ppb at 25 °C and 101,325 Pa, and 1.4219 at 15 °C and 74,000 Pa
+- **Conversion factors**: 1.8804 µg/m³ per ppb at 25 °C and 101,325 Pa, and 1.4210 at 15 °C and 74,000 Pa
   (Req 9.6).
 - **Escalation points**: 101, 76, and 51 for `standard`, `elevated`, and `high` (Req 22.2), with the
   Orange_Band lower bound of 101 asserted as the default.
