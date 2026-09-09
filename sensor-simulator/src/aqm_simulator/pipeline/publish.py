@@ -148,6 +148,11 @@ class PublishPipeline:
             SensorContract=self._profile.sensor_contract,
         )
 
+    @property
+    def publish_minutes(self) -> int:
+        """The configured Publish_Interval length in minutes."""
+        return self._publish_minutes
+
     def run_interval(
         self, start: dt.datetime, reference_time: dt.datetime
     ) -> list[SensorDataRecord]:
