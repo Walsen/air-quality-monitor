@@ -1,0 +1,66 @@
+# Local runtime stack: the simulator plus a local MQTT broker
+# (Requirement 16.6). Devbox supplies the host toolchain; Compose supplies the
+# runtime dependency the application talks to over the network — the two are
+# complementary, not alternatives (dev-environment steering).
+#
+# Starts with NO AWS credentials present: nothing here mounts ~/.aws or sets an
+# AWS_* variable, so the stack cannot reach an account (Requirement 16.6).
+#
+# No secret is committed (Requirements 16.8, 14.6). The API key comes from the
+# environment or a git-ignored .env.local, and broker X.509 material is generated
+# locally with `just gen-certs` into the git-ignored certs/ tree.
+
+services:
+  broker:
+    image: eclipse-mosquitto:2.0.22
+    container_name: aqm-broker
+    ports:
+      # Bound to loopback only: the broker is for local development, not for
+      # exposure on the host's other interfaces.
+      - "127.0.0.1:1883:1883"
+      - "127.0.0.1:8883:8883"
+    volumes:
+      - ./sensor-simulator/compose/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      # Generated development material only; never committed.
+      - ./sensor-simulator/certs:/mosquitto/certs:ro
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  simulator:
+    build:
+      context: ./sensor-simulator
+      dockerfile: Dockerfile
+    container_name: aqm-simulator
+    depends_on:
+      broker:
+        condition: service_started
+    ports:
+      # Loopback only. The data routes are X-API-KEY gated (Requirement 14.2);
+      # /health is intentionally open (Requirement 14.8).
+      - "127.0.0.1:8000:8000"
+    environment:
+      # Supplied at run time, never baked in or committed (Req 16.8, 14.6).
+      AQM_API_KEY: ${AQM_API_KEY:?set AQM_API_KEY in your shell or .env.local}
+      # Documented defaults, overridable per run (Requirement 15.1).
+      AQM_INTERFACE: ${AQM_INTERFACE:-rest}
+      AQM_SWARM_SIZE: ${AQM_SWARM_SIZE:-50}
+      AQM_PROFILE: ${AQM_PROFILE:-cochabamba}
+      AQM_PUBLISH_MINUTES: ${AQM_PUBLISH_MINUTES:-60}
+      AQM_SEED: ${AQM_SEED:-}
+      AQM_LOG_LEVEL: ${AQM_LOG_LEVEL:-info}
+      # MQTT settings matter only when AQM_INTERFACE selects mqtt.
+      AQM_MQTT_HOST: broker
+      AQM_MQTT_PORT: "8883"
+      AQM_MQTT_CA_PATH: /app/certs/ca.crt
+      AQM_MQTT_CERT_TEMPLATE: /app/certs/{SiteCode}/client.crt
+      AQM_MQTT_KEY_TEMPLATE: /app/certs/{SiteCode}/client.key
+    volumes:
+      # Read-only so the container cannot alter local credential material.
+      - ./sensor-simulator/certs:/app/certs:ro
+    env_file:
+      # Optional and git-ignored; absent by default.
+      - path: ./.env.local
+        required: false

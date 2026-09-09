@@ -117,6 +117,38 @@ def issue_sensor_certificate(
     return certificate, key
 
 
+def issue_server_certificate(
+    hostnames: list[str],
+    ca_certificate: x509.Certificate,
+    ca_key: rsa.RSAPrivateKey,
+    not_before: dt.datetime,
+) -> tuple[x509.Certificate, rsa.RSAPrivateKey]:
+    """Issue the broker's server certificate.
+
+    The Compose broker terminates TLS, so it needs its own leaf signed by the
+    same development CA the publisher validates against (Requirement 13.3).
+    Subject Alternative Names cover every hostname the broker is reached by, so
+    hostname verification succeeds from inside the stack and from the host.
+    """
+    key = rsa.generate_private_key(public_exponent=65537, key_size=_KEY_SIZE)
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(_name(hostnames[0]))
+        .issuer_name(ca_certificate.subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(not_before)
+        .not_valid_after(not_before + dt.timedelta(days=_DEV_VALIDITY_DAYS))
+        .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(h) for h in hostnames]),
+            critical=False,
+        )
+        .sign(ca_key, hashes.SHA256())
+    )
+    return certificate, key
+
+
 def generate(env: dict[str, str] | None = None) -> list[str]:
     """Generate the CA and per-sensor material, returning the SiteCodes covered."""
     environment = env if env is not None else dict(os.environ)
@@ -150,6 +182,15 @@ def generate(env: dict[str, str] | None = None) -> list[str]:
         )
         _write_certificate(certificate, paths.certificate)
         _write_private_key(key, paths.private_key)
+
+    # The Compose broker terminates TLS, so it needs its own leaf from this CA.
+    # 'broker' is its service name inside the stack; localhost covers host access.
+    broker_dir = Path(environment.get("AQM_BROKER_CERT_DIR", "certs/broker"))
+    server_certificate, server_key = issue_server_certificate(
+        ["broker", "localhost"], ca_certificate, ca_key, not_before
+    )
+    _write_certificate(server_certificate, broker_dir / "server.crt")
+    _write_private_key(server_key, broker_dir / "server.key")
 
     return site_codes
 
