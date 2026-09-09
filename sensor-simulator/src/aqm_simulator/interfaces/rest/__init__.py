@@ -32,12 +32,20 @@ from aqm_simulator.interfaces.rest.list_sensors import (
     parse_list_sensors_query,
     select_sensors,
 )
+from aqm_simulator.interfaces.rest.sensor_data import (
+    parse_sensor_data_query,
+    resolve_window,
+    select_records,
+)
+from aqm_simulator.pipeline.driver import backfill
 from aqm_simulator.pipeline.publish import PublishPipeline
 
 _EXEMPT_PATHS = frozenset({"/health", "/docs", "/openapi.json", "/redoc"})
 _GATED_PREFIXES = ("/ListSensors", "/SensorData")
 _MIN_KEY_LENGTH = 16
 _MAX_KEY_LENGTH = 256
+_MIN_RETENTION_DAYS = 1
+_MAX_RETENTION_DAYS = 365
 
 NowFn = Callable[[], dt.datetime]
 
@@ -66,19 +74,26 @@ def build_app(
     pipeline: PublishPipeline,
     api_key: str,
     now: NowFn,
+    retention_days: int = 30,
 ) -> FastAPI:
     """Build the REST application.
 
     ``now`` is the injected simulated-time source, so no handler calls
     ``datetime.now()`` (engineering-practices §2). An absent or empty key is
     refused here rather than at first request, so the process can exit non-zero
-    before accepting any HTTP traffic (Requirement 14.9).
+    before accepting any HTTP traffic (Requirement 14.9). ``retention_days``
+    bounds what /SensorData will serve (Requirement 14.7).
     """
     if not api_key:
         raise ValueError(
             "the REST API key secret is missing: supply a value of "
             f"{_MIN_KEY_LENGTH}-{_MAX_KEY_LENGTH} characters via the environment "
             "or an injected secret"
+        )
+    if not _MIN_RETENTION_DAYS <= retention_days <= _MAX_RETENTION_DAYS:
+        raise ValueError(
+            f"retention window must be between {_MIN_RETENTION_DAYS} and "
+            f"{_MAX_RETENTION_DAYS} simulated days; got {retention_days}"
         )
 
     app = FastAPI(title="Sensor Simulator", docs_url=None, redoc_url=None)
@@ -128,8 +143,27 @@ def build_app(
         )
 
     @app.get("/SensorData")
-    async def sensor_data() -> list[dict[str, object]]:
-        """Placeholder returning an empty array until task 18.3 fills it in."""
-        return []
+    async def sensor_data(request: Request) -> Response:
+        """Sensor_Data_Records for the resolved window (Req 2.10-2.18, 14.7, 14.11)."""
+        try:
+            query = parse_sensor_data_query(dict(request.query_params))
+        except QueryError as error:
+            return _bad_request(error)
+
+        simulated_now = now()
+        start, end = resolve_window(
+            query, simulated_now, pipeline.publish_minutes, retention_days
+        )
+        records = list(
+            backfill(pipeline, start=start, end=end, reference_time=simulated_now)
+        )
+        metadata = [metadata_for(s, pipeline.sensor_contract) for s in pipeline.swarm]
+        selected = select_records(
+            records,
+            query,
+            {m.SiteCode: m.model_dump(mode="json") for m in metadata},
+            {s.site_code: (float(s.latitude), float(s.longitude)) for s in pipeline.swarm},
+        )
+        return JSONResponse(content=[r.model_dump(mode="json") for r in selected])
 
     return app
