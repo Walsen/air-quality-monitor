@@ -113,13 +113,22 @@ def build_tls_context(ca_path: Path, cert_path: Path, key_path: Path) -> ssl.SSL
 
     Chain validation against the configured CA is mandatory, and the client is
     authenticated with a certificate and key used by no other Virtual_Sensor
-    (Requirement 13.3). A missing or unreadable file raises ``OSError``, which
-    the caller reports per affected value (Requirement 13.9).
+    (Requirement 13.3). A chain that cannot be loaded or validated is raised as
+    :class:`MqttConnectionError`, so a validation mismatch takes the same path as
+    any other connection failure rather than surfacing a raw ``ssl`` error
+    (Requirement 13.3, engineering-practices §5). The message names the offending
+    path but never the file's contents, so no key material is disclosed (§7).
     """
-    context = ssl.create_default_context(
-        purpose=ssl.Purpose.SERVER_AUTH, cafile=str(ca_path)
-    )
-    context.verify_mode = ssl.CERT_REQUIRED
-    context.check_hostname = True
-    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    try:
+        context = ssl.create_default_context(
+            purpose=ssl.Purpose.SERVER_AUTH, cafile=str(ca_path)
+        )
+        context.verify_mode = ssl.CERT_REQUIRED
+        context.check_hostname = True
+        context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    except (ssl.SSLError, OSError) as error:
+        raise MqttConnectionError(
+            f"TLS material could not be loaded (ca={ca_path}, cert={cert_path}, "
+            f"key={key_path}): {type(error).__name__}"
+        ) from error
     return context
