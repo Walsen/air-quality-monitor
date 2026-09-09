@@ -9,9 +9,11 @@ requires-python = "==3.12.*"
 # are added in the commit that first needs them, so each arrival is reviewable
 # rather than speculative.
 dependencies = [
+    "boto3==1.43.90",
     "fastapi==0.141.1",
     "httpx==0.28.1",
     "pydantic==2.13.5",
+    "pyjwt==2.13.0",
     "uvicorn[standard]==0.52.4",
 ]
 
@@ -82,3 +84,10 @@ python_version = "3.12"
 strict = true
 files = ["src", "tests"]
 warn_unused_configs = true
+
+# boto3 and botocore ship no type information. The cloud adapters are the only modules that
+# import them, and the PORT signatures they satisfy are fully typed — which is what the shared
+# contract suite checks — so the untyped boundary stops at the adapter.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
