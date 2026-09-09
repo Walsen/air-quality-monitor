@@ -29,6 +29,7 @@ from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.aqi.overall import DEFAULT_SPECIES_PRECEDENCE
 from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
+from aqm_ingestion.observability.logging import get_logger
 from aqm_ingestion.ports.archive_key import derive_archive_id
 from aqm_ingestion.ports.clock import Clock
 from aqm_ingestion.ports.protocols import (
@@ -47,6 +48,9 @@ from aqm_ingestion.ports.protocols import (
 )
 
 _EARTH_RADIUS_KM = 6371.0088
+
+_logger = get_logger("adapters.memory")
+
 _DEFAULT_WINDOW_CAP = 10_000
 
 DEFAULT_RETENTION_DAYS = 90
@@ -235,20 +239,65 @@ class InMemorySensorRegistryStore:
         self._entries: dict[str, RegistryEntry] = {}
 
     def upsert(self, record: SensorMetadataRecord, at: dt.datetime) -> UpsertOutcome:
-        """Register or update a site as of ``at``, reporting what changed."""
+        """Register or update a site as of ``at``, reporting what changed.
+
+        Requirement 15.2 replaces the stored record when any field differs and makes NO
+        WRITE when every field is equal — and "no write" is taken literally, so an
+        identical re-receive leaves ``updated_at`` alone. That is what keeps Requirement
+        15.11 useful: if a no-op advanced the instant, "we re-received identical metadata"
+        would be indistinguishable from "the record actually changed", and a stale registry
+        would stop being detectable.
+        """
         # Activity is decided HERE against the supplied instant (Requirement 2.8)
         # rather than on every read, so the answer cannot drift between callers.
         active = record.EndDate is None or record.EndDate > at.strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         )
-        entry = RegistryEntry(record=record, active=active, updated_at=at)
         existing = self._entries.get(record.SiteCode)
-        self._entries[record.SiteCode] = entry
+
         if existing is None:
+            self._entries[record.SiteCode] = RegistryEntry(
+                record=record, active=active, updated_at=at
+            )
             return UpsertOutcome.CREATED
+
         if existing.record == record and existing.active == active:
-            return UpsertOutcome.UNCHANGED
+            return UpsertOutcome.UNCHANGED  # no write at all
+
+        self._warn_if_moved(existing.record, record)
+        self._entries[record.SiteCode] = RegistryEntry(
+            record=record, active=active, updated_at=at
+        )
         return UpsertOutcome.UPDATED
+
+    @staticmethod
+    def _warn_if_moved(
+        previous: SensorMetadataRecord, incoming: SensorMetadataRecord
+    ) -> None:
+        """Log one warning when a site's position changed (Requirement 15.9).
+
+        A moved site invalidates historical spatial assumptions — every past nearest-N
+        result and every peer comparison was computed against the old position — so this is
+        a warning rather than an info event.
+
+        Compared as TEXT, not as parsed floats. Requirement 2.3 keeps coordinates as
+        strings precisely so they can be compared character-identically; parsing first
+        would treat "51.5074000" and "51.50740" as equal and silently miss a re-published
+        precision change.
+        """
+        if (
+            previous.Latitude == incoming.Latitude
+            and previous.Longitude == incoming.Longitude
+        ):
+            return
+        _logger.warning(
+            "site_position_changed",
+            SiteCode=incoming.SiteCode,
+            previous_latitude=previous.Latitude,
+            previous_longitude=previous.Longitude,
+            latitude=incoming.Latitude,
+            longitude=incoming.Longitude,
+        )
 
     def get(self, site_code: str) -> RegistryEntry | None:
         """Return a site's entry, or None."""
