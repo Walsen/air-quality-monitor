@@ -340,10 +340,19 @@ def test_configured_forecast_is_not_degraded() -> None:
 
 def test_scripted_mqtt_replays_in_order() -> None:
     transport = ScriptedMqttTransport(
-        [("aqm/sensors/CB0001/data", b"1"), ("aqm/sensors/CB0002/data", b"2")]
+        [("aqm/sensors/CB0001/data", b"1", 1), ("aqm/sensors/CB0002/data", b"2", 2)]
     )
     transport.subscribe("aqm/sensors/+/data")
-    assert [payload for _, payload in transport.messages()] == [b"1", b"2"]
+    assert [payload for _topic, payload, _tag in transport.messages()] == [b"1", b"2"]
+
+
+def test_scripted_mqtt_records_acknowledgements() -> None:
+    # Requirement 4.6 needs acknowledgement to be observable, which is why the port carries
+    # a delivery tag and a separate acknowledge call
+    transport = ScriptedMqttTransport([("aqm/sensors/CB0001/data", b"1", 9)])
+    for _topic, _payload, tag in transport.messages():
+        transport.acknowledge(tag)
+    assert transport.acknowledged == [9]
 
 
 def test_scripted_mqtt_records_the_subscription() -> None:

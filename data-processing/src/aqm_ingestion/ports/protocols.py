@@ -295,14 +295,25 @@ class ForecastClient(Protocol):
 
 @runtime_checkable
 class MqttTransport(Protocol):
-    """Delivers pushed records from a broker."""
+    """Delivers pushed records from a broker.
+
+    ``messages`` yields a DELIVERY TAG alongside each payload, and acknowledgement is a
+    separate call, because Requirement 4.6 requires acknowledging only AFTER the archive
+    write succeeds. A port that merely yielded (topic, payload) could not express that at
+    all: there would be nothing to acknowledge and no way to leave a message unacknowledged
+    so the broker redelivers it.
+    """
 
     def subscribe(self, topic_filter: str) -> None:
         """Subscribe to a topic filter."""
         ...
 
-    def messages(self) -> Iterator[tuple[str, bytes]]:
-        """Yield (topic, payload) pairs in arrival order."""
+    def messages(self) -> Iterator[tuple[str, bytes, int]]:
+        """Yield (topic, payload, delivery_tag) triples in arrival order."""
+        ...
+
+    def acknowledge(self, delivery_tag: int) -> None:
+        """Acknowledge one delivered message (Requirement 4.6)."""
         ...
 
     def close(self) -> None:

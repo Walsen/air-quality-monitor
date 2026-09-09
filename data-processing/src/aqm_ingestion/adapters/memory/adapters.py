@@ -415,19 +415,26 @@ class InMemoryForecastClient:
 class ScriptedMqttTransport:
     """Replays a scripted message sequence in order."""
 
-    def __init__(self, messages: Sequence[tuple[str, bytes]] | None = None) -> None:
-        """Hold the sequence to replay and record subscriptions."""
+    def __init__(
+        self, messages: Sequence[tuple[str, bytes, int]] | None = None
+    ) -> None:
+        """Hold the sequence to replay, recording subscriptions and acknowledgements."""
         self._messages = list(messages or [])
         self.subscriptions: list[str] = []
+        self.acknowledged: list[int] = []
         self.closed = False
 
     def subscribe(self, topic_filter: str) -> None:
         """Record the subscription so a test can assert the resolved filter."""
         self.subscriptions.append(topic_filter)
 
-    def messages(self) -> Iterator[tuple[str, bytes]]:
+    def messages(self) -> Iterator[tuple[str, bytes, int]]:
         """Yield the scripted messages in arrival order."""
         yield from self._messages
+
+    def acknowledge(self, delivery_tag: int) -> None:
+        """Record the acknowledgement, so Requirement 4.6 can be asserted."""
+        self.acknowledged.append(delivery_tag)
 
     def close(self) -> None:
         """Mark the transport closed."""

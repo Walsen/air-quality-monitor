@@ -150,6 +150,16 @@ class IngestPipeline:
         self._deps = dependencies
         self._settings = settings
 
+    @property
+    def archive(self) -> RawArchive:
+        """The archive port, for an entry point that must archive before rejecting.
+
+        Requirement 4.3's topic/SiteCode mismatch is detected before the pipeline runs, and
+        Requirement 6.11 still requires the payload to be archived — so the entry point needs
+        the same archive this pipeline writes through, not a second one that could diverge.
+        """
+        return self._deps.archive
+
     def ingest(self, payload: bytes, meta: ArchiveMeta) -> BatchSummary:
         """Run the sequence.
 
