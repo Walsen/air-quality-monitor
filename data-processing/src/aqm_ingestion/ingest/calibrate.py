@@ -49,7 +49,7 @@ _CHANNELS: tuple[str, ...] = get_args(MeteorologyChannel)
 _CONTRACT_SPECIES: frozenset[str] = frozenset(get_args(SpeciesName))
 
 
-class _ObservationSource(Protocol):
+class ObservationSource(Protocol):
     """The one MeteorologyProvider method this stage needs (§1)."""
 
     def observation(self, site_code: str, at: dt.datetime) -> MetObservation | None:
@@ -158,27 +158,46 @@ def channel_observations(
     return tuple(observations)
 
 
+def channel_value(
+    observations: Sequence[ChannelObservation],
+    channel: MeteorologyChannel,
+    site_code: str,
+    interval_start: dt.datetime,
+) -> float | None:
+    """Find one channel's value for a site and interval, or None.
+
+    Shared by the humidity path (Requirement 8.4) and the temperature/pressure path
+    (Requirement 9.3) rather than written once per channel (§1).
+
+    BOTH the site and the interval must match. Borrowing another site's or another
+    hour's meteorology would silently corrupt the result while still reporting it as
+    measurement-backed, which is worse than having no measurement at all.
+    """
+    for observation in observations:
+        if (
+            observation.channel == channel
+            and observation.site_code == site_code
+            and observation.interval_start == interval_start
+        ):
+            return observation.value
+    return None
+
+
 def resolve_humidity(
     *,
     site_code: str,
     interval_start: dt.datetime,
     channel_observations: Sequence[ChannelObservation],
-    provider: _ObservationSource | None,
+    provider: ObservationSource | None,
 ) -> ResolvedHumidity:
     """Resolve RH from the first available of three sources (Requirement 8.4).
 
     Order: a channel record for the SAME site and interval, then the
-    MeteorologyProvider, then nothing. The site and interval must both match —
-    borrowing another site's or another hour's humidity would silently corrupt the
-    correction while still reporting it as calibrated.
+    MeteorologyProvider, then nothing.
     """
-    for observation in channel_observations:
-        if (
-            observation.channel == "rh"
-            and observation.site_code == site_code
-            and observation.interval_start == interval_start
-        ):
-            return ResolvedHumidity(value=observation.value, source="channel")
+    from_channel = channel_value(channel_observations, "rh", site_code, interval_start)
+    if from_channel is not None:
+        return ResolvedHumidity(value=from_channel, source="channel")
 
     if provider is not None:
         observed = provider.observation(site_code, interval_start)
