@@ -36,9 +36,9 @@ _PAYLOAD = b'{"Species":"PM25","ScaledValue":14.27}'
 
 def _meta(**overrides: object) -> ArchiveMeta:
     base = {
-        "site_code": "CB0001",
+        "ingested_at": _T0,
         "transport": "mqtt",
-        "received_at": _T0,
+        "source": "aqm/london/data",
     }
     return ArchiveMeta(**(base | overrides))  # type: ignore[arg-type]
 
@@ -85,8 +85,16 @@ def test_identifier_changes_with_the_payload() -> None:
 
 
 def test_identifier_changes_with_the_instant() -> None:
-    other = _meta(received_at=_T0 + dt.timedelta(seconds=1))
+    other = _meta(ingested_at=_T0 + dt.timedelta(seconds=1))
     assert derive_archive_id(_PAYLOAD, _meta()) != derive_archive_id(_PAYLOAD, other)
+
+
+def test_identifier_changes_with_the_source() -> None:
+    # two brokers delivering identical bytes in the same instant are distinct
+    # archive entries, so the source must feed the derivation
+    assert derive_archive_id(_PAYLOAD, _meta()) != derive_archive_id(
+        _PAYLOAD, _meta(source="aqm/other/data")
+    )
 
 
 def test_identifier_changes_with_the_transport() -> None:
@@ -160,12 +168,30 @@ def test_metadata_carries_no_credential_or_profile_field(meta_field: str) -> Non
 
 
 def test_archive_meta_fields_are_exactly_the_documented_set() -> None:
+    # Req 16.2 names four things to record: the ingestion instant, the transport,
+    # the source topic or request window, and the archive identifier. The
+    # identifier is DERIVED from the other three, so it is the return value rather
+    # than an input field — putting it here would make the derivation circular.
     assert set(ArchiveMeta.__dataclass_fields__) == {
-        "site_code",
+        "ingested_at",
         "transport",
-        "received_at",
-        "content_type",
+        "source",
     }
+
+
+def test_archive_meta_holds_nothing_that_needs_parsing() -> None:
+    # Req 16.1 archives BEFORE parsing, so anything only the payload's contents
+    # could supply — SiteCode above all — cannot be a field here. A payload that
+    # fails to parse must still archive with complete metadata.
+    for parsed_only in ("site_code", "SiteCode", "species", "Species", "date_time"):
+        assert parsed_only not in ArchiveMeta.__dataclass_fields__
+
+
+def test_source_records_the_topic_or_request_window() -> None:
+    # Req 16.2's "source topic or request window" is what lets an archived payload
+    # be traced back to what delivered it
+    meta = _meta(source="aqm/london/CB0001/data")
+    assert meta.source == "aqm/london/CB0001/data"
 
 
 # --- Req 16.7 / 4.6 write failure ---------------------------------------

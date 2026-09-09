@@ -22,12 +22,12 @@ fakes are what the correctness tests observe:
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import math
 from collections.abc import Iterator, Mapping, Sequence
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
+from aqm_ingestion.ports.archive_key import derive_archive_id
 from aqm_ingestion.ports.protocols import (
     ArchiveMeta,
     AuthRejectedError,
@@ -133,13 +133,12 @@ class InMemoryRawArchive:
         self._payloads: dict[str, bytes] = {}
 
     def write(self, payload: bytes, meta: ArchiveMeta) -> str:
-        """Archive a payload byte-for-byte and return its derived id."""
-        digest = hashlib.sha256()
-        digest.update(payload)
-        digest.update(str(meta.site_code).encode("utf-8"))
-        digest.update(meta.transport.encode("utf-8"))
-        digest.update(meta.received_at.isoformat().encode("utf-8"))
-        archive_id = digest.hexdigest()
+        """Archive a payload byte-for-byte and return its derived id.
+
+        The derivation is the SHARED one, so this adapter and the S3 adapter agree
+        on where a replayed payload lands (Requirement 16.8).
+        """
+        archive_id = derive_archive_id(payload, meta)
         self._payloads[archive_id] = payload
         return archive_id
 

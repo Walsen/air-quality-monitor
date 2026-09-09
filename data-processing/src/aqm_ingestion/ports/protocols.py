@@ -73,12 +73,24 @@ class NearestSite:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveMeta:
-    """What the archive records alongside a payload."""
+    """What the archive records alongside a payload (Requirement 16.2).
 
-    site_code: str | None
+    Every field is knowable BEFORE the payload is parsed, which Requirement 16.1
+    demands: archiving precedes parsing, so a payload that fails to parse must
+    still archive with complete metadata. That rules out anything only the
+    contents could supply — a ``SiteCode`` above all.
+
+    The archive identifier is deliberately absent: it is DERIVED from these fields
+    plus the payload, so carrying it here would make the derivation circular. It is
+    the write's return value instead.
+
+    There is no field for a credential or a profile value, which is how
+    Requirement 16.6 is honoured structurally rather than by convention.
+    """
+
+    ingested_at: dt.datetime
     transport: str
-    received_at: dt.datetime
-    content_type: str = "application/json"
+    source: str
 
 
 @dataclass(frozen=True, slots=True)

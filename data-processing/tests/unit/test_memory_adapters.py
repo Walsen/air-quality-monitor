@@ -196,21 +196,21 @@ def test_latest_per_species_honours_not_before() -> None:
 def test_archive_round_trips_bytes_exactly() -> None:
     archive = InMemoryRawArchive()
     payload = b'{"Species":"PM25"}'
-    archive_id = archive.write(payload, ArchiveMeta("CB0001", "mqtt", _T0))
+    archive_id = archive.write(payload, ArchiveMeta(_T0, "mqtt", "aqm/london/data"))
     assert archive.read(archive_id) == payload  # byte-for-byte (Req 1.10)
 
 
 def test_archive_id_is_derived_not_random() -> None:
     # determinism (§2): the same payload and meta must archive to the same id, so a
     # replay does not invent a new identifier
-    meta = ArchiveMeta("CB0001", "mqtt", _T0)
+    meta = ArchiveMeta(_T0, "mqtt", "aqm/london/data")
     first = InMemoryRawArchive().write(b"payload", meta)
     second = InMemoryRawArchive().write(b"payload", meta)
     assert first == second
 
 
 def test_different_payloads_get_different_ids() -> None:
-    meta = ArchiveMeta("CB0001", "mqtt", _T0)
+    meta = ArchiveMeta(_T0, "mqtt", "aqm/london/data")
     archive = InMemoryRawArchive()
     assert archive.write(b"a", meta) != archive.write(b"b", meta)
 

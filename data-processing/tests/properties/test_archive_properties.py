@@ -42,17 +42,15 @@ class _OrderRecordingArchive:
 @given(
     payload=st.binary(min_size=0, max_size=512),
     transport=st.sampled_from(["mqtt", "feed"]),
-    site_code=st.one_of(st.none(), st.text(min_size=1, max_size=10)),
+    source=st.text(min_size=1, max_size=40),
     offset_seconds=st.integers(min_value=0, max_value=10 * 365 * 24 * 3600),
 )
 def test_property_5_archive_precedes_processing_and_round_trips(
-    payload: bytes, transport: str, site_code: str | None, offset_seconds: int
+    payload: bytes, transport: str, source: str, offset_seconds: int
 ) -> None:
     """Feature: ingestion-and-serving-service, Property 5."""
-    received_at = _T0 + dt.timedelta(seconds=offset_seconds)
-    meta = ArchiveMeta(
-        site_code=site_code, transport=transport, received_at=received_at
-    )
+    ingested_at = _T0 + dt.timedelta(seconds=offset_seconds)
+    meta = ArchiveMeta(ingested_at=ingested_at, transport=transport, source=source)
 
     journal: list[str] = []
     archive = _OrderRecordingArchive(journal)
@@ -77,7 +75,7 @@ def test_property_5_archive_precedes_processing_and_round_trips(
     # Req 16.2: the identifier every derived reading will carry is present, and
     # the key locates it in the time-ordered layout
     assert outcome.archive_id
-    assert outcome.key == archive_key(received_at, outcome.archive_id)
+    assert outcome.key == archive_key(ingested_at, outcome.archive_id)
 
 
 @given(
