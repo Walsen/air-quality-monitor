@@ -12,6 +12,7 @@ dependencies = [
     "boto3==1.43.90",
     "fastapi==0.141.1",
     "httpx==0.28.1",
+    "paho-mqtt==2.1.0",
     "pydantic==2.13.5",
     "pyjwt==2.13.0",
     "uvicorn[standard]==0.52.4",
@@ -89,5 +90,5 @@ warn_unused_configs = true
 # import them, and the PORT signatures they satisfy are fully typed — which is what the shared
 # contract suite checks — so the untyped boundary stops at the adapter.
 [[tool.mypy.overrides]]
-module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+module = ["boto3", "boto3.*", "botocore", "botocore.*", "paho", "paho.*"]
 ignore_missing_imports = true

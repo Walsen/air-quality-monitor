@@ -31,6 +31,7 @@ import datetime as dt
 from collections.abc import Callable, Iterator
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from aqm_ingestion.adapters.memory import (
@@ -56,6 +57,8 @@ from aqm_ingestion.ports.archive_key import archive_key, derive_archive_id
 from aqm_ingestion.ports.clock import FixedClock
 from aqm_ingestion.ports.protocols import (
     ArchiveMeta,
+    ForecastClient,
+    MeteorologyProvider,
     ProfileStore,
     RawArchive,
     ReadingsStore,
@@ -561,3 +564,150 @@ def test_the_archive_exposes_only_write_and_read(archive: RawArchive) -> None:
     assert "delete" not in public
     assert "remove" not in public
     assert {"write", "read"} <= public
+
+
+# ======================================================================================
+# ForecastClient — the shared contract (Requirements 24.3, 24.4, 24.7, 24.9)
+# ======================================================================================
+#
+# THIS IS THE MOST VALUABLE PARAMETRISATION IN THE FILE, because the two adapters here differ
+# more than any other pair: the in-memory one answers from a dict, the HTTP one from a network
+# provider. Requirement 24.4's degradation contract is what the enricher above them leans on,
+# and
+# it is the behaviour an HTTP adapter is most likely to get wrong by raising instead. The HTTP
+# adapter runs OFFLINE against a canned transport, so unlike the cloud stores these parameters
+# do
+# not skip — both are exercised on every run.
+
+
+def _memory_forecast_unconfigured() -> ForecastClient:
+    from aqm_ingestion.adapters.memory.adapters import InMemoryForecastClient
+
+    return InMemoryForecastClient()
+
+
+def _http_forecast_unreachable() -> ForecastClient:
+    from aqm_ingestion.adapters.forecast import HttpForecastClient
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    return HttpForecastClient(
+        base_url="https://forecast.invalid",
+        credential="unused-in-this-path",
+        transport=httpx.MockTransport(refuse),
+    )
+
+
+_UNAVAILABLE_FORECASTS = (
+    ("memory", _memory_forecast_unconfigured),
+    ("http", _http_forecast_unreachable),
+)
+
+
+@pytest.fixture(params=_UNAVAILABLE_FORECASTS, ids=lambda entry: entry[0])
+def unavailable_forecast(request: pytest.FixtureRequest) -> Iterator[ForecastClient]:
+    """A ForecastClient that cannot answer, however each adapter fails to."""
+    yield request.param[1]()
+
+
+def test_an_unavailable_forecast_degrades_instead_of_raising(
+    unavailable_forecast: ForecastClient,
+) -> None:
+    # Req 24.4: serve the response WITHOUT forecast values and do NOT fail the request. An
+    # adapter that raised would hand the enricher an exception it has no way to answer, since
+    # the
+    # requirement says the request still succeeds.
+    result = unavailable_forecast.forecast(51.507, -0.128)
+
+    assert result.degraded is True
+    assert result.values == {}
+
+
+def test_an_unavailable_pollen_lookup_degrades_instead_of_raising(
+    unavailable_forecast: ForecastClient,
+) -> None:
+    result = unavailable_forecast.pollen(51.507, -0.128)
+
+    assert result.degraded is True
+    assert result.values == {}
+
+
+def test_a_degraded_forecast_is_repeatable(unavailable_forecast: ForecastClient) -> None:
+    # §2: two calls in the same state give the same answer. A retry counter or a cached failure
+    # inside an adapter would break this, and Req 24.4 gives no licence for either.
+    first = unavailable_forecast.forecast(51.507, -0.128)
+    second = unavailable_forecast.forecast(51.507, -0.128)
+
+    assert first == second
+
+
+def test_every_forecast_adapter_reports_a_provider_when_it_answers() -> None:
+    # Req 24.3: the provider identifier travels with EVERY forecast. Asserted over the ANSWERING
+    # path of both adapters, which needs each configured its own way — so this test builds them
+    # rather than taking the unavailable fixture.
+    from aqm_ingestion.adapters.forecast import HttpForecastClient
+    from aqm_ingestion.adapters.memory.adapters import InMemoryForecastClient
+
+    memory = InMemoryForecastClient()
+    memory.set_forecast(51.507, -0.128, {"PM25": 42.0})
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"values": {"PM25": 42.0}})
+
+    http = HttpForecastClient(
+        base_url="https://forecast.example",
+        credential="unused-in-this-path",
+        transport=httpx.MockTransport(answer),
+    )
+
+    for client in (memory, http):
+        result = client.forecast(51.507, -0.128)
+        assert result.degraded is False
+        assert result.provider, f"{type(client).__name__} answered without naming a provider"
+        assert result.values["PM25"] == 42.0
+
+
+# ======================================================================================
+# MeteorologyProvider — the shared contract (Requirement 8.4)
+# ======================================================================================
+
+
+def _memory_meteorology_empty() -> MeteorologyProvider:
+    from aqm_ingestion.adapters.memory.adapters import InMemoryMeteorologyProvider
+
+    return InMemoryMeteorologyProvider()
+
+
+def _http_meteorology_unreachable() -> MeteorologyProvider:
+    from aqm_ingestion.adapters.forecast import HttpMeteorologyProvider
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    return HttpMeteorologyProvider(
+        base_url="https://met.invalid",
+        credential="unused-in-this-path",
+        transport=httpx.MockTransport(refuse),
+    )
+
+
+_UNAVAILABLE_METEOROLOGY = (
+    ("memory", _memory_meteorology_empty),
+    ("http", _http_meteorology_unreachable),
+)
+
+
+@pytest.fixture(params=_UNAVAILABLE_METEOROLOGY, ids=lambda entry: entry[0])
+def unavailable_meteorology(request: pytest.FixtureRequest) -> Iterator[MeteorologyProvider]:
+    """A MeteorologyProvider that cannot answer."""
+    yield request.param[1]()
+
+
+def test_an_unavailable_observation_returns_none_rather_than_raising(
+    unavailable_meteorology: MeteorologyProvider,
+) -> None:
+    # Req 8.4's precedence ENDS in "no RH at all", and Req 8.6 continues uncalibrated. A raise
+    # would fail an ingestion the requirements say proceeds — so None is the contract, for every
+    # adapter, however it came to have no answer.
+    assert unavailable_meteorology.observation("AQM1", _T0) is None
