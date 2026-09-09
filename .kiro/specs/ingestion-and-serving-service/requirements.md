@@ -854,3 +854,562 @@ change.
    SHALL verify both against one shared behavioral test suite.
 9. THE Service SHALL treat archive retention and storage-class transition as a deployment concern and
    SHALL impose no expiry of its own on archived payloads.
+
+### Requirement 17: User Profile Store and Data Minimization
+
+**User Story:** As a user with a respiratory condition, I want the service to hold the least data needed
+to personalize my advice, so that sharing a health condition does not mean surrendering a clinical
+record.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL access User_Profile values exclusively through the ProfileStore port, keyed by the
+   verified user identity that Requirement 18 establishes.
+2. THE Service SHALL model a User_Profile with exactly these fields: the user identity, the Condition,
+   the Sensitivity_Level, the Personal_Threshold set, the User_Location entries, the optional activity
+   inputs of Requirement 23, the Consent_Record, and the instants the profile was created and last
+   updated.
+3. THE Service SHALL accept Condition as exactly one of `asthma`, `copd`, `allergic_rhinitis`,
+   `asthma_copd_overlap`, or `none_declared`, and Sensitivity_Level as exactly one of `standard`,
+   `elevated`, or `high`.
+4. THE Service SHALL store no free-text clinical field, no medication name, no symptom narrative, no
+   diagnosis code, no date of birth, and no name or contact detail, and SHALL reject a profile write
+   carrying any field outside the set criterion 2 defines, naming the offending field.
+5. THE Service SHALL store each User_Location as a name from the set `home`, `work`, or `commute`
+   together with a latitude and longitude rounded to the configured precision, with default 3 decimal
+   places — approximately 110 m — so that a stored location is precise enough to select nearby sensors
+   and too coarse to identify a dwelling.
+6. THE Service SHALL accept at most the configured number of User_Location entries per profile, with
+   default 5, and SHALL reject a write exceeding it naming the limit.
+7. WHEN a profile is written, THE Service SHALL require a Consent_Record naming the consent version and
+   the instant it was given, and IF it is absent or names a consent version the configuration does not
+   recognize, THEN THE Service SHALL reject the write with HTTP status 400 naming the field and SHALL
+   store nothing.
+8. WHEN a user requests deletion of their profile, THE Service SHALL delete the User_Profile and every
+   Audit_Record field that identifies that user, SHALL retain the de-identified Audit_Record counts, and
+   SHALL respond confirming the deletion.
+9. THE Service SHALL never write any User_Profile field into any log entry, the Raw_Archive, or any
+   error message, and SHALL refer to a profile in diagnostics only by the pseudonymous user identity.
+10. THE Service SHALL never include another user's profile data or Readings selected by another user's
+    locations in any Serving_Response.
+11. THE Service SHALL ship an in-memory ProfileStore adapter for the offline suite and a DynamoDB
+    adapter keyed by the user identity, and SHALL verify both against one shared behavioral test suite.
+12. WHERE no User_Profile exists for a verified user identity, THE Service SHALL serve a response using
+    the configured default profile — Condition `none_declared`, Sensitivity_Level `standard`, no
+    User_Location — and SHALL declare in the response that personalization used defaults, rather than
+    failing the request.
+
+### Requirement 18: Authentication and Per-User Authorization
+
+**User Story:** As the operator of a service holding health-adjacent data, I want every data endpoint
+authenticated and scoped to the calling user, so that there is no anonymous or cross-user access to
+readings or profiles.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL require a bearer credential on every endpoint except the health endpoint of
+   Requirement 19 criterion 10, and SHALL resolve it through the Authenticator port to a verified user
+   identity and claim set before any handler logic runs.
+2. IF the `Authorization` header is absent, is not a bearer credential, or carries an empty credential,
+   THEN THE Service SHALL respond with HTTP status 401 and a JSON body naming the missing or malformed
+   header, and SHALL perform no store access.
+3. IF the Authenticator rejects the credential as unverifiable, expired, or issued for a different
+   audience, THEN THE Service SHALL respond with HTTP status 401 and a JSON body naming the rejection
+   category, and SHALL NOT disclose which of those conditions applied beyond that category.
+4. THE Service SHALL authenticate before validating query parameters, so that an unauthenticated request
+   carrying a malformed parameter receives 401 rather than 400.
+5. IF a verified user identity requests a resource belonging to a different user identity, THEN THE
+   Service SHALL respond with HTTP status 403 and a JSON body naming the scope violation, and SHALL
+   perform no read of that resource.
+6. THE Service SHALL derive the user identity used for every profile read, Readings selection, and
+   Audit_Record entry solely from the verified claim set, and SHALL never take it from a query
+   parameter, a path segment, or a request body field.
+7. THE Service SHALL never include the bearer credential, any claim value beyond the user identity, or
+   any Authenticator internal detail in a response body, a log entry, or an Audit_Record.
+8. THE Service SHALL ship a deterministic local Authenticator adapter for the offline suite that
+   resolves configured test credentials to configured identities, and SHALL treat the production
+   adapter — an Amazon Cognito JWT verifier — as a deployment concern behind the same port.
+9. FOR ALL responses to unauthenticated or out-of-scope requests, THE Service SHALL include no Reading
+   value, no profile value, and no site metadata.
+10. WHEN authentication fails, THE Service SHALL log one structured `warning` naming the route, the
+    rejection category, and no credential material.
+11. THE Service SHALL apply the configured per-identity request rate limit, with default 60 requests per
+    minute, and WHEN it is exceeded, SHALL respond with HTTP status 429 naming the limit and the retry
+    interval.
+
+### Requirement 19: Serving API Contract
+
+**User Story:** As an agent developer, I want a stable, documented, per-user JSON contract with
+predictable failure modes, so that my tool call can rely on the shape of what comes back.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL expose `GET /v1/air-quality/me`, returning the Serving_Response for the verified
+   user built from their User_Profile, the current Readings for their nearest sites, the personalization
+   of Requirements 20 through 23, the enrichment of Requirement 24, and the Guardrail_Envelope of
+   Requirement 25.
+2. THE Service SHALL structure the `GET /v1/air-quality/me` response body with exactly these top-level
+   members: `user`, `generatedAt`, `locations`, `nearestSensors`, `personalized`, `forecast`, `basis`,
+   `advisoryScope`, `emergencyGuidance`, and `disclaimer`, shaped as follows.
+
+```json
+{
+  "user": "u_123",
+  "generatedAt": "2026-09-08T01:00:00Z",
+  "locations": [
+    { "name": "home", "lat": -17.394, "lon": -66.157 }
+  ],
+  "nearestSensors": [
+    {
+      "siteCode": "CB0086",
+      "siteName": "Central Primary School",
+      "siteClassification": "Urban Background",
+      "locationName": "home",
+      "distanceKm": 0.4,
+      "asOf": "2026-09-08T00:00:00Z",
+      "measurements": [
+        {
+          "species": "PM25",
+          "reportedValue": 24.1,
+          "correctedValue": 18.2,
+          "units": "ug.m-3",
+          "qualityFlag": "calibrated",
+          "confidence": "high",
+          "subIndex": 63,
+          "band": "Moderate",
+          "method": "nowcast"
+        },
+        {
+          "species": "NO2",
+          "reportedValue": 41.0,
+          "correctedValue": 41.0,
+          "units": "ug.m-3",
+          "mixingRatioPpb": 28,
+          "qualityFlag": "calibrated",
+          "confidence": "medium",
+          "subIndex": 26,
+          "band": "Good",
+          "method": "hourly"
+        }
+      ],
+      "overallAqi": 63,
+      "band": "Moderate",
+      "drivingPollutant": "PM25",
+      "confidence": "medium"
+    }
+  ],
+  "personalized": {
+    "condition": "asthma",
+    "sensitivity": "high",
+    "usedDefaultProfile": false,
+    "weightedFocus": ["PM25", "NO2"],
+    "unavailableWeightedSpecies": ["O3"],
+    "escalationSubIndex": 51,
+    "thresholdCrossed": true,
+    "thresholdSource": "sensitivity_level",
+    "crossings": [
+      { "siteCode": "CB0086", "species": "PM25", "subIndex": 63, "threshold": 51 }
+    ],
+    "pollen": { "grass": "high", "tree": "low", "weed": "moderate" },
+    "inhaledDose": null
+  },
+  "forecast": {
+    "tomorrowAqi": 88,
+    "trend": "rising",
+    "source": "fake-local",
+    "retrievedAt": "2026-09-08T00:45:00Z",
+    "degraded": false
+  },
+  "basis": {
+    "breakpointTable": "epa-2024-05-06",
+    "calibrationStrategies": { "PM25": "rh_linear", "NO2": "identity" },
+    "humiditySource": "provider",
+    "conversionSource": "default",
+    "nowcast": { "windowHours": 12, "hoursAvailable": 12, "weightFactor": 0.72 },
+    "records": [
+      { "siteCode": "CB0086", "species": "PM25", "dateTime": "2026-09-08T00:00:00Z", "duration": "PT1H" }
+    ]
+  },
+  "advisoryScope": "exposure-reduction",
+  "emergencyGuidance": "Severe breathlessness, a reliever that is not working, or blue lips are an emergency — contact emergency services immediately.",
+  "disclaimer": "Exposure guidance only — not medical advice. Follow the action plan your clinician gave you."
+}
+```
+
+3. THE Service SHALL expose `GET /v1/air-quality/history` accepting `siteCode`, an optional `species`,
+   `startTime`, and `endTime`, returning the Readings in the requested half-open window ordered by
+   ascending interval start, each carrying its corrected value, Quality_Flag, Confidence, Sub_Index, and
+   Band, together with the Guardrail_Envelope.
+4. THE Service SHALL expose `GET /v1/profile/me` returning the verified user's User_Profile, and
+   `PUT /v1/profile/me` replacing it, validating the body against Requirement 17 and returning the
+   stored profile.
+5. THE Service SHALL expose `DELETE /v1/profile/me` performing the deletion of Requirement 17
+   criterion 8.
+6. IF a request supplies `startTime` later than `endTime`, either of them unparseable as an ISO-8601
+   instant, one of them without the other, or a `species` outside the permitted set, THEN THE Service
+   SHALL respond with HTTP status 400 and a JSON body naming each offending parameter and its permitted
+   form or values, and SHALL include no Reading in the response.
+7. IF a requested `siteCode` is absent from the Sensor_Registry, THEN THE Service SHALL respond with
+   HTTP status 404 and a JSON body naming the unknown `siteCode`.
+8. FOR ALL requests, THE Service SHALL never respond with HTTP status 500 because of malformed,
+   out-of-range, or unexpected request input; every such failure SHALL map to its documented 400, 401,
+   403, 404, or 429 response.
+9. THE Service SHALL bound the history window to the configured maximum span, with default 30 days, and
+   IF a request exceeds it, THEN THE Service SHALL respond with HTTP status 400 naming the requested
+   span and the maximum.
+10. THE Service SHALL expose an unauthenticated `GET /health` returning the service status, the resolved
+    Breakpoint_Table identifier, and the resolved Calibration_Strategy names, and SHALL include in it no
+    Reading, no profile data, and no credential.
+11. THE Service SHALL respond to `GET /v1/air-quality/me` within the configured latency budget, with
+    default 2 seconds, for a User_Profile of up to 5 User_Location entries against a registry of up to
+    500 sites.
+12. FOR ALL responses carrying a Reading value, THE Service SHALL include the `basis` member and the
+    Guardrail_Envelope members, and SHALL omit no member that criterion 2 declares, emitting `null` for
+    a member whose value is unavailable rather than dropping the key.
+13. THE Service SHALL return every timestamp as an ISO-8601 UTC instant at whole-second precision ending
+    in `Z`.
+
+### Requirement 20: Geographic Personalization
+
+**User Story:** As a user, I want the response built from the sensors nearest the places I actually
+spend time, so that the readings reflect my exposure rather than a city average.
+
+#### Acceptance Criteria
+
+1. WHEN building a Serving_Response, THE Service SHALL resolve, for each User_Location in the profile,
+   the N nearest active sites through the SensorRegistryStore, with N configurable and default 3.
+2. THE Service SHALL apply the configured maximum selection radius, with default 10 km, and SHALL
+   include a site whose distance equals the radius.
+3. THE Service SHALL report each selected site's distance in kilometres rounded to the configured
+   precision, with default 2 decimal places, and the name of the User_Location it was selected for.
+4. WHERE one site is nearest to two or more User_Location entries, THE Service SHALL include it once and
+   SHALL name every User_Location it serves.
+5. WHERE a User_Location has no active site inside the maximum selection radius, THE Service SHALL
+   include no site for it and SHALL declare that in the response rather than widening the radius
+   silently.
+6. WHERE the User_Profile has no User_Location entry, THE Service SHALL apply the configured fallback
+   selection, with default the N nearest active sites to the configured default geographic centre, and
+   SHALL declare that the fallback was used.
+7. FOR ALL selections, THE Service SHALL order the sites of one User_Location by ascending distance,
+   resolving ties by ascending `SiteCode`.
+8. THE Service SHALL select for each site only Readings whose interval start is within the configured
+   freshness window of the current instant from the Clock, with default 3 hours, and SHALL report the
+   interval start as `asOf` so staleness is visible.
+9. WHERE a selected site has no Reading inside the freshness window, THE Service SHALL include the site
+   with an empty measurement set and SHALL report no Overall_AQI for it, rather than reporting an older
+   value as current.
+10. THE Service SHALL derive every distance from the stored `Latitude` and `Longitude` of the
+    Sensor_Metadata_Record and the reduced-precision User_Location coordinates, using the great-circle
+    computation of Requirement 15 criterion 4.
+
+### Requirement 21: Condition Weighting
+
+**User Story:** As a user with a specific respiratory condition, I want the pollutants that matter for my
+condition foregrounded, so that the advice addresses my actual triggers.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL select a Condition_Weighting by the User_Profile's Condition from a registry, so
+   that adding a condition is a new registry entry rather than a change to existing logic.
+2. THE Service SHALL define the default weighting map as: `asthma` to the ordered species `PM25`, `O3`,
+   `NO2` with pollen relevant; `copd` to `NO2`, `O3`, `PM25` with pollen not relevant;
+   `allergic_rhinitis` to `PM25`, `NO2` with pollen relevant and primary; `asthma_copd_overlap` to
+   `NO2`, `PM25`, `O3` with pollen relevant; and `none_declared` to `PM25`, `NO2` with pollen not
+   relevant — grounded in the finding that NO2 and O3 are the strongest gaseous drivers of COPD
+   exacerbation while PM2.5 and aeroallergens dominate allergic asthma and rhinitis
+   (`docs/research/FINDINGS.md`, SQ3 and cycle 7).
+3. THE Service SHALL compute the Weighted_Focus as the weighting's ordered species restricted to those
+   for which the response carries a Sub_Index, preserving the weighting's order.
+4. THE Service SHALL report in `unavailableWeightedSpecies` every species the weighting names for which
+   the response carries no Sub_Index, so that the absence of a weighted pollutant is explicit rather
+   than invisible.
+5. THE Service SHALL never substitute a proxy species for an unavailable weighted species and SHALL
+   never infer a value for one.
+6. WHERE a Condition_Weighting marks pollen relevant, THE Service SHALL include the pollen enrichment of
+   Requirement 24 in the response when it is available, and SHALL declare it unavailable when it is not.
+7. THE Service SHALL order the measurements of each site in the response by the Weighted_Focus order
+   first and the configured species precedence second, so the pollutant that matters most to the user
+   appears first.
+8. THE Service SHALL compute the same Weighted_Focus for the same Condition and available species on
+   every evaluation.
+9. THE Service SHALL apply Condition_Weighting only to ordering, emphasis, and pollen relevance, and
+   SHALL NOT let it alter any Sub_Index, Overall_AQI, Band, or corrected value.
+
+### Requirement 22: Personal Thresholds and Escalation
+
+**User Story:** As a sensitive user, I want to be told when conditions cross my own trigger point rather
+than a national average one, so that a warning arrives while it is still actionable for me.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL determine an effective escalation Sub_Index for the user as the first available of:
+   a Personal_Threshold for the species, the Sensitivity_Level mapping of criterion 2, and the
+   Orange_Band lower bound of 101.
+2. THE Service SHALL define the default Sensitivity_Level mapping to escalation Sub_Index as `standard`
+   to 101, `elevated` to 76, and `high` to 51, so that a respiratory user escalates at the Orange_Band
+   or earlier rather than at the public `Unhealthy` threshold of 151
+   (`docs/research/FINDINGS.md`, SQ1).
+3. THE Service SHALL report a Threshold_Crossing for a site and species WHEN that species' Sub_Index at
+   that site is greater than or equal to the effective escalation Sub_Index, treating equality as a
+   crossing.
+4. THE Service SHALL accept a Personal_Threshold as either a Sub_Index value from 1 to 500 or a
+   concentration with its species and unit, and IF a supplied value falls outside those ranges or names
+   a species the Breakpoint_Table does not define, THEN THE Service SHALL reject the profile write with
+   HTTP status 400 naming the offending value.
+5. WHERE a Personal_Threshold is expressed as a concentration, THE Service SHALL convert it to a
+   Sub_Index using the same Breakpoint_Table the response uses, so that thresholds and reported values
+   are comparable.
+6. THE Service SHALL report `thresholdCrossed` as true WHEN one or more Threshold_Crossing entries
+   exist, SHALL list every crossing with its site, species, Sub_Index, and the threshold it crossed, and
+   SHALL report `thresholdSource` as one of `personal_threshold`, `sensitivity_level`, or
+   `default_orange_band`.
+7. FOR ALL Sub_Index and threshold pairs, THE Service SHALL report a crossing if and only if the
+   Sub_Index is greater than or equal to the threshold.
+8. THE Service SHALL never escalate on a value whose Confidence is `low` without reporting that
+   Confidence alongside the crossing, so that a crossing driven by an uncalibrated or suspect reading is
+   distinguishable from a confident one.
+9. THE Service SHALL report the effective escalation Sub_Index in the response, so the basis of a
+   crossing is reviewable.
+10. THE Service SHALL compute the same crossings for the same Sub_Index values, profile, and
+    configuration on every evaluation.
+
+### Requirement 23: Inhaled Dose Estimation
+
+**User Story:** As an active user, I want exposure expressed as what I actually breathed in, so that a
+run in moderate air is not treated as equivalent to resting in the same air.
+
+#### Acceptance Criteria
+
+1. WHERE the User_Profile supplies the activity inputs — an activity level and a duration — THE Service
+   SHALL compute an Inhaled_Dose per species as
+   `dose_ug = corrected_concentration_ug_m3 * breathing_rate_m3_per_h * duration_h` and SHALL report it
+   with its unit.
+2. THE Service SHALL accept an activity level from the set `rest`, `light`, `moderate`, or `vigorous`,
+   and SHALL map each to a configurable breathing rate in m³/h whose defaults are 0.5, 1.0, 2.0, and
+   3.2 respectively.
+3. WHERE the User_Profile supplies no activity inputs, THE Service SHALL report `inhaledDose` as `null`
+   and SHALL NOT assume an activity level, because an assumed dose is not a measured one.
+4. THE Service SHALL compute the Inhaled_Dose from the corrected concentration, never from the reported
+   value and never from a Sub_Index, and SHALL name in the Basis the concentration and breathing rate
+   used.
+5. FOR ALL inputs, THE Service SHALL produce an Inhaled_Dose that is non-negative, is zero when the
+   duration is zero, and is strictly increasing in each of concentration, breathing rate, and duration
+   while the others are held positive and constant.
+6. THE Service SHALL accept a duration from greater than 0 up to the configured maximum, with default 24
+   hours, and IF a supplied duration falls outside that range, THEN THE Service SHALL reject the profile
+   write with HTTP status 400 naming the value and the range.
+7. THE Service SHALL report the Inhaled_Dose alongside the Confidence of the concentration it was
+   derived from, and SHALL cap the dose's Confidence at that value.
+8. THE Service SHALL frame the Inhaled_Dose as an exposure quantity only and SHALL attach to it no
+   clinical interpretation, consistent with Requirement 25.
+
+### Requirement 24: Forecast and Pollen Enrichment
+
+**User Story:** As an agent developer, I want next-day AQI and pollen attached to the response, so that I
+can warn the user before conditions worsen rather than after.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL retrieve the next-day AQI forecast and the current pollen outlook for a user's
+   primary User_Location through the ForecastClient port, and SHALL attach them to the Serving_Response.
+2. THE Service SHALL treat the ForecastClient as the sole source of forecast and pollen values and SHALL
+   NOT derive, model, or extrapolate either from stored Readings, consistent with the finding that this
+   service's forecasting value is fusion rather than prediction (`docs/research/FINDINGS.md`, cycle 8).
+3. THE Service SHALL report with every forecast the provider identifier and the instant the value was
+   retrieved.
+4. IF the ForecastClient fails, times out after the configured timeout with default 2 seconds, or
+   returns an unusable body, THEN THE Service SHALL serve the response without forecast values, SHALL
+   set `degraded` to true, SHALL log one `warning` naming the failure kind, and SHALL NOT fail the
+   request, because current-conditions advice remains useful without a forecast.
+5. THE Service SHALL cache forecast and pollen values for the configured time-to-live, with default 60
+   minutes, keyed by the rounded User_Location coordinates, and SHALL serve a cached value within its
+   time-to-live rather than issuing a new request.
+6. THE Service SHALL report the forecast `trend` as one of `rising`, `steady`, or `falling`, derived by
+   comparing the forecast AQI to the current Overall_AQI against the configured band width, with default
+   5 index points.
+7. THE Service SHALL report the pollen outlook as a per-taxon category from the set `none`, `low`,
+   `moderate`, `high`, or `very_high`, and SHALL include it only when the Condition_Weighting marks
+   pollen relevant.
+8. THE Service SHALL never pass a User_Profile field other than the rounded coordinates of the primary
+   User_Location to the ForecastClient, and SHALL never pass the Condition or the user identity.
+9. THE Service SHALL ship a deterministic local ForecastClient adapter for the offline suite, and SHALL
+   treat provider selection and credentials as a deployment concern behind the same port.
+10. THE Service SHALL resolve any ForecastClient credential only from the environment or a
+    runtime-supplied path and SHALL never log it or include it in a response.
+
+### Requirement 25: Non-Diagnostic Guardrails and Audit Trail
+
+**User Story:** As the operator of a health-adjacent advisory service, I want the non-diagnostic
+framing, the transparency of basis, and the audit trail enforced by the API rather than left to the
+agent, so that the boundary that keeps this a general-wellness tool cannot be bypassed downstream.
+
+#### Acceptance Criteria
+
+1. FOR ALL responses carrying any Reading, Sub_Index, threshold, or dose value, THE Service SHALL include
+   the Guardrail_Envelope: a non-empty `disclaimer`, an `advisoryScope` of exactly
+   `exposure-reduction`, and a non-empty `emergencyGuidance`.
+2. THE Service SHALL emit an `emergencyGuidance` value that directs the reader to emergency services for
+   red-flag respiratory symptoms — severe breathlessness, a reliever that is not working, or blue lips —
+   consistent with `docs/research/FINDINGS.md` cycle 6.
+3. THE Service SHALL emit a `disclaimer` value that states the output is exposure guidance rather than
+   medical advice and that defers to the clinician's action plan.
+4. THE Service SHALL never emit a diagnosis, a statement that the user is experiencing an exacerbation
+   or attack, a medication name, a dose, a dosing schedule, or an instruction to start, stop, or change
+   any treatment.
+5. FOR ALL responses, THE Service SHALL populate the `basis` member with the Breakpoint_Table
+   identifier, the Calibration_Strategy per species, the RH source, the conversion source, the NowCast
+   window and coverage, and the identifying fields of every contributing Reading, so that every reported
+   value is independently reviewable (`docs/research/FINDINGS.md`, cycle 6 transparency requirement).
+6. THE Service SHALL never present a Reading as reference-grade and SHALL always accompany a value with
+   its Quality_Flag and Confidence per Requirement 13 criterion 10.
+7. WHEN a Serving_Response is returned, THE Service SHALL append one Audit_Record naming the verified
+   user identity, the instant, the route, the Breakpoint_Table identifier, the Calibration_Strategy set,
+   whether a Threshold_Crossing was reported, and the identifying fields of the contributing Readings.
+8. THE Service SHALL store in an Audit_Record no Condition, no Sensitivity_Level, no Personal_Threshold
+   value, no User_Location coordinate, and no forecast or pollen value, so that the audit trail does not
+   become a second copy of the health-adjacent data.
+9. THE Audit_Record store SHALL be append-only within the Service, and THE Service SHALL retain
+   Audit_Record entries for the configured period, with default 365 days.
+10. THE Service SHALL take no autonomous action on a Threshold_Crossing beyond reporting it in the
+    response and the audit trail — no notification, no message, and no external call.
+11. FOR ALL Serving_Response documents, THE Service SHALL produce a body containing none of the
+    configured forbidden-phrase patterns, whose defaults cover diagnosis and dosing language, and SHALL
+    fail the request with HTTP status 500 and log one `error` if a response would violate this, because
+    emitting a guardrail-violating body is worse than emitting none.
+12. THE Service SHALL apply criteria 1 through 6 to every data-bearing endpoint of Requirement 19,
+    including the history endpoint, not only the primary per-user endpoint.
+
+### Requirement 26: Configuration
+
+**User Story:** As a Service 2 operator, I want configuration validated completely before anything
+starts, so that a misconfigured deployment fails immediately and visibly rather than serving wrong
+numbers.
+
+#### Acceptance Criteria
+
+1. THE Config_Loader SHALL resolve configuration from a file and from environment variables, with the
+   environment taking precedence over the file and the file over the built-in defaults, and SHALL log
+   the resolved non-secret configuration once at startup.
+2. THE Config_Loader SHALL validate every resolved value before the Service opens a listener, subscribes
+   to a topic, or issues a store call.
+3. THE Config_Loader SHALL NOT stop at the first invalid value: it SHALL complete validation of all
+   values, write one single-line JSON message per invalid value naming the value and the constraint it
+   violated, exit with a non-zero status, and never half-start.
+4. IF a configuration key outside the recognized set is supplied, THEN THE Config_Loader SHALL reject it
+   naming the key and SHALL list the recognized keys in the same category.
+5. THE Config_Loader SHALL validate that the selected Breakpoint_Table identifier, every
+   Calibration_Strategy name, the Condition_Weighting entries, the ReadingsStore, SensorRegistryStore,
+   RawArchive, ProfileStore, ForecastClient, MeteorologyProvider, and Authenticator adapter names all
+   resolve in their registries, naming the supplied value and the registered names when one does not.
+6. THE Config_Loader SHALL validate that the Retention_Window, the NowCast_Window, the freshness window,
+   the maximum history span, the quarantine retention, and the Audit_Record retention are each positive
+   durations, and that the Retention_Window is greater than or equal to the maximum history span.
+7. THE Config_Loader SHALL validate that every numeric bound pair has a minimum strictly less than its
+   maximum, and that every count, radius, and limit is positive.
+8. IF a secret-bearing value required by an enabled interface — the feed credential, a store endpoint
+   credential, or a ForecastClient credential — cannot be resolved, THEN THE Config_Loader SHALL write
+   one message per unresolved value naming the configuration value and never the secret itself, and
+   SHALL exit non-zero.
+9. IF the configuration file is unreadable or unparseable, THEN THE Config_Loader SHALL name the path and
+   the failure kind, exit non-zero, and SHALL NOT fall back to defaults.
+10. THE Config_Loader SHALL validate that at least one interface — push ingestion, pull ingestion, or the
+    serving API — is enabled, and SHALL reject a configuration enabling none.
+11. THE Config_Loader SHALL never write a resolved secret value to any log entry or error message.
+
+### Requirement 27: Determinism and Time Injection
+
+**User Story:** As a Service 2 developer, I want every time and ordering dependency injected, so that
+processing and serving are reproducible and testable without waiting on a real clock.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL obtain the current instant exclusively from the injected Clock, and no domain
+   component SHALL read the wall clock directly.
+2. FOR ALL identical inputs — the same stored Readings, the same User_Profile, the same forecast values,
+   the same configuration, and the same Clock instant — THE Service SHALL produce a byte-identical
+   Serving_Response.
+3. FOR ALL identical inputs, THE Service SHALL produce identical Calibrated_Reading values from
+   ingestion, including the corrected value, Quality_Flag, Confidence, Sub_Index, Band, and
+   Driving_Pollutant.
+4. THE Service SHALL apply a defined order to every iteration whose result reaches a response or a
+   stored value — sites by the ordering of Requirement 20 criterion 7, species by the ordering of
+   Requirement 21 criterion 7, Readings by ascending interval start — and SHALL rely on no set iteration
+   order and no incidental mapping order.
+5. THE Service SHALL use no source of randomness in any computation whose result reaches a stored
+   Reading or a Serving_Response; WHERE randomness is needed for retry jitter, it SHALL be confined to
+   transport scheduling and SHALL be injected.
+6. THE Service SHALL derive every generated identifier that reaches stored data — the archive identifier
+   in particular — from injected inputs rather than from an ambient source, so that a replay produces
+   the same identifiers.
+7. FOR ALL ingestion of one identical ordered payload sequence, THE Service SHALL produce an identical
+   final ReadingsStore state regardless of whether it was ingested through the push path or the pull
+   path.
+8. THE Service SHALL express every internal instant as a timezone-aware UTC value and SHALL perform no
+   local-time conversion outside presentation of a configured display timezone.
+
+### Requirement 28: Project Scaffolding and Local Development
+
+**User Story:** As a contributor, I want one documented command surface and a suite that passes offline,
+so that I can develop and verify this service without cloud access.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL live in `data-processing/` with its package at `data-processing/src/aqm_ingestion/`
+   and its tests in a sibling `tests/` tree divided into `unit/`, `properties/`, and `integration/`.
+2. THE Service SHALL declare its own `pyproject.toml` naming Python 3.12 and pinning every direct
+   dependency to one exact version, with its resolved `uv.lock` committed.
+3. THE Service SHALL import no module from another service directory in the monorepo, keeping its record
+   contract copy independent per assumption A4.
+4. THE Service SHALL expose its full test suite behind one documented command, which SHALL exit zero only
+   if every test passes.
+5. THE full test suite SHALL pass with no AWS credentials present and no network access beyond
+   localhost, exercising the in-memory or local adapter for every port.
+6. THE Service SHALL mark every check that requires a container engine so that the offline suite excludes
+   it and a separate command runs it, and SHALL keep those checks free of any dependency on cloud
+   credentials.
+7. THE Service SHALL provide `just` recipes for the test, lint, typecheck, local-run, and local-stack
+   commands, so that a contributor and a pipeline invoke the same code path.
+8. THE Service SHALL provide a Docker Compose definition standing up the service together with a local
+   MQTT broker, and a local store adapter sufficient to exercise the DynamoDB and S3 adapters without a
+   cloud account.
+9. THE Service SHALL commit no secret: every credential SHALL be supplied at runtime through the
+   environment or a runtime-supplied path, and the repository SHALL ignore any generated credential
+   tree.
+10. THE Service SHALL provide one shared behavioral test suite per port, executed against every adapter
+    of that port, per Requirements 14, 15, 16, and 17.
+11. THE Service SHALL implement each correctness property named in the design document as exactly one
+    property-based test running at least 100 examples.
+
+### Requirement 29: Observability
+
+**User Story:** As a Service 2 operator, I want structured logs and data-quality counters, so that I can
+tell a healthy pipeline from a degrading one without reading raw payloads.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL emit every log event as one single-line JSON object to stdout, configured once at
+   startup, and SHALL never use `print` or emit non-JSON text to stdout.
+2. THE Service SHALL include on every log event the ISO-8601 UTC instant, the level, the event name,
+   and, where the event concerns one, the `SiteCode`, the `Species`, the record interval start, and the
+   route.
+3. THE Service SHALL use `DEBUG` for developer detail, `INFO` for operational events including ingestion
+   summaries, `WARNING` for recoverable conditions including quarantine, extrapolated calibration, fault
+   flags, dedup conflicts, and forecast degradation, `ERROR` for handled failures including archive
+   write failure and poll failure, and `CRITICAL` for unrecoverable ones.
+4. THE Service SHALL never log a resolved secret, a bearer credential, an Authenticator claim beyond the
+   user identity, or any User_Profile field, per Requirement 17 criterion 9 and Requirement 18
+   criterion 7.
+5. WHEN an ingestion batch completes, THE Service SHALL emit one summary event naming the counts of
+   records received, accepted, deduplicated, and quarantined, the count per Quality_Flag, and the
+   elapsed duration.
+6. THE Service SHALL expose counters for records ingested per transport, records quarantined per
+   rejection reason, Readings per Quality_Flag, sites per fault category, dedup conflicts, forecast
+   degradations, authentication rejections per category, and responses served per route.
+7. THE Service SHALL expose the age of the most recent accepted Reading per site as a gauge, so that a
+   silent upstream is detectable.
+8. THE Service SHALL log every handled error, so that no failure is silent, and SHALL include the
+   exception type and stack information in the log entry while never returning it to a client.
+9. IF the configured log level is outside the recognized set, THEN THE Config_Loader SHALL reject it
+   naming the supplied value and the permitted values.
+10. THE Service SHALL treat metric transport and alarm definition as a deployment concern, exposing the
+    counters and gauges through one internal interface that a deployment adapter publishes.
