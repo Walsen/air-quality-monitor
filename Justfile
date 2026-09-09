@@ -35,6 +35,22 @@ fmt:
 typecheck:
     cd {{sim_dir}} && uv run mypy
 
+# Run the simulator in real-time mode (REST interface by default).
+# AQM_API_KEY must be supplied at runtime; never commit it.
+run:
+    cd {{sim_dir}} && uv run python -m aqm_simulator.cli
+
+# Generate historical records without waiting on wall-clock time.
+# Example: just backfill 2026-07-01T00:00:00Z 2026-07-02T00:00:00Z
+backfill start end:
+    cd {{sim_dir}} && AQM_TIME_MODE=backfill AQM_BACKFILL_START={{start}} \
+        AQM_BACKFILL_END={{end}} uv run python -m aqm_simulator.cli
+
+# Generate development X.509 material for every sensor in the configured swarm.
+# All generated material is git-ignored and must never be committed.
+gen-certs:
+    cd {{sim_dir}} && uv run python scripts/gen_dev_certs.py
+
 # Start the local Compose stack (simulator + local MQTT broker).
 up:
     {{docker}} compose up --build
