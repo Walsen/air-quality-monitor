@@ -1,0 +1,81 @@
+# The ingestion-and-serving local stack (Requirement 28.8).
+#
+# Stands up the service together with a local MQTT broker and a local store standing in for
+# DynamoDB and S3, so every adapter can be exercised WITHOUT A CLOUD ACCOUNT. The
+# dev-environment steering is explicit that needing a container engine is not licence to need
+# an account, so nothing here reads ~/.aws and no real credential is supplied.
+#
+# WHY ONE EMULATOR RATHER THAN dynamodb-local PLUS minio: the shared contract suite written at
+# task 27.1 reads a SINGLE AQM_AWS_ENDPOINT_URL, and each adapter takes one endpoint. Two
+# emulators would mean two endpoints and a change to the suite, so the seam that already exists
+# picks the emulator rather than the other way round.
+#
+# EVERY PUBLISHED PORT IS BOUND TO 127.0.0.1. Compose publishes to all interfaces when given a
+# bare "port:port", which would put an unauthenticated broker and an unauthenticated store
+# emulator on the network (§7). A packaging test asserts the loopback prefix on every entry.
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0.22
+    ports:
+      # Plain listener on loopback only. The local stack does not use mutual TLS: the
+      # certificate material is generated per-developer and git-ignored, so requiring it here
+      # would make the stack unusable on a fresh clone. TLS is exercised against the real
+      # broker configuration, not this convenience listener.
+      - "127.0.0.1:1883:1883"
+    volumes:
+      - ./compose/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      # A published port answers before the broker is ready to accept a subscription, so the
+      # check speaks MQTT rather than merely opening a socket.
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:4.9.1
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      SERVICES: dynamodb,s3
+      # Literal dummies. The emulator requires a credential pair to accept a signed request, and
+      # these are hardcoded ON PURPOSE: a `${AWS_SECRET_ACCESS_KEY}` passthrough would pull the
+      # developer's real key into a stack the fence promises has none. A packaging test asserts
+      # both that these are the literals `test` and that nothing here inherits a host AWS value.
+      AWS_DEFAULT_REGION: eu-west-2
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      DEBUG: "0"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      AQM_MQTT_HOST: mosquitto
+      AQM_MQTT_PORT: "1883"
+      AQM_AWS_ENDPOINT_URL: http://localstack:4566
+      AQM_AWS_REGION: eu-west-2
+      # The serving API binds every interface INSIDE the container because the port mapping
+      # above is what limits reachability to loopback on the host. The API is Cognito-gated
+      # (Requirement 18), so it is not an unauthenticated surface either way.
+      AQM_LISTEN_HOST: 0.0.0.0
+      AQM_LISTEN_PORT: "8000"
+      AQM_LOG_LEVEL: info
+      # Credentials are supplied at RUNTIME (Requirement 28.9). These pass through from the
+      # developer's own environment and are absent by default; nothing is committed here.
+      AQM_FEED_API_KEY: ${AQM_FEED_API_KEY:-}
+      AQM_FORECAST_API_KEY: ${AQM_FORECAST_API_KEY:-}

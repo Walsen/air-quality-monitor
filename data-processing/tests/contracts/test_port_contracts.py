@@ -166,6 +166,50 @@ def _require_endpoint() -> str:
     return endpoint
 
 
+def _purge_table(table_name: str, endpoint: str) -> None:
+    """Empty a DynamoDB table so the adapter under test starts from nothing.
+
+    THE SUITE SILENTLY DEPENDED ON AN ISOLATION PROPERTY ONLY THE IN-MEMORY ADAPTERS HAD. Each
+    in-memory factory constructs a fresh object, so every test began with an empty store without
+    anything saying so. A real table persists for the whole session, so the first fenced run
+    showed seven failures that were all ONE bug: each test was reading the previous test's data
+    —
+    a ratified 3 "superseded" by an 18.2 left behind, a first upsert reporting `unchanged`, a
+    nearest-N answering with another test's sites.
+
+    Purging here rather than inside each test keeps the CONTRACT the tests assert (one
+    fresh store
+    per test) identical for both adapters, which is the point of one parametrised suite: a
+    difference that exists only because of how a fixture was built is not a behaviour
+    difference,
+    and letting it show up as one would teach exactly the wrong lesson.
+    """
+    import boto3
+
+    table = boto3.resource("dynamodb", endpoint_url=endpoint).Table(table_name)
+    key_names = [str(element["AttributeName"]) for element in table.key_schema]
+    scan = table.scan(
+        ProjectionExpression=", ".join(f"#{name}" for name in key_names),
+        ExpressionAttributeNames={f"#{name}": name for name in key_names},
+    )
+    with table.batch_writer() as batch:
+        for item in scan.get("Items", []):
+            batch.delete_item(Key={name: item[name] for name in key_names})
+
+
+def _purge_bucket(bucket: str, endpoint: str) -> None:
+    """Empty an S3 bucket, for the same isolation reason as :func:`_purge_table`."""
+    import boto3
+
+    client = boto3.client("s3", endpoint_url=endpoint)
+    contents = client.list_objects_v2(Bucket=bucket).get("Contents", [])
+    if contents:
+        client.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": obj["Key"]} for obj in contents]},
+        )
+
+
 def _dynamodb_readings() -> ReadingsStore:
     pytest.importorskip("boto3")
     endpoint = _require_endpoint()
@@ -174,7 +218,7 @@ def _dynamodb_readings() -> ReadingsStore:
     store = DynamoDbReadingsStore(
         table_name="aqm-readings", clock=FixedClock(_T0), endpoint_url=endpoint
     )
-    _probe(lambda: store.get(_reading("PROBE").key))
+    _probe(lambda: _purge_table("aqm-readings", endpoint))
     return store
 
 
@@ -186,7 +230,7 @@ def _dynamodb_registry() -> SensorRegistryStore:
     store = DynamoDbSensorRegistryStore(
         table_name="aqm-registry", endpoint_url=endpoint
     )
-    _probe(lambda: store.get("PROBE"))
+    _probe(lambda: _purge_table("aqm-registry", endpoint))
     return store
 
 
@@ -196,7 +240,7 @@ def _dynamodb_profiles() -> ProfileStore:
     from aqm_ingestion.adapters.dynamodb import DynamoDbProfileStore
 
     store = DynamoDbProfileStore(table_name="aqm-profiles", endpoint_url=endpoint)
-    _probe(lambda: store.get("PROBE"))
+    _probe(lambda: _purge_table("aqm-profiles", endpoint))
     return store
 
 
@@ -206,15 +250,26 @@ def _s3_archive() -> RawArchive:
     from aqm_ingestion.adapters.s3 import S3RawArchive
 
     store = S3RawArchive(bucket="aqm-raw", endpoint_url=endpoint)
-    _probe(lambda: store.read("probe"))
+    _probe(lambda: _purge_bucket("aqm-raw", endpoint))
     return store
 
 
 def _probe(call: Callable[[], object]) -> None:
-    """Make one real call, skipping when the service is not there.
+    """Run the purge, skipping when the service is not there.
 
-    A read, never a write: probing must not leave anything behind in a store the suite is about
-    to make assertions over.
+    THE PURGE IS THE PROBE, and the earlier design was subtly broken. The first version probed
+    with ``read("probe")`` on the archive — written when that returned ``None`` for an
+    unknown id.
+    Task 27.3 corrected the adapter to RAISE, matching the port, and this probe then read a
+    healthy
+    empty bucket as an unreachable service: the S3 parameters SKIPPED on every fenced run while
+    reporting nothing wrong. What caught it was the fenced job's own assertion that no cloud
+    parameter skips when an endpoint IS present — a skip is indistinguishable from a pass in a
+    summary line, which is precisely why that assertion exists.
+
+    The purge is a better probe anyway: a scan and a list are real calls that SUCCEED against a
+    healthy empty store, so reachability and isolation come from one operation rather than two
+    that can disagree.
     """
     try:
         call()
