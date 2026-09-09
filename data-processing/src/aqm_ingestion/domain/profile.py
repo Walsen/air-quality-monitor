@@ -138,6 +138,9 @@ class ProfileLimits:
     ``registry.species_for(table_id)``.
     """
 
+    max_activity_duration_hours: float = 24.0
+    """Requirement 23.6's configured maximum, inclusive ("up to the configured maximum")."""
+
 
 DEFAULT_PROFILE_LIMITS = ProfileLimits()
 
@@ -218,7 +221,10 @@ class UserProfile(_MinimalModel):
     personal_thresholds: Mapping[str, PersonalThreshold] = Field(default_factory=dict)
     locations: tuple[UserLocation, ...] = ()
     activity_level: ActivityLevel | None = None
-    activity_duration_hours: Annotated[float | None, Field(ge=0.0)] = None
+    # Requirement 23.6: "greater than 0", not at-or-above — a zero-duration activity never
+    # happened, so storing one would record an event that did not occur. The configured MAXIMUM
+    # is checked in build_profile, since it is configuration the model must not reach for (§1).
+    activity_duration_hours: Annotated[float | None, Field(gt=0.0)] = None
     consent: ConsentRecord
     created_at: dt.datetime
     updated_at: dt.datetime
@@ -274,6 +280,11 @@ def build_profile(
         if species not in limits.threshold_species:
             raise _threshold_species_error(species, limits.threshold_species)
         _check_threshold_unit(species, profile.personal_thresholds[species])
+
+    # Requirement 23.6's upper bound. Configuration, so it lives here rather than on the model.
+    duration = profile.activity_duration_hours
+    if duration is not None and duration > limits.max_activity_duration_hours:
+        raise _duration_range_error(limits.max_activity_duration_hours)
     return profile
 
 
@@ -340,6 +351,32 @@ def _limit_error(limit: int, received: int) -> Exception:
                     "error": ValueError(
                         f"at most {limit} User_Location entries are accepted, "
                         f"received {received}"
+                    )
+                },
+            )
+        ],
+    )
+
+
+def _duration_range_error(maximum: float) -> Exception:
+    """A Requirement 23.6 rejection naming the field and the permitted RANGE.
+
+    Names the range, not the submitted duration: §5 wants the permitted range in the message,
+    while Requirement 17.9 still covers the submitted value, which is a profile field.
+    """
+    from pydantic_core import InitErrorDetails, ValidationError
+
+    return ValidationError.from_exception_data(
+        "UserProfile",
+        [
+            InitErrorDetails(
+                type="value_error",
+                loc=("activity_duration_hours",),
+                input=None,
+                ctx={
+                    "error": ValueError(
+                        f"activity_duration_hours must be greater than 0 and no more than "
+                        f"{maximum:g} hours"
                     )
                 },
             )
