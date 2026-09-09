@@ -200,6 +200,71 @@ def test_the_image_bakes_no_secret() -> None:
         assert forbidden not in dockerfile
 
 
+def test_the_readme_documents_the_real_defaults() -> None:
+    """The README's stated defaults must match the code (task 29.3, Requirement 28.7).
+
+    THIS GUARD CAUGHT A REAL ERROR AS IT WAS WRITTEN. I documented all three interface
+    switches as
+    defaulting to `false`; the loader defaults push and serving to TRUE. A README is the one
+    artifact nothing else verifies, so its numbers rot silently — and a contributor who trusts a
+    wrong default debugs the service instead of the document. Each claim is compared against the
+    constant that owns it, so changing a default fails here until the README follows.
+    """
+    from aqm_ingestion.config.loader import (
+        _SCALARS,
+        DEFAULT_AUDIT_RETENTION_DAYS,
+        DEFAULT_NOWCAST_WINDOW_HOURS,
+        DEFAULT_QUARANTINE_RETENTION_DAYS,
+        DEFAULT_RETENTION_DAYS,
+    )
+    from aqm_ingestion.serving.app import DEFAULT_RATE_LIMIT_PER_MINUTE
+    from aqm_ingestion.serving.history import DEFAULT_MAX_HISTORY_SPAN_DAYS
+
+    readme = (_SERVICE_ROOT / "README.md").read_text(encoding="utf-8")
+
+    rows = {
+        "AQM_RETENTION_DAYS": str(DEFAULT_RETENTION_DAYS),
+        "AQM_QUARANTINE_RETENTION_DAYS": str(DEFAULT_QUARANTINE_RETENTION_DAYS),
+        "AQM_AUDIT_RETENTION_DAYS": str(DEFAULT_AUDIT_RETENTION_DAYS),
+        "AQM_NOWCAST_WINDOW_HOURS": str(DEFAULT_NOWCAST_WINDOW_HOURS),
+        "AQM_RATE_LIMIT_PER_MINUTE": str(DEFAULT_RATE_LIMIT_PER_MINUTE),
+        "AQM_MAX_HISTORY_SPAN_DAYS": str(DEFAULT_MAX_HISTORY_SPAN_DAYS),
+    }
+    for variable, expected in rows.items():
+        line = next(
+            (row for row in readme.splitlines() if row.startswith(f"| `{variable}`")), None
+        )
+        assert line, f"{variable} is not documented"
+        assert f"`{expected}`" in line, (
+            f"{variable}: README disagrees with the code ({expected})"
+        )
+
+    from aqm_ingestion.config.loader import INTERFACE_SWITCHES
+
+    for name in INTERFACE_SWITCHES:
+        variable, default = _SCALARS[name]
+        line = next(
+            (row for row in readme.splitlines() if row.startswith(f"| `{variable}`")), None
+        )
+        assert line, f"{name} is not documented"
+        expected_text = "true" if default else "false"
+        assert f"`{expected_text}`" in line, (
+            f"{variable}: README says the opposite of the code ({expected_text})"
+        )
+
+
+def test_the_readme_lists_every_registered_adapter() -> None:
+    # The adapter table is the part a contributor copies from, so a name missing here is a name
+    # nobody knows they can select.
+    from aqm_ingestion.config.loader import _REGISTERED_ADAPTERS
+
+    readme = (_SERVICE_ROOT / "README.md").read_text(encoding="utf-8")
+    for port, names in _REGISTERED_ADAPTERS.items():
+        assert f"`{port}`" in readme, f"port {port} is not documented"
+        for name in names:
+            assert f"`{name}`" in readme, f"adapter {port}={name} is not documented"
+
+
 @pytest.mark.parametrize(
     "recipe",
     ["test-ingestion", "test-integration-ingestion", "lint-ingestion", "typecheck-ingestion"],

@@ -189,6 +189,17 @@ def test_no_offline_test_names_a_non_local_host() -> None:
     """
     permitted_tokens = ("127.0.0.1", ".example", ".invalid", ".test", ".localhost")
     permitted_exact = ("localhost", "test")
+    permitted_identifiers = ("cognito-idp.eu-west-2.amazonaws.com",)
+    """A URL that is an IDENTIFIER rather than an endpoint.
+
+    A Cognito ``iss`` claim is compared as a STRING — the adapter builds the expected issuer
+    from
+    the region and pool id and checks equality — and the signing key is resolved through an
+    injected
+    callable, so nothing is ever fetched from it. This check cannot tell an identifier from an
+    endpoint statically, so the exception is named explicitly with its reason rather than the
+    pattern being loosened to any `amazonaws.com` host.
+    """
     offenders: list[str] = []
     scanned = 0
 
@@ -207,7 +218,7 @@ def test_no_offline_test_names_a_non_local_host() -> None:
                     continue
                 scanned += 1
                 host = node.value.split(scheme, 1)[1].split("/")[0].split(":")[0]
-                if not host or host in permitted_exact:
+                if not host or host in permitted_exact or host in permitted_identifiers:
                     continue
                 if not any(token in host for token in permitted_tokens):
                     offenders.append(f"{path.name}: {host}")
