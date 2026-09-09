@@ -217,13 +217,57 @@ def test_a_deleted_user_resolves_to_the_default_again() -> None:
 # --- Req 25.8 the audit record holds no health data ---------------------
 
 def test_an_audit_record_carries_no_health_adjacent_field() -> None:
-    # Req 25.8 forbids Condition, Sensitivity_Level and Personal_Threshold, which is also
-    # what keeps Req 17.8's erasure simple: there is only an identity to remove
+    # Req 25.8 forbids Condition, Sensitivity_Level, Personal_Threshold value, User_Location
+    # coordinate, and forecast or pollen value — which is also what keeps Req 17.8's erasure
+    # simple: there is only an identity to remove.
+    #
+    # THE FIELD SET GREW AT TASK 24.3, deliberately. This test pinned three fields when task
+    # 17.2 introduced the port, precisely so a silent addition would fail — and it did fail,
+    # which is the pin working. Requirement 25.7 names the rest (Breakpoint_Table, the
+    # Calibration_Strategy set, whether a crossing was reported, the contributing record
+    # references), so the pin moved WITH the requirement. The prohibition below is the durable
+    # claim; the exact set is expected to track Req 25.7.
     assert set(AuditIdentifiers.__dataclass_fields__) == {
         "user_id",
         "served_at",
         "route",
+        "breakpoint_table",
+        "calibration_strategies",
+        "threshold_crossed",
+        "record_references",
     }
+    forbidden = (
+        "condition",
+        "sensitivity",
+        "threshold_value",
+        "coordinate",
+        "latitude",
+        "longitude",
+        "forecast",
+        "pollen",
+    )
+    for field in AuditIdentifiers.__dataclass_fields__:
+        assert not any(word in field.lower() for word in forbidden), field
+
+
+def test_erasure_still_clears_the_identity_after_the_record_grew() -> None:
+    # Req 17.8 has to keep holding against the WIDER Req 25.7 shape: only user_id identifies the
+    # person, so erasure clears it and the provenance survives as a de-identified count.
+    service, _profiles, audit = _service()
+    audit.append(
+        AuditIdentifiers(
+            user_id="user-123",
+            served_at=_NOW,
+            route="/v1/advice",
+            breakpoint_table="epa-2024-05-06",
+            calibration_strategies=("rh_linear",),
+            threshold_crossed=True,
+            record_references=("archive-1",),
+        )
+    )
+    service.delete(VerifiedIdentity(user_id="user-123"))
+    assert audit.records_for("user-123") == ()
+    assert audit.de_identified_count() == 1
 
 
 # --- Req 17.9 nothing leaks ---------------------------------------------

@@ -201,16 +201,34 @@ class AuthRejectedError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class AuditIdentifiers:
-    """The identifying fields an Audit_Record holds about a user (Requirement 25.7).
+    """The fields an Audit_Record holds (Requirement 25.7).
 
-    Narrow on purpose: Requirement 25.8 forbids an Audit_Record from carrying a Condition, a
-    Sensitivity_Level, or a Personal_Threshold, so the audit trail never holds health-adjacent
-    data and Requirement 17.8's erasure has only the identity to remove.
+    GREW DELIBERATELY at task 24.3. Task 17.2 introduced this with three fields because
+    Requirement 17.8's erasure was all that was needed then, and a test pinned the set so a
+    silent addition would fail. Requirement 25.7 names the rest — the Breakpoint_Table, the
+    Calibration_Strategy SET, whether a Threshold_Crossing was reported, and the contributing
+    Readings' identifying fields — so the pin moved with the requirement rather than being
+    quietly widened.
+
+    Requirement 25.8 is what keeps it safe to grow: no Condition, no Sensitivity_Level, no
+    Personal_Threshold VALUE, no User_Location coordinate, and no forecast or pollen value, so
+    the
+    audit trail never becomes a second copy of the health-adjacent data. Note the asymmetry that
+    makes ``threshold_crossed`` a bool: 25.7 wants WHETHER a crossing was reported while 25.8
+    forbids the threshold value, so a field holding the number would satisfy one and violate the
+    other.
+
+    Everything here except ``user_id`` is non-identifying, which is why Requirement 17.8's
+    erasure can clear the identity and retain the record.
     """
 
     user_id: str
     served_at: dt.datetime
     route: str
+    breakpoint_table: str | None = None
+    calibration_strategies: tuple[str, ...] = ()
+    threshold_crossed: bool = False
+    record_references: tuple[str, ...] = ()
 
 
 @runtime_checkable
