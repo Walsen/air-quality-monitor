@@ -31,8 +31,18 @@ _NOW = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
 
 # Latitudes stop short of the poles: the requirement is about a sensor fleet, and a
 # generated pole crossing would test the haversine's edge behaviour rather than Req 15.
-_latitude = st.floats(min_value=-85.0, max_value=85.0, allow_nan=False)
-_longitude = st.floats(min_value=-180.0, max_value=180.0, allow_nan=False)
+#
+# Rounded to SEVEN decimals at the source, because that is the precision the contract
+# stores (Req 2.3's LatLonString) and therefore the precision the registry parses back. An
+# earlier draft generated full-precision floats and computed the expected distances from
+# THOSE while the registry used the rounded ones — which agreed almost always and disagreed
+# right at a radius boundary, exactly where it matters.
+_latitude = st.floats(min_value=-85.0, max_value=85.0, allow_nan=False).map(
+    lambda value: round(value, 7)
+)
+_longitude = st.floats(min_value=-180.0, max_value=180.0, allow_nan=False).map(
+    lambda value: round(value, 7)
+)
 
 
 def _record(**overrides: object) -> SensorMetadataRecord:
