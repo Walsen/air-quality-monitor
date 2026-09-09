@@ -64,9 +64,11 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
       `GeoLocation`/`PointGeometry` models; `Latitude`/`Longitude` as 7-decimal signed strings
       character-identical to `Location.coordinates`; every key present even when null; `ScaledValue`
       preserved as received with no rounding
+    - Classify `NO2` and `PM25` as Mass_Concentration measurements in the unit `Units` names, and
+      preserve every field unmodified so the archived payload stays byte-comparable with what arrived
     - Add a golden-payload test using a captured Service 1 payload so a drift between the two copies
       fails here
-    - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.9, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 28.3_
+    - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.9, 1.10, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 28.3_
 
   - [ ] 2.2 Implement the Serializer
     - Render both record types in declared field order with the contract's JSON value types, for the
@@ -359,10 +361,11 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
     - _Requirements: 15.2, 15.11, 2.8, 15.9_
 
   - [ ] 14.2 Implement great-circle distance and nearest-N selection
-    - Distance with an Earth radius of 6,371.0088 km; nearest-N ordered by ascending distance with
+    - Distance with an Earth radius of 6,371.0088 km, taking each site's position from its `Latitude`
+      and `Longitude` fields parsed as decimal degrees; nearest-N ordered by ascending distance with
       `SiteCode` tie-break, honoring an inclusive maximum radius, excluding inactive sites, and returning
       fewer than N when fewer exist
-    - _Requirements: 15.3, 15.4, 15.5, 15.6, 15.8_
+    - _Requirements: 15.3, 15.4, 15.5, 15.6, 15.8, 2.7_
 
   - [ ]* 14.3 Write property test for nearest-N ordering and radius inclusion
     - **Property 28: Nearest-N ordering and radius inclusion**
@@ -590,7 +593,7 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
       Retention_Window ≥ maximum history span, every bound pair and positive limit, secret resolution for
       enabled interfaces without ever echoing a secret, the file's readability with no fallback, that at
       least one interface is enabled, and the log level
-    - _Requirements: 26.1, 26.2, 26.3, 26.4, 26.5, 26.6, 26.7, 26.8, 26.9, 26.10, 26.11_
+    - _Requirements: 26.1, 26.2, 26.3, 26.4, 26.5, 26.6, 26.7, 26.8, 26.9, 26.10, 26.11, 8.13, 10.11_
 
   - [ ] 26.2 Write unit tests for every documented configuration failure
     - One test per row of the design's configuration-error table, asserting the message names the value
