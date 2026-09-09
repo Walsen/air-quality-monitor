@@ -759,3 +759,514 @@ class AuditRecord:                  # Req 25.7, constrained by Req 25.8
 
 The absence list is part of the model's documentation because the audit trail's value depends on it *not*
 becoming a second copy of the health-adjacent data it exists to oversee.
+
+## Correctness Properties
+
+*A property is a characteristic or behavior that should hold true across all valid executions of a
+system — essentially, a formal statement about what the system should do. Properties serve as the
+bridge between human-readable specifications and machine-verifiable correctness guarantees.*
+
+The forty properties below are derived from the acceptance criteria and reduced for redundancy. The
+determinism facets fold into three properties — one for ingestion, one for serving, one for push/pull
+equivalence — rather than one per component. The per-rule quarantine clauses fold into one completeness
+property while the store-exclusion consequence stays separate. The AQI family splits by what it
+quantifies over: monotonicity over concentrations, exactness over breakpoints, and argmax over species.
+Each property is implemented by a single property-based test running at least 100 examples (Req 28.11).
+
+### Property 1: Measurement record round-trip
+
+*For all* Sensor_Data_Record values whose `Species` is one of the four permitted values, parsing the
+Serializer output produces a record whose every field equals the original, including null-valued fields,
+with `ScaledValue` preserved exactly as received.
+
+**Validates: Requirements 3.4, 1.1, 1.3, 1.5**
+
+### Property 2: Metadata record round-trip
+
+*For all* Sensor_Metadata_Record values covering both `PowerTag` values, all three
+Site_Classification values, and both a null and a non-null `EndDate`, parsing the Serializer output
+produces a record whose every field equals the original, with `Latitude` and `Longitude`
+character-identical at 7 decimal places and character-identical to the `Location.coordinates` entries.
+
+**Validates: Requirements 3.4, 2.1, 2.2, 2.3**
+
+### Property 3: Parser rejection is total and reasoned
+
+*For all* record objects that omit a required field, add a field outside the contract, carry a field of
+the wrong JSON type, or carry a `Species` or `RatificationStatus` outside its permitted set, the Parser
+raises a rejection naming the offending field and the violated condition, and produces no record value —
+never a partially populated one.
+
+**Validates: Requirements 3.3, 3.7**
+
+### Property 4: Batch partial acceptance preserves accepted records
+
+*For all* arrays mixing conforming and non-conforming records, the Parser returns exactly the
+conforming records in their original relative order together with exactly one rejection per
+non-conforming record identified by its array index, and discards no conforming record because a
+sibling failed.
+
+**Validates: Requirements 3.5, 3.1**
+
+### Property 5: Raw archive precedes processing and round-trips
+
+*For all* ingested payloads, including those every validation rule rejects, an archive entry exists
+whose bytes read back identical to those received, and whose archive identifier is recorded on every
+Raw_Reading, Calibrated_Reading, and QuarantinedRecord derived from that payload.
+
+**Validates: Requirements 16.1, 16.4, 16.2, 6.11**
+
+### Property 6: Quarantined records are fully reasoned and never stored
+
+*For all* Sensor_Data_Record values violating one or more validation rules, the Service produces one
+rejection reason per violated rule rather than only the first, writes no Reading to the ReadingsStore for
+that record, and includes it in no Serving_Response.
+
+**Validates: Requirements 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.10**
+
+### Property 7: Ingestion is idempotent
+
+*For all* Sensor_Data_Record values and all repeat counts of two or more, ingesting the record that many
+times leaves the ReadingsStore in the state produced by ingesting it once, and leaves the count of stored
+Readings equal to the count after the first ingestion.
+
+**Validates: Requirements 7.8, 7.3**
+
+### Property 8: Deduplication is order-independent
+
+*For all* sets of Sensor_Data_Record values sharing one Dedup_Key and all permutations of their
+ingestion order, the final stored Reading is identical across permutations in every field, including its
+Quality_Flag.
+
+**Validates: Requirements 7.7, 7.6**
+
+### Property 9: Deduplication resolution follows the stated precedence
+
+*For all* pairs of records sharing a Dedup_Key, the stored outcome is: the incoming record when the
+stored one is provisional and the incoming is ratified; the stored record when the stored one is ratified
+and the incoming is provisional; and the greater `ScaledValue` with a `suspect_conflict` Quality_Flag when
+the statuses are equal and the values differ.
+
+**Validates: Requirements 7.4, 7.5, 7.6**
+
+### Property 10: Calibration humidity monotonicity
+
+*For all* pairs of RH values within 0 to 100 percent where the first is less than or equal to the second,
+the `rh_linear` strategy applied to one identical reported concentration produces a corrected value for
+the first that is greater than or equal to the corrected value for the second.
+
+**Validates: Requirements 8.8**
+
+### Property 11: Corrected values are finite and non-negative
+
+*For all* reported concentrations and all RH values, including those outside the Calibration_Domain,
+every Calibration_Strategy in the registry produces a finite corrected value greater than or equal to 0,
+and the reported value remains retrievable alongside it.
+
+**Validates: Requirements 8.9, 8.3, 8.10**
+
+### Property 12: Out-of-domain calibration is flagged, not refused
+
+*For all* inputs whose reported concentration or resolved RH lies outside the selected strategy's
+Calibration_Domain, the strategy is still applied and the resulting Quality_Flag is
+`calibrated_extrapolated`; and for all inputs with no RH available, the fallback strategy is applied and
+the Quality_Flag is `uncalibrated` with Confidence `low`.
+
+**Validates: Requirements 8.7, 8.6, 13.1**
+
+### Property 13: Unit conversion round-trip
+
+*For all* Mixing_Ratio values and all temperature and pressure pairs within physical bounds, converting
+to Mass_Concentration and back returns the original value within a relative tolerance of 1e-9.
+
+**Validates: Requirements 9.4**
+
+### Property 14: Conversion factor responds correctly to temperature and pressure
+
+*For all* pairs of pressures at one temperature, the conversion factor is strictly increasing in
+pressure; and for all pairs of absolute temperatures at one pressure, it is strictly decreasing in
+temperature.
+
+**Validates: Requirements 9.5**
+
+### Property 15: Conversion factor is pinned at reference conditions
+
+*For all* evaluations, the NO2 conversion factor equals 1.8806 µg/m³ per ppb at 25 °C and 101,325 Pa and
+1.4219 µg/m³ per ppb at 15 °C and 74,000 Pa, each within a relative tolerance of 1e-4.
+
+**Validates: Requirements 9.6, 9.2**
+
+### Property 16: Sub-index monotonicity
+
+*For all* pairs of concentrations for one species where the first is less than or equal to the second,
+the Sub_Index computed for the first is less than or equal to the Sub_Index computed for the second.
+
+**Validates: Requirements 10.7**
+
+### Property 17: Breakpoint boundary exactness
+
+*For all* bands of a Breakpoint_Table, the Sub_Index at the band's lower breakpoint equals the band's
+lower index value exactly, and the Sub_Index at its upper breakpoint equals the band's upper index value
+exactly.
+
+**Validates: Requirements 10.8, 10.1, 10.6**
+
+### Property 18: Sub-index and band agree, and the ceiling holds
+
+*For all* concentrations, the reported Band is the band the Sub_Index falls in under the mapping of
+Requirement 10 criterion 5; and for all concentrations above the table's highest breakpoint, the
+Sub_Index is capped at the configured ceiling and the Band is `Hazardous`.
+
+**Validates: Requirements 10.5, 10.9**
+
+### Property 19: Overall AQI is the maximum and the driving pollutant is its argmax
+
+*For all* sets of available Sub_Index values at one site and instant, the Overall_AQI is greater than or
+equal to every one of them and equal to at least one; the Driving_Pollutant is a species whose Sub_Index
+equals the Overall_AQI; and where two or more tie, it is the one first in the configured species
+precedence.
+
+**Validates: Requirements 12.1, 12.2, 12.3**
+
+### Property 20: Index species never influence a computed index
+
+*For all* ingestion sequences containing `NO2Index` and `PM25Index` records with arbitrary values, every
+Sub_Index, Overall_AQI, Band, and Threshold_Crossing the Service computes is identical to what it
+computes from the same sequence with those records removed.
+
+**Validates: Requirements 1.7, 12.1**
+
+### Property 21: NowCast is bounded by its window
+
+*For all* NowCast_Window series with at least two of the three most recent hours available, the NowCast
+is greater than or equal to the minimum and less than or equal to the maximum of the available corrected
+values in that window.
+
+**Validates: Requirements 11.6, 11.3**
+
+### Property 22: NowCast preserves a constant series
+
+*For all* NowCast_Window series in which every available value is one identical value, the NowCast equals
+that value.
+
+**Validates: Requirements 11.7, 11.4**
+
+### Property 23: NowCast weights recency and is deterministic
+
+*For all* NowCast_Window series, the weight applied to the most recent available hour is greater than or
+equal to the weight applied to any older available hour, the weight factor lies within 0.5 to 1.0
+inclusive, and re-evaluating the same ordered series yields the same NowCast.
+
+**Validates: Requirements 11.8, 11.4, 11.11**
+
+### Property 24: Insufficient NowCast coverage falls back and downgrades confidence
+
+*For all* NowCast_Window series with fewer than two of the three most recent hours available, the Service
+reports no NowCast, computes the Sub_Index from the Reading's own corrected hourly value, caps the
+Confidence at `low`, and records the fallback in the Basis.
+
+**Validates: Requirements 11.5, 13.2**
+
+### Property 25: Readings store round-trip
+
+*For all* Calibrated_Reading values written through any ReadingsStore adapter, a query whose window
+contains the Reading's interval start returns a Reading equal to the written one in every field.
+
+**Validates: Requirements 14.5, 14.2**
+
+### Property 26: Window query completeness and half-open exclusivity
+
+*For all* sets of stored Readings and all query windows, the result contains every stored Reading whose
+interval start lies within the half-open window from the start instant inclusive to the end instant
+exclusive, and no Reading whose interval start lies outside it, ordered by ascending interval start.
+
+**Validates: Requirements 14.6, 14.3**
+
+### Property 27: Retention window excludes aged readings
+
+*For all* stored Readings and all Clock instants, a query returns no Reading whose interval start is
+older than the Retention_Window measured from that instant, and a truncated result reports its
+truncation.
+
+**Validates: Requirements 14.7, 14.8**
+
+### Property 28: Nearest-N ordering and radius inclusion
+
+*For all* registries and all query points, the nearest-N result has non-decreasing distances, contains no
+inactive site, contains no site whose distance exceeds the supplied radius, includes a site whose
+distance equals the radius, holds at most N entries, and breaks distance ties by ascending `SiteCode`.
+
+**Validates: Requirements 15.5, 15.6, 15.7, 15.8, 20.2**
+
+### Property 29: Great-circle distance is symmetric and zero on identity
+
+*For all* pairs of positions, the computed distance is non-negative, equals the distance computed with
+the arguments exchanged, and is 0 for a position against itself.
+
+**Validates: Requirements 15.4, 20.10**
+
+### Property 30: Every served value carries a quality flag and a confidence
+
+*For all* Serving_Response documents containing any concentration, Sub_Index, or dose value, every such
+value is accompanied by a Quality_Flag and a Confidence, and no declared response member is absent —
+an unavailable member is `null` rather than dropped.
+
+**Validates: Requirements 13.10, 14.11, 19.12**
+
+### Property 31: Confidence derivation is deterministic and respects its caps
+
+*For all* combinations of calibration outcome, RH source, conversion source, NowCast coverage, dedup
+conflict, and fault state, the derived Confidence is the same on every evaluation, is `low` whenever the
+Quality_Flag is `uncalibrated`, `suspect_fault`, or `suspect_conflict`, and is at most `medium` whenever
+the conversion used defaulted temperature and pressure.
+
+**Validates: Requirements 13.2, 13.12, 9.8**
+
+### Property 32: Weighting orders the response without altering any value
+
+*For all* Conditions and all sets of available species, the Weighted_Focus is the weighting's ordered
+species restricted to the available ones in the weighting's order, every named-but-unavailable species
+appears in `unavailableWeightedSpecies`, the site measurements are ordered by that focus, and every
+corrected value, Sub_Index, Band, and Overall_AQI is identical to what the same inputs produce under any
+other Condition.
+
+**Validates: Requirements 21.3, 21.4, 21.7, 21.9**
+
+### Property 33: Threshold crossing holds exactly on greater-or-equal
+
+*For all* Sub_Index and effective-threshold pairs, a Threshold_Crossing is reported if and only if the
+Sub_Index is greater than or equal to the threshold, and the reported `thresholdSource` names the
+precedence level the threshold came from.
+
+**Validates: Requirements 22.3, 22.7, 22.6, 22.1**
+
+### Property 34: Inhaled dose scales correctly and vanishes at zero duration
+
+*For all* concentrations, breathing rates, and durations, the Inhaled_Dose is non-negative, is 0 when the
+duration is 0, and is strictly increasing in each of the three factors while the other two are held
+positive and constant; and it is `null` whenever the profile supplies no activity inputs.
+
+**Validates: Requirements 23.5, 23.1, 23.3**
+
+### Property 35: The guardrail envelope is always present
+
+*For all* successful responses from every data-bearing route, including the history route, the body
+carries a non-empty `disclaimer`, an `advisoryScope` of exactly `exposure-reduction`, and a non-empty
+`emergencyGuidance`.
+
+**Validates: Requirements 25.1, 25.12, 25.2, 25.3**
+
+### Property 36: The basis is always populated
+
+*For all* successful responses carrying any Sub_Index, the `basis` member names the Breakpoint_Table
+identifier, the Calibration_Strategy per species, the RH source, the conversion source where one applied,
+the NowCast window and coverage where one applied, and one record reference per contributing Reading.
+
+**Validates: Requirements 25.5, 10.2, 8.11, 9.7, 11.9**
+
+### Property 37: No forbidden phrasing in responses and no sensitive data in logs
+
+*For all* successful responses, the serialized body matches none of the configured forbidden-phrase
+patterns; and for all operations, no emitted log line contains a User_Profile field value, a bearer
+credential, a resolved secret, or an Authenticator claim beyond the user identity.
+
+**Validates: Requirements 25.4, 25.11, 29.4, 17.9, 18.7**
+
+### Property 38: Serving responses are deterministic
+
+*For all* fixed combinations of stored Readings, User_Profile, forecast values, configuration, and Clock
+instant, two independent evaluations of a route produce byte-identical response bodies.
+
+**Validates: Requirements 27.2, 27.4**
+
+### Property 39: Push and pull ingestion converge on the same state
+
+*For all* sequences of Sensor_Data_Record values, ingesting the sequence entirely through the push path
+and ingesting the byte-identical records entirely through the pull path, under the same configuration,
+Clock instant, and RH input, produce identical final ReadingsStore state and identical
+Calibrated_Reading values.
+
+**Validates: Requirements 27.7, 5.4, 27.3**
+
+### Property 40: Authentication precedes validation and leaks nothing
+
+*For all* requests to a data-bearing route, an absent, malformed, or unverifiable credential yields 401
+regardless of whether the query parameters are also invalid, a credential scoped to a different user
+yields 403, and in both cases the body contains no Reading value, no profile value, and no site
+metadata.
+
+**Validates: Requirements 18.2, 18.3, 18.4, 18.5, 18.9**
+
+## Error Handling
+
+Errors are caught at the boundaries — the MQTT message loop, the poll entry point, the FastAPI handlers,
+and the CLI/config entry point — and never surface as a raw stack trace to a client (practice §5).
+Expected exception types are caught specifically (`ValueError`, `ValidationError`, `OSError`, and the
+service's own `AuthRejected`, `ParseRejected`, `StoreUnavailable`), with broad catches reserved for the
+true top-level loops, where they are logged with `logger.exception(...)`. Every handled error is still
+logged; silent failure is not acceptable (practice §6, Req 29.8).
+
+### Configuration errors (fail-fast, before anything starts)
+
+The Config_Loader validates every resolved value before a listener opens, a subscription is created, or a
+store call is issued. It does not stop at the first failure: it completes validation of all values, writes
+one single-line JSON message per invalid value naming the value and the constraint it violated, exits
+non-zero, and never half-starts (DD3 of the practice set; Req 26.3).
+
+| Failure | Handling | Requirement |
+|---------|----------|-------------|
+| Unrecognized configuration key | reject naming the key, list recognized keys in its category | 26.4 |
+| Unknown Breakpoint_Table, Calibration_Strategy, Condition_Weighting, or adapter name | reject naming the supplied value and the registered names | 26.5, 8.2 |
+| Malformed Breakpoint_Table: overlapping bands, gap, non-increasing sequence, unit mismatch | reject naming the offending band and the violated constraint | 10.11 |
+| Non-finite calibration coefficient, or domain minimum ≥ maximum | reject naming the offending value | 8.13 |
+| Non-positive duration for retention, NowCast window, freshness, history span, quarantine or audit retention | reject naming the value | 26.6 |
+| Retention_Window shorter than the maximum history span | reject naming both values | 26.6 |
+| Bound pair with minimum ≥ maximum, or non-positive count, radius, or limit | reject naming the pair or value | 26.7 |
+| Unresolvable feed, store, or forecast credential for an enabled interface | one message per unresolved value, naming the configuration value and never the secret | 26.8, 24.10, 5.2 |
+| Unreadable or unparseable configuration file | name the path and failure kind, exit non-zero, no fallback to defaults | 26.9 |
+| No interface enabled | reject, naming the three interface switches | 26.10 |
+| Unrecognized log level | reject naming the supplied value and the permitted values | 29.9 |
+| Unrecognized consent version on a profile write | 400 at the API rather than a startup failure | 17.7 |
+
+### Ingestion errors (archive first, isolate, log, continue)
+
+- **RawArchive write failure** is the one failure that stops ingestion of that payload: the push path does
+  not acknowledge the message and the pull path fails the invocation, both logging one `error` naming the
+  failure kind, so a payload is never processed without being recoverable (Reqs 16.7, 4.6).
+- **Parse rejection** produces no record and is logged with the failure kind and, for a batch, the array
+  index of each rejected element; accepted siblings still proceed (Reqs 3.3, 3.5).
+- **Validation failure** quarantines the record with every violated reason, emits one `warning` per record
+  naming `SiteCode`, `Species`, interval start, and the reason categories, and increments the per-reason
+  counter (Reqs 6.8, 6.9).
+- **Per-message processing failure** is caught per message, logged at `error` with the topic, the extracted
+  site identifier, and the error type; the subscription survives and the next message proceeds (Req 4.4).
+- **Broker connection loss** is retried with exponential backoff from 1 second doubling to the configured
+  maximum, indefinitely, each attempt logged at `warning` with the attempt count (Req 4.5).
+- **Feed failure** — transport error, non-success status, or wholesale-rejected body — logs one `error`,
+  leaves the ingestion high-water mark unchanged so the next invocation retries the same window, and exits
+  non-zero without partially advancing state (Req 5.6).
+- **Dedup conflict** retains the conservative value, flags `suspect_conflict`, and logs one `warning`
+  naming the Dedup_Key and both values (Req 7.6).
+- **Unavailable conversion inputs** — a non-positive resolved temperature or pressure — produce no NO2
+  Sub_Index for that Reading and log one `error` naming the offending value; the Reading is still stored
+  with its corrected concentration (Req 9.9).
+- **Unknown `SiteCode`** is not an error: the Reading is stored and one `warning` is logged, and the site
+  is excluded from geographic results until its metadata arrives (Req 6.7).
+
+### Serving request errors (authenticate, then validate, never 500 on input)
+
+The FastAPI layer resolves the credential first, then validates parameters, so an unauthenticated request
+carrying a bad parameter receives 401 rather than 400 (Req 18.4). Every documented failure returns its
+documented status with a JSON body naming the offending parameter or the rejection category. Bad input
+never produces a 500 (Req 19.8, practice §5).
+
+| Failure | Status | Requirement |
+|---------|--------|-------------|
+| Absent, non-bearer, or empty `Authorization` header | 401 | 18.2 |
+| Unverifiable, expired, or wrong-audience credential | 401 (category only) | 18.3 |
+| Verified identity requesting another identity's resource | 403 | 18.5 |
+| `startTime` later than `endTime`; either unparseable; one supplied without the other | 400 | 19.6 |
+| `species` outside the permitted set | 400 (lists permitted values) | 19.6 |
+| History span exceeding the maximum | 400 (names span and maximum) | 19.9 |
+| Unknown `siteCode` | 404 | 19.7 |
+| Profile write with a field outside the allowlist, too many locations, absent or unrecognized consent, out-of-range threshold, or out-of-range activity duration | 400 (names the offending field) | 17.4, 17.6, 17.7, 22.4, 23.6 |
+| Per-identity rate limit exceeded | 429 (names limit and retry interval) | 18.11 |
+| Response body would match a forbidden-phrase pattern | 500, logged at `error`, body withheld | 25.11 |
+
+The last row is the sole case where this service answers 500 by design. It is a response-construction
+fault rather than a bad-input fault, so it does not contradict Req 19.8: emitting no body is strictly
+better than emitting one that breaches the non-diagnostic boundary.
+
+### Degradation rather than failure
+
+Two dependencies are explicitly allowed to be absent, because failing the request would remove more value
+than the missing data does:
+
+- **ForecastClient failure or timeout** serves the response with no forecast values, `degraded` set to
+  true, and one `warning` logged; the request succeeds (Req 24.4).
+- **Absent User_Profile** serves the response from the configured default profile with
+  `usedDefaultProfile` declared true; the request succeeds (Req 17.12).
+
+By contrast, an unavailable ReadingsStore or ProfileStore is not degradable — those are 503-class
+failures logged at `error`, since a response built without them would be silently wrong rather than
+visibly partial.
+
+## Testing Strategy
+
+Property-based testing suits this service: the core is pure, input-driven numeric and contract logic —
+parsing, dedup resolution, calibration, unit conversion, NowCast, sub-index interpolation, weighting,
+thresholds, dose — with universal properties over large input spaces. TDD applies throughout: a failing
+test first, then the smallest clean change to pass it (practice §3). The suite must pass with no AWS
+credentials and no network access beyond localhost (Req 28.5).
+
+### Dual approach
+
+- **Property tests** (`hypothesis`, `tests/properties/`) verify the forty properties above.
+- **Unit / example tests** (`pytest`, `tests/unit/`) pin concrete behaviors, boundaries, and error
+  conditions: every Config_Loader fail-fast case, each documented HTTP status with its body content, the
+  EPA breakpoint boundary values as literal examples, the fault-detector thresholds, the log redaction
+  cases, and the registry name enumerations.
+- **Port contract tests** (`tests/contracts/`) are one shared behavioral suite per port, parameterized over
+  every adapter of that port — in-memory and DynamoDB for readings, registry, and profiles; in-memory and
+  S3 for the archive; fake and HTTP for the feed and forecast clients (DD16, Reqs 14.10, 28.10). This is
+  what makes the adapter swap safe: the same assertions run against both sides.
+- **Integration tests** (`tests/integration/`) cover the boundaries property tests do not fit: broker
+  connect-subscribe-ingest against a local MQTT broker, the DynamoDB and S3 adapters against local
+  emulation, and the Compose stack smoke check.
+
+Both layers are necessary and complementary: property tests find general correctness violations across
+inputs; example tests pin exact status codes, messages, and literal EPA values that a property would
+happily satisfy with a wrong-but-consistent table.
+
+### Property test configuration
+
+- Library: `hypothesis` for Python, not hand-rolled generation.
+- Each of the forty properties is implemented by a **single** property-based test running a **minimum of
+  100 examples** (Req 28.11).
+- Each property test carries a comment referencing its design property in the form
+  **Feature: ingestion-and-serving-service, Property {number}: {property text}**.
+- Generators are shared fixtures: canonical `SensorDataRecord` and `SensorMetadataRecord` builders across
+  all four species and both ratification statuses; concentration and RH pairs spanning and exceeding the
+  Calibration_Domain; temperature and pressure pairs spanning sea level to 2,560 m; hourly series with
+  configurable gaps for the NowCast window; registries with configurable site spreads; User_Profile
+  builders across every Condition, Sensitivity_Level, and activity level; and Dedup_Key collision sets with
+  permuted arrival order. The Clock is an injected fake so no test waits on real time, and every port is a
+  fake so no test touches a network.
+- The property families the requirements name explicitly map as: contract round-trip → Properties 1, 2;
+  idempotency → Property 7; humidity monotonicity → Property 10; index monotonicity → Property 16;
+  determinism → Properties 38, 39; guardrail invariants → Properties 35, 36, 37.
+
+### Numeric verification anchored on published values
+
+Three numeric areas are verified against externally published values as literal example tests, not only
+as properties, because a self-consistent implementation of the wrong table would pass every property:
+
+- **Breakpoints**: each PM2.5 and NO2 band boundary from Req 10.3 and 10.4 asserted as an exact
+  concentration-to-Sub_Index pair, including both ends of every band.
+- **Conversion factors**: 1.8806 µg/m³ per ppb at 25 °C and 101,325 Pa, and 1.4219 at 15 °C and 74,000 Pa
+  (Req 9.6).
+- **Escalation points**: 101, 76, and 51 for `standard`, `elevated`, and `high` (Req 22.2), with the
+  Orange_Band lower bound of 101 asserted as the default.
+
+### Offline guarantee and the fenced exceptions
+
+The default suite runs entirely in-process against in-memory adapters, with no AWS credentials and no
+network beyond localhost (Req 28.5). Checks that need a container engine — the local MQTT broker, the
+DynamoDB and S3 local emulation, and the Compose smoke check — are marked so the offline suite excludes
+them and a separate command runs them, and they depend on a container engine and localhost networking only,
+never on a cloud account (Req 28.6). Having `awscli2` and the CDK toolkit on the PATH must not make any
+test depend on cloud access.
+
+### Command surface
+
+Every command named here is a `just` recipe so a contributor and a pipeline invoke the same code path
+(Req 28.7, dev-environment steering): `just test` for the offline suite, `just test-integration` for the
+container-fenced checks, `just lint`, `just typecheck`, `just run` for the local service, and `just up` for
+the Compose stack.
+
+### Coverage expectation
+
+Every new function, route, and class ships with its normal case, edge cases, and error cases before it
+counts as done (practice §3). Property tests carry broad input coverage, so unit tests stay focused on
+specific examples, integration points, and error conditions rather than duplicating the property space.
+The full offline suite runs from one documented command and exits 0 only if every test passes (Req 28.4).
