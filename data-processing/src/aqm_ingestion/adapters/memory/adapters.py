@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import replace
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.aqi.overall import DEFAULT_SPECIES_PRECEDENCE
@@ -34,6 +35,7 @@ from aqm_ingestion.ports.archive_key import derive_archive_id
 from aqm_ingestion.ports.clock import Clock
 from aqm_ingestion.ports.protocols import (
     ArchiveMeta,
+    AuditIdentifiers,
     AuthRejectedError,
     ForecastResult,
     MetObservation,
@@ -326,6 +328,44 @@ class InMemorySensorRegistryStore:
         # SiteCode breaks a distance tie so the order is total and reproducible.
         candidates.sort(key=lambda site: (site.distance_km, site.entry.record.SiteCode))
         return candidates[:n]
+
+
+class InMemoryAuditStore:
+    """Audit records held in a list, supporting Requirement 17.8's erasure.
+
+    De-identification REPLACES the user identity rather than dropping the record, which is what
+    keeps the counts Requirement 17.8 retains: a deleted user's served responses still happened,
+    and that fact is not personal data once the identity is gone.
+    """
+
+    _FORGOTTEN = ""
+
+    def __init__(self) -> None:
+        """Start with an empty trail."""
+        self._records: list[AuditIdentifiers] = []
+
+    def append(self, identifiers: AuditIdentifiers) -> None:
+        """Append one Audit_Record."""
+        self._records.append(identifiers)
+
+    def forget_user(self, user_id: str) -> int:
+        """De-identify every record naming a user, returning how many (Req 17.8)."""
+        forgotten = 0
+        for index, record in enumerate(self._records):
+            if record.user_id == user_id:
+                self._records[index] = replace(record, user_id=self._FORGOTTEN)
+                forgotten += 1
+        return forgotten
+
+    def de_identified_count(self) -> int:
+        """The retained count of served responses, identified or not."""
+        return len(self._records)
+
+    def records_for(self, user_id: str) -> tuple[AuditIdentifiers, ...]:
+        """Records still naming a user, so a test can assert erasure actually happened."""
+        return tuple(
+            record for record in self._records if record.user_id == user_id
+        )
 
 
 class InMemoryProfileStore:

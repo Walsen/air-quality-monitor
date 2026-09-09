@@ -298,8 +298,25 @@ def test_nearest_excludes_inactive_sites() -> None:
 # --- ProfileStore --------------------------------------------------------
 
 def test_profile_put_get_delete() -> None:
+    from aqm_ingestion.domain.profile import (
+        RECOGNIZED_CONSENT_VERSIONS,
+        Condition,
+        ConsentRecord,
+        SensitivityLevel,
+    )
+
     store = InMemoryProfileStore()
-    profile = UserProfile(user_id="u-1", updated_at=_T0)
+    # The real Requirement 17.2 model, which replaced the placeholder in task 17.
+    profile = UserProfile(
+        user_id="u-1",
+        condition=Condition.NONE_DECLARED,
+        sensitivity_level=SensitivityLevel.STANDARD,
+        consent=ConsentRecord(
+            version=next(iter(sorted(RECOGNIZED_CONSENT_VERSIONS))), given_at=_T0
+        ),
+        created_at=_T0,
+        updated_at=_T0,
+    )
     assert store.put(profile) == profile
     assert store.get("u-1") == profile
     store.delete("u-1")

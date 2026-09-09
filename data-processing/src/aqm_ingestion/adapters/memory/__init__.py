@@ -5,6 +5,7 @@ module, which keeps the internal layout free to change.
 """
 
 from aqm_ingestion.adapters.memory.adapters import (
+    InMemoryAuditStore,
     InMemoryForecastClient,
     InMemoryMeteorologyProvider,
     InMemoryProfileStore,
@@ -17,6 +18,7 @@ from aqm_ingestion.adapters.memory.adapters import (
 )
 
 __all__ = [
+    "InMemoryAuditStore",
     "InMemoryForecastClient",
     "InMemoryMeteorologyProvider",
     "InMemoryProfileStore",

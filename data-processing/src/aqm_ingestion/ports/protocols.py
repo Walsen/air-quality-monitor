@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
+from aqm_ingestion.domain.profile import UserProfile
+
+__all__ = ["UserProfile"]  # re-exported: the ProfileStore port is typed on it
 
 # --- boundary value types -------------------------------------------------
 
@@ -164,20 +167,44 @@ class AuthRejectedError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
-class UserProfile:
-    """The stored profile.
+class AuditIdentifiers:
+    """The identifying fields an Audit_Record holds about a user (Requirement 25.7).
 
-    Deliberately minimal for now: Requirement 17.2 fixes an exact field set and
-    the model is an ALLOWLIST, so the remaining fields arrive with task 17 rather
-    than being guessed at here. ``user_id`` is enough for the ProfileStore port
-    shape, which is what this task needs.
+    Narrow on purpose: Requirement 25.8 forbids an Audit_Record from carrying a Condition, a
+    Sensitivity_Level, or a Personal_Threshold, so the audit trail never holds health-adjacent
+    data and Requirement 17.8's erasure has only the identity to remove.
     """
 
     user_id: str
-    updated_at: dt.datetime | None = None
-    # Health-adjacent fields are added by task 17 under Req 17.2's allowlist, and
-    # are never logged (Req 29.4) — the logger redacts them centrally.
-    fields: Mapping[str, object] = field(default_factory=dict)
+    served_at: dt.datetime
+    route: str
+
+
+@runtime_checkable
+class AuditStore(Protocol):
+    """Records what was served, and supports erasure of a user's identity.
+
+    Deliberately minimal here: task 24 owns the full audit trail, and this port carries only
+    what Requirement 17.8's deletion needs. Introduced NOW rather than deferred because a
+    deletion that removed the profile and left the audit identity behind would satisfy no
+    reading of Requirement 17.8, and the gap would be invisible.
+    """
+
+    def append(self, identifiers: AuditIdentifiers) -> None:
+        """Append one Audit_Record."""
+        ...
+
+    def forget_user(self, user_id: str) -> int:
+        """Remove every identifying field for a user, keeping de-identified counts.
+
+        Returns the number of records de-identified, so a deletion can be CONFIRMED
+        (Requirement 17.8) rather than merely attempted.
+        """
+        ...
+
+    def de_identified_count(self) -> int:
+        """The retained count of served responses (Requirement 17.8)."""
+        ...
 
 
 # --- the nine ports -------------------------------------------------------
