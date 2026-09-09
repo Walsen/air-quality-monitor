@@ -28,7 +28,7 @@ from aqm_ingestion.domain.conversion import (
     ConversionUnavailableError,
     SiteConditions,
 )
-from aqm_ingestion.domain.models import Confidence, ConversionSource
+from aqm_ingestion.domain.models import Confidence, ConversionSource, cap_confidence
 from aqm_ingestion.ingest.calibrate import (
     ChannelObservation,
     ObservationSource,
@@ -122,26 +122,16 @@ def _build(
     return ResolvedConditions(conditions=conditions, source=source)
 
 
-# Confidence ordered worst to best, so a cap is a max-index lookup rather than a chain
-# of comparisons (§1).
-_CONFIDENCE_ORDER: tuple[Confidence, ...] = (
-    Confidence.LOW,
-    Confidence.MEDIUM,
-    Confidence.HIGH,
-)
-
-
 def cap_confidence_for_source(
     confidence: Confidence, source: ConversionSource
 ) -> Confidence:
     """Cap Confidence at medium when the conditions were defaulted (Req 9.8).
 
     A CAP, not an assignment: a reading already at low confidence stays low, because a
-    defaulted conversion cannot make a doubtful reading more trustworthy.
+    defaulted conversion cannot make a doubtful reading more trustworthy. The comparison
+    uses the domain's single confidence ordering, so this rule and Requirement 12.8's
+    floor cannot disagree about which confidence is lower.
     """
     if source != "default":
         return confidence
-    ceiling = Confidence.MEDIUM
-    if _CONFIDENCE_ORDER.index(confidence) <= _CONFIDENCE_ORDER.index(ceiling):
-        return confidence
-    return ceiling
+    return cap_confidence(confidence, Confidence.MEDIUM)
