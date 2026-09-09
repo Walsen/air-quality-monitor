@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from aqm_simulator.scenarios.context import ScenarioContext
+
 SUPPORTED_SCENARIOS = (
     "clean",
     "pollution_episode",
@@ -56,8 +58,8 @@ class Scenario(Protocol):
     @property
     def name(self) -> str: ...
 
-    def modifier(self) -> ScenarioModifier:
-        """The modifier this scenario applies while active."""
+    def modifier(self, context: ScenarioContext) -> ScenarioModifier:
+        """The modifier this scenario applies for the given evaluation context."""
         ...
 
 
@@ -66,7 +68,7 @@ class CleanScenario:
 
     name = "clean"
 
-    def modifier(self) -> ScenarioModifier:
+    def modifier(self, context: ScenarioContext) -> ScenarioModifier:
         return ScenarioModifier()
 
 
@@ -81,7 +83,7 @@ class _IdentityPlaceholder:
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def modifier(self) -> ScenarioModifier:
+    def modifier(self, context: ScenarioContext) -> ScenarioModifier:
         return ScenarioModifier()
 
 

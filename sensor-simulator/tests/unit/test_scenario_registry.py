@@ -48,8 +48,12 @@ def test_unknown_scenario_rejected_listing_supported() -> None:
 
 
 def test_clean_is_identity_modifier() -> None:
+    from aqm_simulator.scenarios.context import ScenarioContext
+
     clean = get_scenario("clean")
-    mod = clean.modifier()
+    mod = clean.modifier(
+        ScenarioContext(elapsed_hours=1.0, classification="Roadside", in_rush_window=False)
+    )
     # identity: PM2.5 and NO2 multipliers 1.0, no additive shift
     assert mod.pm25_multiplier == 1.0
     assert mod.no2_multiplier == 1.0
