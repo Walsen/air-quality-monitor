@@ -80,9 +80,19 @@ class SelectionSettings:
 
 @dataclass(frozen=True, slots=True)
 class SelectedSite:
-    """One site in a response, with why it was selected and what it currently reports."""
+    """One site in a response, with why it was selected and what it currently reports.
+
+    ``site_name`` and ``site_classification`` are carried HERE rather than looked up again by
+    the
+    response assembler: Requirement 19.2's body names both, and the selector already holds the
+    registry entry they come from. A second lookup could disagree with the one that chose the
+    site — if the registry were upserted in between, the response would describe a site by one
+    version's name and another version's position.
+    """
 
     site_code: str
+    site_name: str | None
+    site_classification: str | None
     distance_km: float
     location_names: tuple[LocationName, ...]
     measurements: tuple[CalibratedReading, ...]
@@ -108,6 +118,8 @@ class _Candidate:
     """A site accumulated across locations, so Requirement 20.4 merges, not duplicates."""
 
     site_code: str
+    site_name: str | None
+    site_classification: str | None
     distance_km: float
     location_names: list[LocationName] = field(default_factory=list)
 
@@ -132,6 +144,16 @@ class GeoSelector:
         self._readings = readings
         self._clock = clock
         self._settings = settings or SelectionSettings()
+
+    @property
+    def fallback_centre(self) -> tuple[float, float]:
+        """The configured fallback centre (Requirement 20.6).
+
+        Exposed so the response assembler can enrich the same place the sites were selected from
+        when a profile carries no User_Location — forecasting somewhere no site came from would
+        describe two different locations in one response.
+        """
+        return self._settings.fallback_centre
 
     def select(self, profile: UserProfile | None) -> Selection:
         """Resolve the sites for a profile (Requirement 20).
@@ -195,6 +217,7 @@ class GeoSelector:
         understate its relevance.
         """
         site_code = near.entry.record.SiteCode  # type: ignore[attr-defined]
+        record = near.entry.record  # type: ignore[attr-defined]
         distance = round(
             near.distance_km,  # type: ignore[attr-defined]
             self._settings.distance_decimals,
@@ -203,6 +226,8 @@ class GeoSelector:
         if existing is None:
             candidates[site_code] = _Candidate(
                 site_code=site_code,
+                site_name=record.SiteName,
+                site_classification=record.SiteClassification,
                 distance_km=distance,
                 location_names=[] if location_name is None else [location_name],
             )
@@ -224,6 +249,8 @@ class GeoSelector:
         sites = [
             SelectedSite(
                 site_code=candidate.site_code,
+                site_name=candidate.site_name,
+                site_classification=candidate.site_classification,
                 distance_km=candidate.distance_km,
                 # Sorted so the reported names do not depend on which location was walked first.
                 location_names=tuple(sorted(candidate.location_names)),

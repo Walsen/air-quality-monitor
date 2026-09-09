@@ -68,6 +68,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # Tests document themselves through their names; a docstring per assertion adds noise.
 "tests/**" = ["D103"]
+# Requirement 19.2 PINS the response body's member names, which are camelCase. These fields are
+# a wire contract, not Python naming: renaming them to satisfy N815 would break the documented
+# shape every client depends on, and a per-field alias would put the same names back one layer
+# down while making the model harder to read against the spec.
+"src/aqm_ingestion/serving/models.py" = ["N815"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

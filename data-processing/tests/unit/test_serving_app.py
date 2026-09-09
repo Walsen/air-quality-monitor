@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 
 from aqm_ingestion.adapters.memory import LocalAuthenticator
 from aqm_ingestion.observability.logging import configure_logging
@@ -69,13 +70,57 @@ def _client(
     settings: ServingSettings | None = None,
 ) -> tuple[httpx.AsyncClient, AdvanceableClock]:
     clock = AdvanceableClock(_NOW)
-    app = build_app(
-        authenticator=authenticator or LocalAuthenticator({_TOKEN: _USER}),
-        clock=clock,
-        settings=settings or ServingSettings(),
-    )
+    app = _gate_app(authenticator, clock, settings)
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test"), clock
+
+
+def _gate_app(
+    authenticator: Authenticator | None,
+    clock: AdvanceableClock,
+    settings: ServingSettings | None,
+) -> FastAPI:
+    """An app wired only far enough to exercise the GATE.
+
+    The data routes need their stores, but the gate must reject before any handler logic runs
+    (Requirement 18.1) — so this deliberately supplies a minimal stack and the tests below
+    only 401/403/429 behaviour and the health route. That the gate works with nothing else
+    configured is itself part of what 18.1 claims.
+    """
+    from aqm_ingestion.adapters.memory import (
+        InMemoryAuditStore,
+        InMemoryForecastClient,
+        InMemoryProfileStore,
+        InMemoryReadingsStore,
+        InMemorySensorRegistryStore,
+    )
+    from aqm_ingestion.domain.aqi.breakpoints import BreakpointTableRegistry
+    from aqm_ingestion.serving.assembler import ResponseAssembler
+    from aqm_ingestion.serving.enrichment import Enricher
+    from aqm_ingestion.serving.geo import GeoSelector
+    from aqm_ingestion.serving.profiles import ProfileService
+
+    profiles_store = InMemoryProfileStore()
+    audit = InMemoryAuditStore()
+    registry = InMemorySensorRegistryStore()
+    readings = InMemoryReadingsStore(clock=clock)
+    profile_service = ProfileService(profiles=profiles_store, audit=audit)
+    return build_app(
+        authenticator=authenticator or LocalAuthenticator({_TOKEN: _USER}),
+        clock=clock,
+        assembler=ResponseAssembler(
+            profiles=profile_service,
+            selector=GeoSelector(registry=registry, readings=readings, clock=clock),
+            enricher=Enricher(client=InMemoryForecastClient(), clock=clock),
+            breakpoints=BreakpointTableRegistry.with_defaults(),
+            clock=clock,
+        ),
+        profiles=profile_service,
+        readings=readings,
+        registry=registry,
+        audit=audit,
+        settings=settings or ServingSettings(),
+    )
 
 
 def _get(
@@ -108,36 +153,37 @@ def test_the_health_endpoint_needs_no_credential() -> None:
 
 
 def test_the_health_endpoint_reveals_no_data() -> None:
-    # Req 18.9 applies here too: the one unauthenticated endpoint must carry nothing.
+    # Req 18.9 applies here too, and Req 19.10 fixes exactly what it MAY carry: status, the
+    # resolved table, and the resolved strategy names. Nothing else.
     body = _get(HEALTH_PATH).json()
-    assert set(body) <= {"status", "checkedAt"}
+    assert set(body) == {"status", "checkedAt", "breakpointTable", "calibrationStrategies"}
 
 
 def test_a_data_endpoint_needs_a_credential() -> None:
-    assert _get("/v1/advice").status_code == 401
+    assert _get("/v1/air-quality/me").status_code == 401
 
 
 # --- Req 18.2: absent, malformed, or empty header ----------------------
 
 def test_an_absent_authorization_header_is_401() -> None:
-    response = _get("/v1/advice")
+    response = _get("/v1/air-quality/me")
     assert response.status_code == 401
     assert "Authorization" in response.json()["detail"]
 
 
 def test_a_non_bearer_scheme_is_401() -> None:
-    response = _get("/v1/advice", {"Authorization": "Basic abc123"})
+    response = _get("/v1/air-quality/me", {"Authorization": "Basic abc123"})
     assert response.status_code == 401
     assert "bearer" in response.json()["detail"].lower()
 
 
 def test_an_empty_bearer_credential_is_401() -> None:
-    response = _get("/v1/advice", {"Authorization": "Bearer "})
+    response = _get("/v1/air-quality/me", {"Authorization": "Bearer "})
     assert response.status_code == 401
 
 
 def test_a_bare_bearer_word_is_401() -> None:
-    response = _get("/v1/advice", {"Authorization": "Bearer"})
+    response = _get("/v1/air-quality/me", {"Authorization": "Bearer"})
     assert response.status_code == 401
 
 
@@ -145,13 +191,13 @@ def test_a_malformed_header_reaches_no_authenticator() -> None:
     # Req 18.2 requires NO store access; the same reasoning applies to the authenticator — a
     # malformed header is refused at the edge rather than handed onward.
     authenticator = _RejectingAuthenticator(RejectionCategory.INVALID_SIGNATURE)
-    _get("/v1/advice", {"Authorization": "Basic abc"}, authenticator)
+    _get("/v1/air-quality/me", {"Authorization": "Basic abc"}, authenticator)
     assert authenticator.credentials_seen == []
 
 
 def test_the_401_body_is_json() -> None:
     # §5: never a raw trace, always a JSON body.
-    response = _get("/v1/advice")
+    response = _get("/v1/air-quality/me")
     assert response.headers["content-type"].startswith("application/json")
 
 
@@ -159,7 +205,7 @@ def test_the_401_body_is_json() -> None:
 
 def test_a_rejected_credential_reports_its_category() -> None:
     response = _get(
-        "/v1/advice",
+        "/v1/air-quality/me",
         _authorized(),
         _RejectingAuthenticator(RejectionCategory.EXPIRED),
     )
@@ -171,7 +217,7 @@ def test_a_wrong_audience_credential_is_expressible() -> None:
     # Req 18.3 names a different audience as one of the three conditions, so the category set
     # has to be able to say it.
     response = _get(
-        "/v1/advice",
+        "/v1/air-quality/me",
         _authorized(),
         _RejectingAuthenticator(RejectionCategory.WRONG_AUDIENCE),
     )
@@ -182,7 +228,7 @@ def test_the_401_body_discloses_nothing_beyond_the_category() -> None:
     # Req 18.3 forbids disclosing WHICH condition applied beyond the category, so the body must
     # not carry an authenticator message or exception text.
     response = _get(
-        "/v1/advice",
+        "/v1/air-quality/me",
         _authorized(),
         _RejectingAuthenticator(RejectionCategory.INVALID_SIGNATURE),
     )
@@ -194,7 +240,7 @@ def test_the_response_never_contains_the_credential() -> None:
     # Req 18.7. Checks the WHOLE serialised response, not one field, so a leak into any part
     # of the body or headers fails.
     response = _get(
-        "/v1/advice",
+        "/v1/air-quality/me",
         _authorized(),
         _RejectingAuthenticator(RejectionCategory.EXPIRED),
     )
@@ -205,68 +251,74 @@ def test_the_response_never_contains_the_credential() -> None:
 # --- Req 18.4: authentication precedes parameter validation ------------
 
 def test_an_unauthenticated_request_with_a_bad_parameter_is_401_not_400() -> None:
-    # The clause that dictates middleware over a route dependency. FastAPI validates the query
-    # model BEFORE dependencies, so a dependency-based gate would answer 422 here.
-    response = _get("/v1/advice?limit=not-a-number")
+    # The clause that dictates middleware over a route dependency. The history route DECLARES
+    # siteCode, startTime and endTime as required, so omitting them is a genuine FastAPI
+    # validation failure — and FastAPI validates the query model BEFORE dependencies, so a
+    # dependency-based gate would answer 422 here.
+    response = _get("/v1/air-quality/history")
     assert response.status_code == 401
 
 
 def test_the_bad_parameter_really_would_fail_validation() -> None:
-    # Proves the race the test above depends on ACTUALLY EXISTS. Without this, `limit` could be
-    # an undeclared parameter FastAPI silently ignores — there would be no validation to lose
-    # to, and the 401 above would be satisfied by a dependency-based gate as well, which is the
-    # arrangement Req 18.4 exists to forbid.
-    response = _get("/v1/advice?limit=not-a-number", _authorized())
+    # Proves the race the test above depends on ACTUALLY EXISTS: authenticated, the same request
+    # really does fail validation. Without this the 401 would be satisfied by a dependency-based
+    # gate too, which is the arrangement Req 18.4 exists to forbid.
+    response = _get("/v1/air-quality/history", _authorized())
     assert response.status_code == 422
 
 
-def test_a_valid_parameter_is_accepted_when_authenticated() -> None:
-    response = _get("/v1/advice?limit=5", _authorized())
-    assert response.status_code == 200
-    assert response.json()["limit"] == 5
+def test_a_valid_parameter_set_is_accepted_when_authenticated() -> None:
+    # The counterpart: the gate does not simply reject everything. An unknown site is a 404 per
+    # Req 19.7, which is enough to show the request reached the handler.
+    response = _get(
+        "/v1/air-quality/history"
+        "?siteCode=UNKNOWN&startTime=2026-07-01T00:00:00Z&endTime=2026-07-01T06:00:00Z",
+        _authorized(),
+    )
+    assert response.status_code == 404
 
 
 def test_an_authenticated_request_with_a_bad_parameter_is_not_401() -> None:
-    # The counterpart: without it the test above would pass on a gate that rejects everything.
-    response = _get("/v1/advice?limit=not-a-number", _authorized())
+    response = _get("/v1/air-quality/history", _authorized())
     assert response.status_code != 401
 
 
 def test_an_authenticated_request_with_a_bad_parameter_is_not_500() -> None:
     # §5: bad input never produces a 500.
-    response = _get("/v1/advice?limit=not-a-number", _authorized())
+    response = _get("/v1/air-quality/history", _authorized())
     assert response.status_code < 500
 
 
 # --- Req 18.5, 18.6: per-user scoping ---------------------------------
 
 def test_a_request_naming_another_identity_is_403() -> None:
-    response = _get("/v1/advice?userId=someone-else", _authorized())
+    response = _get("/v1/air-quality/history?siteCode=X&userId=someone-else", _authorized())
     assert response.status_code == 403
     assert "scope" in response.json()["detail"].lower()
 
 
 def test_a_request_naming_the_callers_own_identity_is_allowed() -> None:
-    # Redundant but harmless in the request, and refusing it would be wrong.
-    response = _get(f"/v1/advice?userId={_USER}", _authorized())
+    # Redundant but harmless in the request, and refusing it would be wrong. The /me route needs
+    # no parameters, so a 200 here shows the scope check passed rather than fired.
+    response = _get(f"/v1/air-quality/me?userId={_USER}", _authorized())
     assert response.status_code == 200
 
 
 def test_the_served_identity_comes_from_the_credential_not_the_parameter() -> None:
-    # Req 18.6. The route echoes the identity it would use; a handler reading the parameter
-    # would echo the other user even when the parameter matched nothing verified.
-    body = _get("/v1/advice", _authorized()).json()
-    assert body["userId"] == _USER
+    # Req 18.6. The body's `user` member is the identity the response was built for; a handler
+    # reading the parameter would report the other user.
+    body = _get(f"/v1/air-quality/me?userId={_USER}", _authorized()).json()
+    assert body["user"] == _USER
 
 
 def test_a_403_carries_no_data() -> None:
     # Req 18.9: no Reading, profile, or site metadata in an out-of-scope response.
-    body = _get("/v1/advice?userId=someone-else", _authorized()).json()
+    body = _get("/v1/air-quality/history?siteCode=X&userId=someone-else", _authorized()).json()
     assert set(body) == {"detail"}
 
 
 def test_a_401_carries_no_data() -> None:
-    body = _get("/v1/advice").json()
+    body = _get("/v1/air-quality/me").json()
     assert "measurements" not in body
     assert "sites" not in body
 
@@ -277,7 +329,11 @@ def test_a_rejection_logs_exactly_one_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_logging("info")
-    _get("/v1/advice", _authorized(), _RejectingAuthenticator(RejectionCategory.EXPIRED))
+    _get(
+        "/v1/air-quality/me",
+        _authorized(),
+        _RejectingAuthenticator(RejectionCategory.EXPIRED),
+    )
     warnings = [
         event
         for event in _events(capsys.readouterr().out)
@@ -290,13 +346,17 @@ def test_the_warning_names_the_route_and_category(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_logging("info")
-    _get("/v1/advice", _authorized(), _RejectingAuthenticator(RejectionCategory.EXPIRED))
+    _get(
+        "/v1/air-quality/me",
+        _authorized(),
+        _RejectingAuthenticator(RejectionCategory.EXPIRED),
+    )
     warning = next(
         event
         for event in _events(capsys.readouterr().out)
         if event.get("level") == "warning"
     )
-    assert warning["route"] == "/v1/advice"
+    assert warning["route"] == "/v1/air-quality/me"
     assert warning["category"] == "expired"
 
 
@@ -304,22 +364,29 @@ def test_the_warning_carries_no_credential_material(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_logging("info")
-    _get("/v1/advice", _authorized(), _RejectingAuthenticator(RejectionCategory.EXPIRED))
+    _get(
+        "/v1/air-quality/me",
+        _authorized(),
+        _RejectingAuthenticator(RejectionCategory.EXPIRED),
+    )
     assert _TOKEN not in capsys.readouterr().out
 
 
-def test_a_successful_request_logs_no_warning(
+def test_a_successful_request_logs_no_auth_warning(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     # Without this, "exactly one warning" could pass on a gate that warns unconditionally.
+    # Scoped to the AUTH event: the minimal gate stack has no forecast configured, so Req 24.4
+    # rightly logs an enrichment_degraded warning, and folding that in would make this test
+    # about enrichment rather than about the gate.
     configure_logging("info")
-    _get("/v1/advice", _authorized())
-    warnings = [
+    _get("/v1/air-quality/me", _authorized())
+    auth_warnings = [
         event
         for event in _events(capsys.readouterr().out)
-        if event.get("level") == "warning"
+        if event.get("level") == "warning" and event.get("event") == "auth_rejected"
     ]
-    assert warnings == []
+    assert auth_warnings == []
 
 
 # --- Req 18.11: the per-identity rate limit -------------------------
@@ -333,7 +400,7 @@ def test_requests_within_the_limit_are_served() -> None:
         client, _clock = _client(settings=ServingSettings(rate_limit_per_minute=3))
         async with client:
             return [
-                (await client.get("/v1/advice", headers=_authorized())).status_code
+                (await client.get("/v1/air-quality/me", headers=_authorized())).status_code
                 for _ in range(3)
             ]
 
@@ -345,8 +412,8 @@ def test_exceeding_the_limit_is_429() -> None:
         client, _clock = _client(settings=ServingSettings(rate_limit_per_minute=2))
         async with client:
             for _ in range(2):
-                await client.get("/v1/advice", headers=_authorized())
-            return (await client.get("/v1/advice", headers=_authorized())).status_code
+                await client.get("/v1/air-quality/me", headers=_authorized())
+            return (await client.get("/v1/air-quality/me", headers=_authorized())).status_code
 
     assert asyncio.run(_run()) == 429
 
@@ -355,8 +422,8 @@ def test_the_429_names_the_limit_and_retry_interval() -> None:
     async def _run() -> dict[str, Any]:
         client, _clock = _client(settings=ServingSettings(rate_limit_per_minute=1))
         async with client:
-            await client.get("/v1/advice", headers=_authorized())
-            response = await client.get("/v1/advice", headers=_authorized())
+            await client.get("/v1/air-quality/me", headers=_authorized())
+            response = await client.get("/v1/air-quality/me", headers=_authorized())
             return dict(response.json())
 
     body = asyncio.run(_run())
@@ -369,9 +436,9 @@ def test_the_limit_window_moves_with_the_clock() -> None:
     async def _run() -> int:
         client, clock = _client(settings=ServingSettings(rate_limit_per_minute=1))
         async with client:
-            await client.get("/v1/advice", headers=_authorized())
+            await client.get("/v1/air-quality/me", headers=_authorized())
             clock.advance(dt.timedelta(seconds=61))
-            return (await client.get("/v1/advice", headers=_authorized())).status_code
+            return (await client.get("/v1/air-quality/me", headers=_authorized())).status_code
 
     assert asyncio.run(_run()) == 200
 
@@ -380,18 +447,18 @@ def test_the_limit_is_per_identity() -> None:
     # One user exhausting their allowance must not lock out another.
     async def _run() -> int:
         clock = AdvanceableClock(_NOW)
-        app = build_app(
-            authenticator=LocalAuthenticator({_TOKEN: _USER, "token-b": "user-b"}),
-            clock=clock,
-            settings=ServingSettings(rate_limit_per_minute=1),
+        app = _gate_app(
+            LocalAuthenticator({_TOKEN: _USER, "token-b": "user-b"}),
+            clock,
+            ServingSettings(rate_limit_per_minute=1),
         )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            await client.get("/v1/advice", headers=_authorized())
+            await client.get("/v1/air-quality/me", headers=_authorized())
             return (
                 await client.get(
-                    "/v1/advice", headers={"Authorization": "Bearer token-b"}
+                    "/v1/air-quality/me", headers={"Authorization": "Bearer token-b"}
                 )
             ).status_code
 
@@ -415,8 +482,8 @@ def test_a_rate_limited_response_carries_no_data() -> None:
     async def _run() -> dict[str, Any]:
         client, _clock = _client(settings=ServingSettings(rate_limit_per_minute=1))
         async with client:
-            await client.get("/v1/advice", headers=_authorized())
-            return dict((await client.get("/v1/advice", headers=_authorized())).json())
+            await client.get("/v1/air-quality/me", headers=_authorized())
+            return dict((await client.get("/v1/air-quality/me", headers=_authorized())).json())
 
     assert set(asyncio.run(_run())) == {"detail", "limit", "retryAfterSeconds"}
 
