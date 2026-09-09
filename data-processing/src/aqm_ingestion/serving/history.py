@@ -40,6 +40,14 @@ class HistoryWindow:
     end: dt.datetime
     problems: tuple[str, ...] = ()
     unknown_site: bool = False
+    bounds_supplied: bool = False
+    """Whether the caller gave both bounds.
+
+    Requirement 19.6 names "one of them without the other" as a fault, which implies NEITHER is
+    not one — so a request with no bounds gets the default window rather than a rejection. The
+    default is applied by the HANDLER, not here, because it is measured from the Clock and this
+    module stays pure (§2).
+    """
 
 
 @dataclass
@@ -76,13 +84,20 @@ def parse_instant(raw: str) -> dt.datetime | None:
 
 def parse_history_window(
     site_code: str,
-    start: str,
-    end: str,
+    start: str | None,
+    end: str | None,
     species: str | None,
     registry: SensorRegistryStore,
     max_span_days: int = DEFAULT_MAX_HISTORY_SPAN_DAYS,
 ) -> HistoryWindow:
     """Validate the history parameters, accumulating faults (Req 19.6, 19.7, 19.9).
+
+    ``start`` and ``end`` are OPTIONAL at this boundary on purpose. Requirement 19.6 lists "one
+    of them without the other" among the faults that must answer 400 NAMING the offending
+    parameter — but a REQUIRED FastAPI query parameter is missing before any handler runs, so
+    the
+    framework answers 422 with its own body and 19.6's own case could never be met. Accepting
+    them as optional and validating the PAIRING here is what makes that case reachable.
 
     Returns a window whose ``problems`` is empty only when every parameter is acceptable. The
     returned ``start``/``end`` are meaningless when problems exist and the caller must not use
@@ -91,11 +106,18 @@ def parse_history_window(
     problems = _Problems()
     epoch = dt.datetime(1970, 1, 1, tzinfo=dt.UTC)
 
-    parsed_start = parse_instant(start)
-    parsed_end = parse_instant(end)
-    if parsed_start is None:
+    # Requirement 19.6's pairing rule, named as the ABSENT parameter since that is the one the
+    # caller has to add.
+    if start is None and end is not None:
+        problems.add("startTime", "an instant, because endTime was supplied")
+    if end is None and start is not None:
+        problems.add("endTime", "an instant, because startTime was supplied")
+
+    parsed_start = parse_instant(start) if start is not None else None
+    parsed_end = parse_instant(end) if end is not None else None
+    if start is not None and parsed_start is None:
         problems.add("startTime", _INSTANT_FORM)
-    if parsed_end is None:
+    if end is not None and parsed_end is None:
         problems.add("endTime", _INSTANT_FORM)
 
     if species is not None and species not in PERMITTED_HISTORY_SPECIES:
@@ -131,6 +153,7 @@ def parse_history_window(
         end=parsed_end or epoch,
         problems=tuple(problems.messages),
         unknown_site=unknown_site,
+        bounds_supplied=parsed_start is not None and parsed_end is not None,
     )
 
 

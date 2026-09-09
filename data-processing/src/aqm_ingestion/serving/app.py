@@ -44,6 +44,7 @@ from aqm_ingestion.serving.assembler import DEFAULT_TABLE_ID, ResponseAssembler
 from aqm_ingestion.serving.audit import audit_record_for
 from aqm_ingestion.serving.basis import assemble_basis
 from aqm_ingestion.serving.guardrails import (
+    GuardrailSettings,
     GuardrailViolationError,
     enforce_guardrails,
     guardrail_envelope,
@@ -160,6 +161,7 @@ def build_app(
     registry: SensorRegistryStore | None = None,
     audit: AuditStore | None = None,
     breakpoints: BreakpointTableRegistry | None = None,
+    guardrails: GuardrailSettings | None = None,
     settings: ServingSettings | None = None,
 ) -> FastAPI:
     """Build the serving application with its authentication gate and routes.
@@ -264,7 +266,7 @@ def build_app(
 
         assembled = assembler.assemble(identity)
         body = assembled.response.model_dump()
-        _enforce_or_fail(body, route="/v1/air-quality/me")
+        _enforce_or_fail(body, route="/v1/air-quality/me", settings=guardrails)
 
         audit.append(
             audit_record_for(
@@ -281,11 +283,17 @@ def build_app(
     async def air_quality_history(
         request: Request,
         siteCode: str,  # noqa: N803  (the wire name is camelCase)
-        startTime: str,  # noqa: N803
-        endTime: str,  # noqa: N803
+        startTime: str | None = None,  # noqa: N803
+        endTime: str | None = None,  # noqa: N803
         species: str | None = None,
     ) -> JSONResponse:
-        """Requirement 19.3's history window, with the Requirement 25.12 envelope."""
+        """Requirement 19.3's history window, with the Requirement 25.12 envelope.
+
+        The bounds are OPTIONAL parameters so Requirement 19.6's "one without the other" case
+        can
+        answer 400 naming the parameter — a required FastAPI parameter is missing before any
+        handler runs, so the framework would answer 422 with its own body instead.
+        """
         identity = request.state.identity
         if readings is None or registry is None or audit is None:  # pragma: no cover
             raise RuntimeError("the history route needs the readings and registry stores")
@@ -306,20 +314,32 @@ def build_app(
                 content={"detail": f"unknown siteCode {siteCode!r}"},
             )
 
+        # Neither bound supplied: the maximum span ending now. Applied here rather than in the
+        # parser because it is measured from the Clock, which the parser deliberately has no
+        # access to (§2).
+        end_at = window.end if window.bounds_supplied else clock.now()
+        start_at = (
+            window.start
+            if window.bounds_supplied
+            else end_at - dt.timedelta(days=resolved.max_history_span_days)
+        )
+
         result = readings.query_window(
             site_code=siteCode,
             species=frozenset({species}) if species else None,
-            start=window.start,
-            end=window.end,
+            start=start_at,
+            end=end_at,
         )
-        ordered = sorted(result.readings, key=lambda r: (r.key.interval_start, r.key.species))
+        ordered = sorted(
+            result.readings, key=lambda r: (r.key.interval_start, r.key.species)
+        )
         basis = assemble_basis(ordered)
-        envelope = guardrail_envelope()
+        envelope = guardrail_envelope(guardrails)
 
         body = HistoryResponse(
             siteCode=siteCode,
-            startTime=window.start,
-            endTime=window.end,
+            startTime=start_at,
+            endTime=end_at,
             readings=tuple(
                 HistoryReadingOut(
                     dateTime=reading.key.interval_start,
@@ -339,7 +359,7 @@ def build_app(
             emergencyGuidance=envelope.emergency_guidance,
             disclaimer=envelope.disclaimer,
         ).model_dump()
-        _enforce_or_fail(body, route="/v1/air-quality/history")
+        _enforce_or_fail(body, route="/v1/air-quality/history", settings=guardrails)
 
         audit.append(
             audit_record_for(
@@ -366,9 +386,32 @@ def build_app(
         if profiles is None:  # pragma: no cover - wiring guard
             raise RuntimeError("the profile routes need a profile service")
         identity = request.state.identity
-        submitted = await request.json()
+        # Req 19.8: bad input NEVER 500s. Both of these were real 500s found by the hostile-body
+        # matrix — an absent body raises JSONDecodeError from .json(), and a scalar body raises
+        # TypeError from dict(). Neither is a programming error; both are things a client can
+        # send.
         try:
-            profiles.write(identity, dict(submitted))
+            submitted = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "the request body must be a JSON object",
+                    "problems": ["body: expected a JSON object"],
+                },
+            )
+        if not isinstance(submitted, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "the request body must be a JSON object",
+                    "problems": [
+                        f"body: expected a JSON object, got {type(submitted).__name__}"
+                    ],
+                },
+            )
+        try:
+            profiles.write(identity, submitted)
         except (ValidationError, ValueError) as invalid:
             # §5: bad INPUT is a 400, never a 500 — distinct from Requirement 25.11's deliberate
             # 500 for a guardrail-violating OUTPUT. The message is already sanitised of
@@ -404,8 +447,17 @@ def build_app(
     return app
 
 
-def _enforce_or_fail(body: Mapping[str, object], route: str) -> None:
+def _enforce_or_fail(
+    body: Mapping[str, object],
+    route: str,
+    settings: GuardrailSettings | None = None,
+) -> None:
     """Run the Requirement 25.11 check, converting a violation into a 500.
+
+    ``settings`` must be threaded through: an earlier draft enforced with the DEFAULT patterns
+    while the envelope used the configured ones, so a configured pattern was never consulted at
+    the only point where it matters. Configurability that the enforcement path ignores is worse
+    than none, because it looks present.
 
     Raises:
         HTTPException: 500 with the body WITHHELD. Requirement 25.11 holds that emitting a
@@ -413,7 +465,7 @@ def _enforce_or_fail(body: Mapping[str, object], route: str) -> None:
             travel — only the pattern reaches the log.
     """
     try:
-        enforce_guardrails(body)
+        enforce_guardrails(body, settings=settings)
     except GuardrailViolationError as violation:
         _logger.error("guardrail_violation", route=route, pattern=violation.pattern)
         raise HTTPException(
