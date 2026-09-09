@@ -91,6 +91,9 @@ _MAX_PLAUSIBLE = {"PM25": 500.0, "NO2": 400.0}
 # diurnal amplitude stays <=0.5x NO2's (Requirement 4.4).
 _LOCAL_MODIFIER_MAX = 2.0  # µg/m³ bounded per-site offset magnitude
 _PM_DIURNAL_AMPLITUDE = 1.0  # µg/m³
+# Shared city-wide diurnal phase (radians). City-wide, not per site, so the
+# diurnal term stays part of the shared component of Requirement 9.1.
+_PM_DIURNAL_PHASE = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +131,6 @@ class PM25Signal:
         self._lat = latitude
         self._lon = longitude
         self._local_offset = float(rng.uniform(-_LOCAL_MODIFIER_MAX, _LOCAL_MODIFIER_MAX))
-        self._diurnal_phase = float(rng.uniform(0.0, 2.0 * math.pi))
         self._clamp_events: list[ClampEvent] = []
 
     def _local_component(self, when: dt.datetime) -> float:
@@ -140,7 +142,14 @@ class PM25Signal:
         """PM2.5 dry concentration (µg/m³) before the humidity artifact."""
         baseline = self._regional.baseline(when)
         hour = when.hour + when.minute / 60.0
-        diurnal = _PM_DIURNAL_AMPLITUDE * math.sin(2 * math.pi * hour / 24.0 + self._diurnal_phase)
+        # The diurnal cycle (traffic and boundary-layer driven) is CITY-WIDE, so
+        # its phase is shared by the whole swarm. Drawing it per site put a large
+        # distance-independent term in the signal, which broke the shared/local
+        # split of Requirement 9.1 and the spatial decay of 9.3: two sensors then
+        # correlated by how close their random phases fell, not by separation.
+        diurnal = _PM_DIURNAL_AMPLITUDE * math.sin(
+            2 * math.pi * hour / 24.0 + _PM_DIURNAL_PHASE
+        )
         return max(0.0, baseline + self._local_component(when) + diurnal)
 
     def clamp(self, species: str, value: float, site_code: str, when: dt.datetime) -> float:
