@@ -33,11 +33,15 @@ a conflicting provisional pair arrived before or after the ratified record.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum, auto
 
 from aqm_ingestion.contract.records import SensorDataRecord
-from aqm_ingestion.domain.models import DedupKey, QualityFlag
+from aqm_ingestion.domain.models import (
+    CalibratedReading,
+    DedupKey,
+    QualityFlag,
+)
 
 _UTC_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
@@ -218,3 +222,47 @@ def _describe(key: DedupKey) -> str:
         f"{key.site_code}/{key.species}/"
         f"{key.interval_start.strftime(_UTC_FORMAT)}/{key.duration}"
     )
+
+
+def resolve_stored_reading(
+    stored: CalibratedReading, incoming: CalibratedReading
+) -> CalibratedReading:
+    """Resolve two stored Readings sharing a Dedup_Key (Requirement 14.2).
+
+    Requirement 14.2 says a write for an existing Dedup_Key resolves per Requirement 7, so
+    this applies the SAME status precedence as :func:`resolve_duplicate` — reusing
+    ``_STATUS_RANK`` rather than restating it, because two copies that drifted apart would
+    let the store and the pipeline disagree about which value wins.
+
+    It is a separate function rather than the same one because the inputs differ in kind: a
+    ``CalibratedReading`` no longer carries every contract field, so Requirement 7.3's
+    "all fields equal" cannot be evaluated here. What IS expressible — a ratified value
+    superseding a provisional one, and an equal-status value conflict keeping the greater
+    and marking it suspect — is enforced, which is what stops a blind overwrite from losing
+    a ratified reading.
+
+    Args:
+        stored: the Reading already under this key.
+        incoming: the Reading being written.
+
+    Returns:
+        Whichever Reading prevails, with ``suspect_conflict`` set when two equal-status
+        Readings disagreed on the reported value (Requirement 7.6).
+    """
+    stored_rank = _STATUS_RANK.get(stored.ratification_status, -1)
+    incoming_rank = _STATUS_RANK.get(incoming.ratification_status, -1)
+
+    if incoming_rank > stored_rank:
+        # Requirement 7.4: a ratified value supersedes, and settles any earlier dispute —
+        # so the flag is NOT carried over (see resolve_duplicate for why that matters to
+        # order independence).
+        return incoming
+    if incoming_rank < stored_rank:
+        return stored  # Requirement 7.5
+
+    if stored.reported_value == incoming.reported_value:
+        return stored  # nothing to choose between
+
+    # Requirement 7.6: keep the greater value, and record that the reading is disputed.
+    winner = incoming if incoming.reported_value > stored.reported_value else stored
+    return replace(winner, quality_flag=QualityFlag.SUSPECT_CONFLICT)

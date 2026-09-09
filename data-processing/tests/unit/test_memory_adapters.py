@@ -34,6 +34,7 @@ from aqm_ingestion.domain.models import (
     DedupKey,
     QualityFlag,
 )
+from aqm_ingestion.ports.clock import FixedClock
 from aqm_ingestion.ports.protocols import (
     ArchiveMeta,
     Authenticator,
@@ -88,7 +89,7 @@ def _metadata(**overrides: object) -> SensorMetadataRecord:
 # --- every adapter satisfies its port ------------------------------------
 
 def test_adapters_satisfy_their_ports() -> None:
-    assert isinstance(InMemoryReadingsStore(), ReadingsStore)
+    assert isinstance(InMemoryReadingsStore(clock=FixedClock(_T0)), ReadingsStore)
     assert isinstance(InMemorySensorRegistryStore(), SensorRegistryStore)
     assert isinstance(InMemoryRawArchive(), RawArchive)
     assert isinstance(InMemoryProfileStore(), ProfileStore)
@@ -102,27 +103,35 @@ def test_adapters_satisfy_their_ports() -> None:
 # --- ReadingsStore -------------------------------------------------------
 
 def test_put_then_get_returns_the_reading() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     reading = _reading()
     store.put(reading)
     assert store.get(reading.key) == reading
 
 
 def test_put_is_idempotent_per_dedup_key() -> None:
-    store = InMemoryReadingsStore()
+    # One key holds one reading. This test originally asserted "last write wins", which
+    # Requirement 14.2 forbids: a write for an existing Dedup_Key RESOLVES per
+    # Requirement 7, so with equal ratification status the GREATER reported value prevails
+    # and the reading is marked disputed — a blind overwrite would have lost a ratified
+    # value in the same situation.
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     store.put(_reading(corrected=10.0))
     store.put(_reading(corrected=20.0))  # same key
     result = store.query_window("CB0001", None, _T0 - dt.timedelta(days=1), _T0)
     assert len(result.readings) == 1
-    assert result.readings[0].corrected_value == 20.0  # last write wins
+    written = (_reading(corrected=10.0), _reading(corrected=20.0))
+    assert result.readings[0].reported_value == max(
+        reading.reported_value for reading in written
+    )
 
 
 def test_get_missing_key_returns_none() -> None:
-    assert InMemoryReadingsStore().get(_key()) is None
+    assert InMemoryReadingsStore(clock=FixedClock(_T0)).get(_key()) is None
 
 
 def test_query_window_is_half_open() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     for hour in (9, 10, 11):
         store.put(_reading(_key(hour=hour)))
     start = dt.datetime(2026, 7, 1, 9, tzinfo=dt.UTC)
@@ -135,7 +144,7 @@ def test_query_window_is_half_open() -> None:
 
 
 def test_query_window_filters_by_species() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     store.put(_reading(_key(species="PM25")))
     store.put(_reading(_key(species="NO2")))
     result = store.query_window(
@@ -145,7 +154,7 @@ def test_query_window_filters_by_species() -> None:
 
 
 def test_query_window_orders_deterministically() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     for hour in (11, 9, 10):
         store.put(_reading(_key(hour=hour)))
     result = store.query_window("CB0001", None, _T0 - dt.timedelta(days=1), _T0)
@@ -154,7 +163,7 @@ def test_query_window_orders_deterministically() -> None:
 
 
 def test_query_window_reports_truncation() -> None:
-    store = InMemoryReadingsStore(max_window_readings=2)
+    store = InMemoryReadingsStore(max_window_readings=2, clock=FixedClock(_T0))
     for hour in (8, 9, 10):
         store.put(_reading(_key(hour=hour)))
     result = store.query_window("CB0001", None, _T0 - dt.timedelta(days=1), _T0)
@@ -163,21 +172,21 @@ def test_query_window_reports_truncation() -> None:
 
 
 def test_query_window_not_truncated_when_within_cap() -> None:
-    store = InMemoryReadingsStore(max_window_readings=10)
+    store = InMemoryReadingsStore(max_window_readings=10, clock=FixedClock(_T0))
     store.put(_reading())
     result = store.query_window("CB0001", None, _T0 - dt.timedelta(days=1), _T0)
     assert result.truncated is False
 
 
 def test_put_batch_stores_every_reading() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     store.put_batch([_reading(_key(hour=9)), _reading(_key(hour=10))])
     result = store.query_window("CB0001", None, _T0 - dt.timedelta(days=1), _T0)
     assert len(result.readings) == 2
 
 
 def test_latest_per_species_returns_the_newest() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     store.put(_reading(_key(species="PM25", hour=9), corrected=1.0))
     store.put(_reading(_key(species="PM25", hour=11), corrected=2.0))
     latest = store.latest_per_species(["CB0001"], _T0 - dt.timedelta(days=1))
@@ -185,7 +194,7 @@ def test_latest_per_species_returns_the_newest() -> None:
 
 
 def test_latest_per_species_honours_not_before() -> None:
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_T0))
     store.put(_reading(_key(hour=9)))
     latest = store.latest_per_species(["CB0001"], dt.datetime(2026, 7, 1, 10, tzinfo=dt.UTC))
     assert latest.get("CB0001", []) == []  # too old to count as fresh

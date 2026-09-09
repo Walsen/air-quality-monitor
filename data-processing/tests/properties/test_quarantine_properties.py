@@ -23,6 +23,7 @@ from aqm_ingestion.adapters.memory import InMemoryReadingsStore
 from aqm_ingestion.contract.records import SensorDataRecord
 from aqm_ingestion.domain.validation import QuarantineReason, ValidationLimits
 from aqm_ingestion.ingest.quarantine import screen_reading
+from aqm_ingestion.ports.clock import FixedClock
 from tests.unit.test_records import GOLDEN_DATA_PAYLOAD
 
 _NOW = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
@@ -110,7 +111,7 @@ def test_property_6_quarantined_records_are_fully_reasoned_and_never_stored(
 
     # Req 6.10 again, this time against a real store: a quarantined record leaves it
     # empty, because there was never a value to write
-    store = InMemoryReadingsStore()
+    store = InMemoryReadingsStore(clock=FixedClock(_NOW))
     window = store.query_window(
         site_code=site,
         species=None,

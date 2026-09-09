@@ -26,8 +26,11 @@ import math
 from collections.abc import Iterator, Mapping, Sequence
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
+from aqm_ingestion.domain.aqi.overall import DEFAULT_SPECIES_PRECEDENCE
+from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
 from aqm_ingestion.ports.archive_key import derive_archive_id
+from aqm_ingestion.ports.clock import Clock
 from aqm_ingestion.ports.protocols import (
     ArchiveMeta,
     AuthRejectedError,
@@ -46,6 +49,9 @@ from aqm_ingestion.ports.protocols import (
 _EARTH_RADIUS_KM = 6371.0088
 _DEFAULT_WINDOW_CAP = 10_000
 
+DEFAULT_RETENTION_DAYS = 90
+"""Requirement 14.7's Retention_Window."""
+
 
 def _great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Great-circle distance in kilometres (haversine)."""
@@ -60,25 +66,72 @@ def _great_circle_km(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 class InMemoryReadingsStore:
-    """Readings held in a dict keyed by DedupKey, so a re-put is idempotent."""
+    """Readings held in a dict keyed by DedupKey, so a re-put is idempotent.
 
-    def __init__(self, max_window_readings: int = _DEFAULT_WINDOW_CAP) -> None:
-        """Hold readings, capping a window at ``max_window_readings``."""
+    Retention (Requirement 14.7) is applied at QUERY time rather than by evicting on write.
+    Two reasons: an aged reading stays available to a diagnostic path that asks for it by
+    key, and the exclusion then moves with the injected clock, so the same stored data ages
+    out correctly without anything having to run on a timer.
+    """
+
+    def __init__(
+        self,
+        max_window_readings: int = _DEFAULT_WINDOW_CAP,
+        *,
+        clock: Clock,
+        retention_days: int = DEFAULT_RETENTION_DAYS,
+        species_precedence: tuple[str, ...] = DEFAULT_SPECIES_PRECEDENCE,
+    ) -> None:
+        """Hold readings, capping a window and excluding aged ones.
+
+        Args:
+            max_window_readings: Requirement 14.8's bound.
+            clock: the Clock retention is measured from (§2 — never read directly).
+            retention_days: Requirement 14.7's Retention_Window.
+            species_precedence: Requirement 14.3's secondary ordering.
+        """
         self._readings: dict[DedupKey, CalibratedReading] = {}
         self._cap = max_window_readings
+        self._clock = clock
+        self._retention = dt.timedelta(days=retention_days)
+        self._precedence = species_precedence
 
     def put(self, reading: CalibratedReading) -> None:
-        """Store one Reading; the same key replaces rather than duplicates."""
-        self._readings[reading.key] = reading
+        """Store one Reading, RESOLVING against any existing one (Requirement 14.2).
+
+        Not a blind replace: Requirement 14.2 defers to Requirement 7, so a provisional
+        value must not displace a ratified one. The resolution lives in the domain and is
+        shared with the pipeline's, so the two cannot disagree about which value wins.
+        """
+        existing = self._readings.get(reading.key)
+        self._readings[reading.key] = (
+            reading if existing is None else resolve_stored_reading(existing, reading)
+        )
 
     def put_batch(self, readings: Sequence[CalibratedReading]) -> None:
-        """Store many Readings."""
+        """Store many Readings, each resolved as a single write would be."""
         for reading in readings:
             self.put(reading)
 
     def get(self, key: DedupKey) -> CalibratedReading | None:
         """Return the Reading for a key, or None."""
         return self._readings.get(key)
+
+    def _species_rank(self, species: str) -> tuple[int, str]:
+        """Rank a species by the configured precedence, unlisted ones last then by name.
+
+        Requirement 14.3 orders by PRECEDENCE, not by name — and the default precedence is
+        PM25 before NO2, which is the reverse of alphabetical. Sorting by name would look
+        correct and be wrong.
+        """
+        try:
+            return (self._precedence.index(species), species)
+        except ValueError:
+            return (len(self._precedence), species)
+
+    def _retention_floor(self) -> dt.datetime:
+        """The oldest interval start still inside the Retention_Window."""
+        return self._clock.now() - self._retention
 
     def query_window(
         self,
@@ -87,35 +140,58 @@ class InMemoryReadingsStore:
         start: dt.datetime,
         end: dt.datetime,
     ) -> WindowResult:
-        """Return Readings in the half-open [start, end), reporting truncation."""
+        """Return Readings in the half-open [start, end), reporting truncation.
+
+        Raises:
+            ValueError: if the window is inverted. An end before its start is a caller bug
+                that would silently return nothing, hiding the mistake (§5).
+        """
+        if end < start:
+            raise ValueError(
+                f"window end {end.isoformat()} precedes its start {start.isoformat()}"
+            )
+        floor = self._retention_floor()
         matched = [
             reading
             for reading in self._readings.values()
             if reading.key.site_code == site_code
             and start <= reading.key.interval_start < end
+            and reading.key.interval_start >= floor  # Requirement 14.7
             and (species is None or reading.key.species in species)
         ]
-        # Sorted so the result never depends on insertion order (§2).
-        matched.sort(key=lambda r: (r.key.interval_start, r.key.species))
+        # Requirement 14.3's ordering, which also makes the result independent of
+        # insertion order (§2). The cap is applied AFTER sorting, so which readings a
+        # truncated result drops is deterministic too.
+        matched.sort(
+            key=lambda r: (r.key.interval_start, self._species_rank(r.key.species))
+        )
         truncated = len(matched) > self._cap
         return WindowResult(readings=tuple(matched[: self._cap]), truncated=truncated)
 
     def latest_per_species(
         self, site_codes: Sequence[str], not_before: dt.datetime
     ) -> Mapping[str, Sequence[CalibratedReading]]:
-        """Return the newest Reading per species per site, no older than given."""
+        """Return the newest Reading per species per site, no older than given.
+
+        Requirement 14.7 says EVERY query result, so retention applies here as well as to
+        a window query.
+        """
+        floor = max(not_before, self._retention_floor())
         latest: dict[str, dict[str, CalibratedReading]] = {}
         for reading in self._readings.values():
             if reading.key.site_code not in site_codes:
                 continue
-            if reading.key.interval_start < not_before:
+            if reading.key.interval_start < floor:
                 continue
             per_species = latest.setdefault(reading.key.site_code, {})
             current = per_species.get(reading.key.species)
             if current is None or reading.key.interval_start > current.key.interval_start:
                 per_species[reading.key.species] = reading
         return {
-            site: [per_species[name] for name in sorted(per_species)]
+            site: [
+                per_species[name]
+                for name in sorted(per_species, key=self._species_rank)
+            ]
             for site, per_species in sorted(latest.items())
         }
 
