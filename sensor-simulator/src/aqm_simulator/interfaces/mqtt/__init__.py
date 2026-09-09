@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ssl
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -63,6 +64,29 @@ class MqttConnectionError(RuntimeError):
     A failed broker chain validation is reported as this, so a TLS mismatch is
     handled on the same path as any other connection failure (Requirement 13.3).
     """
+
+
+class RejectionCategory(StrEnum):
+    """Why the broker refused a Virtual_Sensor (Requirement 13.10)."""
+
+    CERTIFICATE = "certificate"
+    CLIENT_AUTH = "client_auth"
+
+
+class MqttAuthRejectionError(RuntimeError):
+    """The broker refused this Virtual_Sensor's identity.
+
+    Distinct from :class:`MqttConnectionError` because the two have opposite
+    remedies: a connection failure is retried for as long as the Simulator runs
+    (Requirement 13.5), while repeated identity rejections mean the credentials
+    will not start working, so attempts stop for that Virtual_Sensor alone
+    (Requirement 13.10).
+    """
+
+    def __init__(self, site_code: str, category: RejectionCategory) -> None:
+        super().__init__(f"broker rejected {site_code}: {category}")
+        self.site_code = site_code
+        self.category = category
 
 
 class MqttPublisher:

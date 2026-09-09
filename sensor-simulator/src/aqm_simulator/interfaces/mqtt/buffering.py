@@ -23,9 +23,18 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 from aqm_simulator.contract.records import SensorDataRecord
-from aqm_simulator.interfaces.mqtt import MqttPublisher, MqttTransport
+from aqm_simulator.interfaces.mqtt import (
+    MqttAuthRejectionError,
+    MqttPublisher,
+    MqttTransport,
+    RejectionCategory,
+)
+from aqm_simulator.observability.logging import get_logger
+
+_logger = get_logger("mqtt")
 
 _MIN_BUFFER = 1
 _MAX_BUFFER = 100_000
@@ -102,6 +111,30 @@ class RecordBuffer:
         return held
 
 
+@dataclass(frozen=True, slots=True)
+class UnpublishedRecord:
+    """The identity of a record that could not be published (Requirement 13.11)."""
+
+    site_code: str
+    species: str
+    date_time: str
+
+
+@dataclass(frozen=True, slots=True)
+class PublishReport:
+    """The outcome of one publish pass.
+
+    ``unpublished`` names every record left unsent by its ``SiteCode``,
+    ``Species`` and ``DateTime``, independently of whether the buffer still holds
+    it, so an invocation-scoped deployment can report the gap and a later
+    invocation can republish that Publish_Interval (Requirement 13.11).
+    """
+
+    published: int
+    unpublished: tuple[UnpublishedRecord, ...]
+    dropped: int
+
+
 class ResilientPublisher:
     """Publishes with retry, buffering the records an outage prevented sending."""
 
@@ -112,13 +145,19 @@ class ResilientPublisher:
         backoff: BackoffPolicy | None = None,
         sleep: SleepFn | None = None,
         max_attempts_per_batch: int = 3,
+        max_rejections: int = 5,
     ) -> None:
         self._publisher = MqttPublisher(transport)
         self._buffer = buffer if buffer is not None else RecordBuffer()
         self._backoff = backoff if backoff is not None else BackoffPolicy()
         self._sleep = sleep
         self._max_attempts = max_attempts_per_batch
+        self._max_rejections = max_rejections
         self._consecutive_failures = 0
+        # per-SiteCode identity-rejection state (Requirement 13.10)
+        self._rejections: dict[str, int] = {}
+        self._categories: dict[str, RejectionCategory] = {}
+        self._abandoned: set[str] = set()
 
     @property
     def dropped(self) -> int:
@@ -128,27 +167,72 @@ class ResilientPublisher:
     def buffered(self) -> int:
         return len(self._buffer)
 
-    async def publish_all(self, records: list[SensorDataRecord]) -> None:
+    @property
+    def abandoned(self) -> set[str]:
+        """SiteCodes no longer attempted after repeated identity rejection."""
+        return set(self._abandoned)
+
+    def rejection_category(self, site_code: str) -> RejectionCategory | None:
+        """The category that caused a give-up, for reporting (Requirement 13.10)."""
+        return self._categories.get(site_code)
+
+    async def publish_all(self, records: list[SensorDataRecord]) -> PublishReport:
         """Publish buffered records first, then the newly generated ones."""
         pending = self._buffer.drain() + list(records)
+        published = 0
         unsent: list[SensorDataRecord] = []
         for index, record in enumerate(pending):
-            if not await self._publish_with_retry(record):
-                unsent = pending[index:]  # keep this and every later record
-                break
+            if record.SiteCode in self._abandoned:
+                continue  # stopped for this sensor only; the swarm carries on
+            if await self._publish_with_retry(record):
+                published += 1
+                continue
+            if record.SiteCode in self._abandoned:
+                continue  # abandoned during this attempt; nothing to buffer
+            unsent = [r for r in pending[index:] if r.SiteCode not in self._abandoned]
+            break
         for record in unsent:
             self._buffer.add(record)
+        return PublishReport(
+            published=published,
+            unpublished=tuple(
+                UnpublishedRecord(r.SiteCode, r.Species, r.DateTime) for r in unsent
+            ),
+            dropped=self._buffer.dropped,
+        )
 
     async def _publish_with_retry(self, record: SensorDataRecord) -> bool:
         """Try one record, backing off between attempts. True when published."""
         for attempt in range(1, self._max_attempts + 1):
             try:
                 await self._publisher.publish_one(record)
+            except MqttAuthRejectionError as rejection:
+                if self._note_rejection(rejection):
+                    return False  # threshold reached: stop for this sensor
+                if attempt < self._max_attempts and self._sleep is not None:
+                    await self._sleep(self._backoff.delay_for(attempt))
             except (OSError, TimeoutError):
                 self._consecutive_failures += 1
                 if attempt < self._max_attempts and self._sleep is not None:
                     await self._sleep(self._backoff.delay_for(self._consecutive_failures))
             else:
                 self._consecutive_failures = 0
+                self._rejections.pop(record.SiteCode, None)  # consecutive only
                 return True
+        return False
+
+    def _note_rejection(self, rejection: MqttAuthRejectionError) -> bool:
+        """Count a rejection; True once this sensor has hit the give-up threshold."""
+        site = rejection.site_code
+        self._categories[site] = rejection.category
+        self._rejections[site] = self._rejections.get(site, 0) + 1
+        if self._rejections[site] >= self._max_rejections:
+            self._abandoned.add(site)
+            _logger.error(
+                "mqtt_sensor_abandoned",
+                site_code=site,
+                rejection_category=str(rejection.category),
+                consecutive_rejections=self._rejections[site],
+            )
+            return True
         return False
