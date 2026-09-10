@@ -1,0 +1,91 @@
+[project]
+name = "agent-advisor"
+version = "0.1.0"
+description = "AI Advisor Agent — turns the serving API's per-user view into condition-appropriate exposure-reduction guidance"
+requires-python = "==3.12.*"
+# Every direct dependency is pinned to ONE exact version (Requirement 26.3), with uv.lock
+# committed alongside. Dependencies a later task introduces arrive in the commit that first
+# needs them, so each one is reviewable rather than speculative.
+#
+# `strands-agents[otel]` and NOT `strands-agents-tools` (assumption A9): a general-purpose tool
+# library would hand the agent file-system and shell surface that a health advisor has no use
+# for, and the reachable tool set is a security property here rather than a convenience.
+dependencies = [
+    "bedrock-agentcore==0.1.7",
+    "boto3==1.43.90",
+    "httpx==0.28.1",
+    "pydantic==2.13.5",
+    "strands-agents[otel]==1.55.1",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis==6.168.0",
+    "mypy==1.19.1",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.3.0",
+    "ruff==0.15.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aqm_advisor"
+module-root = "src"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+markers = [
+    "property: property-based test asserting a named correctness property",
+    # Requirement 35.8's fence: anything needing a live model or live guardrail is excluded
+    # from the offline suite and run by its own command.
+    "integration: requires a live model, a live guardrail, or a container engine",
+    "contract: shared port behaviour suite, run against every adapter of a port",
+]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",      # pycodestyle, pyflakes
+    "I",                 # import sorting
+    "N",                 # naming
+    "UP",                # pyupgrade
+    "B",                 # bugbear
+    "SIM",               # simplify
+    "RUF",               # ruff-specific
+    "ANN",               # missing annotations
+    "D",                 # docstrings
+]
+ignore = [
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests document themselves through their names; a docstring per assertion adds noise.
+"tests/**" = ["D103"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+
+# The AgentCore SDK and boto3 ship no complete type information. Only the deployment boundary and
+# the cloud adapters import them, and the PORT signatures those satisfy are fully typed — which is
+# what the shared contract suite checks — so the untyped boundary stops at the adapter.
+[[tool.mypy.overrides]]
+module = ["bedrock_agentcore", "bedrock_agentcore.*", "boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true

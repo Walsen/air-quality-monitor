@@ -73,11 +73,14 @@ directory.
     - _Requirements: 2.1, 3.1, 4.1, 20.1, 33.3, 34.2_
 
   - [ ] 2.3 Implement the scripted `Model` subclass
-    - A Strands `Model` subclass whose async `stream()` yields a scripted sequence of stream events and
-      performs no network call; supports scripting a tool-use request, a text generation, a truncation, a
-      `guardrail_intervention` stop reason and a raised failure, so every branch of the pipeline is
-      drivable offline
-    - _Requirements: 6.2, 6.5a, 35.1_
+    - A Strands `Model` subclass implementing ALL FOUR of the ABC's abstract methods — `stream`,
+      `structured_output`, `get_config`, `update_config` — because a subclass missing any of them
+      cannot be instantiated at all; `stream` yields a scripted sequence of stream events and
+      performs no network call; supports scripting a tool-use request, a text generation, a
+      truncation, a `guardrail_intervention` stop reason and a raised failure, so every branch of
+      the pipeline is drivable offline; `structured_output` is scripted too, since Req 6.3b routes
+      the response's structured fields through it and it is part of the abstract surface
+    - _Requirements: 6.2, 6.3b, 6.5a, 35.1_
 
   - [ ] 2.4 Implement the local fakes for the other three ports
     - Scripted `ServingClient` returning canned Service 2 bodies built from that service's real response
