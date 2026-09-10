@@ -145,14 +145,48 @@ def test_an_empty_configured_set_disables_the_check_visibly() -> None:
 # --- task 6.3: the required texts must not be self-rejecting ------------
 
 def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
-    # TASK 6.3. Req 8.4 requires the emergency guidance and Req 8.5 requires the disclaimer on
-    # EVERY
-    # response — so if the pattern set rejected either, the service could not publish text it is
-    # obliged to publish. The emergency wording mentions a reliever inhaler, which is exactly
-    # what a
-    # careless medication pattern would fire on.
-    assert forbidden_matches(_EMERGENCY) == ()
-    assert forbidden_matches(_DISCLAIMER) == ()
+    # TASK 6.3, GENERALISED. Req 8.4 requires the emergency guidance and Req 8.5 the disclaimer
+    # on
+    # every response, so a pattern set that rejected either would stop the service publishing
+    # text
+    # it is obliged to publish.
+    #
+    # This now sweeps EVERY text the service must emit, because the narrower version missed one.
+    # Req 11.4's clinician suggestion begins "Since you have noticed a change over several
+    # days",
+    # and a bare `you have` diagnosis pattern rejected it — the pattern was keyed on the WORDS
+    # rather than the CLAIM, and only a guard over all required texts finds that.
+    from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
+    from aqm_advisor.domain.reporting import (
+        GASEOUS_SAME_DAY_TEXT,
+        PARTICULATE_LAG_TEXT,
+        TIMING_TEMPLATES,
+    )
+
+    required = (
+        _EMERGENCY,
+        _DISCLAIMER,
+        DEFERENCE_TEXT,
+        CLINICIAN_SUGGESTION_TEXT,
+        PARTICULATE_LAG_TEXT,
+        GASEOUS_SAME_DAY_TEXT,
+        *TIMING_TEMPLATES,
+    )
+    for text in required:
+        assert forbidden_matches(text) == (), text
+        assert not administration_near_medication(text), text
+
+
+def test_the_required_text_sweep_covers_more_than_a_couple_of_strings() -> None:
+    # Non-vacuity: the guard's value is its BREADTH. A version sweeping two strings is what let
+    # the
+    # clinician-suggestion defect through in the first place.
+    from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
+    from aqm_advisor.domain.reporting import TIMING_TEMPLATES
+
+    assert len({_EMERGENCY, _DISCLAIMER, DEFERENCE_TEXT, CLINICIAN_SUGGESTION_TEXT}) == 4
+    assert len(TIMING_TEMPLATES) >= 2
+
 
 
 def test_the_required_emergency_text_survives_the_administration_check_too() -> None:
