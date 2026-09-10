@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from strands.tools.decorator import DecoratedFunctionTool
 
-from aqm_advisor.adapters.local import ScriptedServingClient
+from aqm_advisor.adapters.local import ScriptedServingClient, canned_air_quality
 from aqm_advisor.agent.prompt import (
     DEFAULT_SYSTEM_PROMPT_RESOURCE,
     load_system_prompt,
@@ -33,6 +33,7 @@ from aqm_advisor.agent.tools import (
     build_retrieval_tools,
 )
 from aqm_advisor.domain.grounding import permitted_values, ungrounded
+from aqm_advisor.domain.snapshot import NO_CURRENT_READING_TEXT
 from aqm_advisor.ports.clock import FixedClock
 from aqm_advisor.ports.protocols import ServingFailureKind
 
@@ -338,3 +339,57 @@ def test_the_window_is_derived_from_the_injected_clock() -> None:
     start, end = args[0], args[1]
     assert end == _NOW
     assert start == _NOW - dt.timedelta(days=3)
+
+
+# --- the framing arrives WITH the data, not by the model noticing --------
+
+
+def test_the_air_quality_tool_names_a_quiet_site_in_its_notes() -> None:
+    # Req 2.5, wired. The requirement's real failure mode is the model reading straight past an
+    # empty
+    # measurement array, so the tool states it outright and the requirement stops depending on
+    # attention.
+    body = canned_air_quality()
+    sensors = body["nearestSensors"]
+    assert isinstance(sensors, list)
+    sensors[0]["measurements"] = []
+    client = ScriptedServingClient(air_quality_body=body)
+    tools, _ = _build(client)
+    result = str(_by_name(tools)["air_quality"]())
+    assert NO_CURRENT_READING_TEXT in result
+
+
+def test_a_site_with_readings_produces_no_quiet_note() -> None:
+    # Non-vacuity: a note on every site would carry no information.
+    tools, _ = _build()
+    result = str(_by_name(tools)["air_quality"]())
+    assert NO_CURRENT_READING_TEXT not in result
+
+
+def test_the_air_quality_tool_states_when_defaults_were_used() -> None:
+    # Req 2.4, wired the same way and for the same reason.
+    body = canned_air_quality()
+    personalized = body["personalized"]
+    assert isinstance(personalized, dict)
+    personalized["usedDefaultProfile"] = True
+    client = ScriptedServingClient(air_quality_body=body)
+    tools, _ = _build(client)
+    assert "default" in str(_by_name(tools)["air_quality"]()).casefold()
+
+
+def test_the_snapshot_is_still_delivered_whole() -> None:
+    # The notes ADD framing; they must not replace the body, or the model would have no values
+    # to quote
+    # and every number it produced would be ungrounded.
+    tools, _ = _build()
+    result = str(_by_name(tools)["air_quality"]())
+    assert "nearestSensors" in result
+
+
+def test_the_history_tool_delivers_a_labelled_summary() -> None:
+    # Req 3.4, wired: the summary the model is handed is already described AS a summary, so it
+    # does not
+    # have to remember to say so.
+    tools, _ = _build()
+    result = str(_by_name(tools)["history"](days=7)).casefold()
+    assert "summar" in result

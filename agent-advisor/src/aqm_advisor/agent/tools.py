@@ -33,13 +33,32 @@ from strands import tool
 from strands.tools.decorator import DecoratedFunctionTool
 
 from aqm_advisor.domain.grounding import numerals
+from aqm_advisor.domain.history import history_view
 from aqm_advisor.domain.records import RetrievedValues, ToolCall
+from aqm_advisor.domain.snapshot import DEFAULT_PROFILE_TEXT, snapshot_sites
 from aqm_advisor.ports.clock import Clock
 from aqm_advisor.ports.protocols import ServingClient, ServingClientError
 
 _MAX_HISTORY_DAYS = 30
 """Service 2's default maximum history span. A drift guard pins it against that
 service's own constant, because it is configurable there."""
+
+
+def _snapshot_notes(body: object) -> list[str]:
+    """The framing Reqs 2.4 and 2.5 require, delivered WITH the data rather than hoped for.
+
+    Req 2.5's real failure mode is the model not NOTICING an empty measurement set — an absent
+    array is easy to read straight past, and the result is a site quietly dropped from the
+    answer. Handing over explicit prose about each quiet site removes the noticing step, so the
+    requirement no longer depends on the model's attention. The same reasoning applies to Req
+    2.4's default-profile statement.
+    """
+    notes = [site.text for site in snapshot_sites(body) if not site.has_reading]
+    if isinstance(body, dict):
+        personalized = body.get("personalized")
+        if isinstance(personalized, dict) and personalized.get("usedDefaultProfile"):
+            notes.append(DEFAULT_PROFILE_TEXT)
+    return notes
 
 
 @dataclass
@@ -140,7 +159,7 @@ def build_retrieval_tools(
         except ServingClientError as error:
             return _failure_note("air_quality", error)
         recorder.record_body(body)
-        return json.dumps(body, default=str)
+        return json.dumps({"snapshot": body, "notes": _snapshot_notes(body)}, default=str)
 
     @tool
     def history(days: int = 7, species: str | None = None) -> str:  # noqa: D417
@@ -170,7 +189,9 @@ def build_retrieval_tools(
         except ServingClientError as error:
             return _failure_note("history", error)
         recorder.record_body(body)
-        return json.dumps(body, default=str)
+        return json.dumps(
+            {"history": body, "summary": history_view(body).text}, default=str
+        )
 
     @tool
     def profile_get() -> str:

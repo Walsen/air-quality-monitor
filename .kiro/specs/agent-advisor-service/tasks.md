@@ -292,7 +292,7 @@ directory.
     - **Property 20: Nothing is recomputed**
     - **Validates: Requirements 2.2, 2.3, 9.4, 12.1, 16.2**
 
-- [ ] 9. Strands tools and the system prompt
+- [x] 9. Strands tools and the system prompt
   - [x] 9.1 Implement the five retrieval tools over `ServingClient`
     - `air_quality`, `history`, `profile_get`, `profile_put`, `symptom_entry_put` as `@tool` functions
       whose docstrings are the model-facing descriptions; each records its result into the
@@ -300,26 +300,25 @@ directory.
       never interpolated into a prompt; at most one air-quality retrieval per turn
     - _Requirements: 2.1, 2.6, 3.1, 4.1, 5.1, 6.3, 6.3a_
 
-  - [ ] 9.2 Implement history window derivation — PARTIALLY DONE in 9.1
-    - DONE: the `history` tool derives its window from the injected Clock (Req 3.2, 25.2), refuses a span
-      beyond Service 2's maximum before calling it, and names the permitted bound in the refusal with no
-      silent re-request (Req 3.3). A drift guard pins the bound against Service 2's own constant, which is
-      configurable there
-    - REMAINING: Req 3.4 — never present a computed trend, average or exceedance count as a measurement,
-      describe a summary AS a summary, and name the reading count. Needs a history-reading module beside
-      `domain/reporting.py`, and the no-arithmetic AST check should extend to cover it
+  - [x] 9.2 Implement history window derivation
+    - The window is derived from the utterance's requested span and the injected Clock, never the wall
+      clock; a span beyond Service 2's maximum is refused BEFORE the call, naming the permitted bound,
+      with no silent re-request; a drift guard pins the bound against Service 2's own constant, which is
+      configurable there. `domain/history.py` describes a retrieved series without summarising its
+      VALUES: it never reads the corrected value, reported value or sub-index at all, so it cannot
+      compute a trend, an average or an exceedance count. The summary is labelled as a summary and names
+      the reading count, and the `history` tool returns that label alongside the body so the model is
+      handed the correct framing rather than trusted to add it
     - _Requirements: 3.2, 3.3, 3.4_
 
-  - [ ] 9.3 Implement the snapshot-reading rules — PARTLY COVERED ALREADY
-    - Already covered: the body is treated as authoritative and nothing is modified (`domain/basis.py`,
-      asserted by AST checks for no sorting and no arithmetic); the driving pollutant, sub-index, band and
-      confidence are READ rather than derived; `usedDefaultProfile` is carried on `ConditionView`
-    - REMAINING: Req 2.5 — a site with an EMPTY measurement set must be described as having no current
-      reading rather than omitted, so a location the user asked about does not silently vanish
-    - Treat the retrieved body as authoritative and modify nothing; read the driving pollutant, sub-index,
-      band and confidence from the returned entries rather than deriving them; state when the default
-      profile was used; describe a site with an empty measurement set as having no current reading rather
-      than omitting it
+  - [x] 9.3 Implement the snapshot-reading rules
+    - `domain/snapshot.py` reads every `nearestSensors` entry into a view, taking the driving pollutant,
+      sub-index, band and confidence from the entry rather than deriving them from the raw measurements.
+      The reader is TOTAL: a site with an empty measurement set, and a malformed entry, both become a
+      view describing no current reading rather than being dropped, so the returned length always equals
+      the number of entries served. The `air_quality` tool states each quiet site and the
+      default-profile fallback in its result, because Req 2.5's real failure mode is the model reading
+      straight past an empty array. AST guards assert no arithmetic and no reordering
     - _Requirements: 2.2, 2.3, 2.4, 2.5_
 
   - [x] 9.4 Load the system prompt as configuration
