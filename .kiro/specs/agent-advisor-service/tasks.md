@@ -202,15 +202,15 @@ directory.
       degraded forecast yields no next-day value
     - _Requirements: 7.3, 7.4, 7.5_
 
-  - [ ]* 5.3 Write property test for grounding totality
+  - [x]* 5.3 Write property test for grounding totality
     - **Property 1: Grounding totality**
     - **Validates: Requirements 7.1, 7.2, 34.8**
 
-  - [ ]* 5.4 Write property test for refusing ungrounded generations
+  - [x]* 5.4 Write property test for refusing ungrounded generations
     - **Property 2: Ungrounded generations are never returned**
     - **Validates: Requirements 7.2, 22.2**
 
-- [ ] 6. Forbidden claims and medication closure
+- [x] 6. Forbidden claims and medication closure
   - [x] 6.1 Implement the forbidden-claim pattern check
     - `forbidden_matches` over diagnosis assertions, dosing instructions and administration verbs adjacent
       to a medication name; a configured set REPLACES the defaults rather than extending them; a rejection
@@ -230,11 +230,11 @@ directory.
       medication-word pattern would make the required text unpublishable
     - _Requirements: 8.4, 8.5_
 
-  - [ ]* 6.4 Write property test for guardrail verdict totality
+  - [x]* 6.4 Write property test for guardrail verdict totality
     - **Property 5: Guardrail verdict totality**
     - **Validates: Requirements 8.2, 34.4, 34.7**
 
-  - [ ]* 6.5 Write property test for medication naming closure
+  - [x]* 6.5 Write property test for medication naming closure
     - **Property 6: Medication naming closure**
     - **Validates: Requirements 29.1, 29.3, 29.6**
 
@@ -273,7 +273,7 @@ directory.
     - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3,
       17.4, 17.5_
 
-- [ ] 8. Basis assembly and clinician deference
+- [x] 8. Basis assembly and clinician deference
   - [x] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
     - Read every field including `nowcast` and `records`; name the threshold and its source including
       `learned`; name the breakpoint table
@@ -288,7 +288,7 @@ directory.
       trajectory clinically
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-  - [ ]* 8.3 Write property test that nothing is recomputed
+  - [x]* 8.3 Write property test that nothing is recomputed
     - **Property 20: Nothing is recomputed**
     - **Validates: Requirements 2.2, 2.3, 9.4, 12.1, 16.2**
 
@@ -416,15 +416,15 @@ directory.
       instead of lifting the cap — a bound that looks configured and is not
     - _Requirements: 22.1, 22.1a, 22.1b, 22.1c, 22.2a, 22.3, 22.4_
 
-  - [ ]* 10.5 Write property test for escalation precedence
+  - [x]* 10.5 Write property test for escalation precedence
     - **Property 4: Escalation precedes advice**
     - **Validates: Requirement 10.2**
 
-  - [ ]* 10.6 Write property test for invocation bounds
+  - [x]* 10.6 Write property test for invocation bounds
     - **Property 11: Invocation bounds hold**
     - **Validates: Requirements 22.1, 22.1a, 22.3**
 
-  - [ ]* 10.7 Write property test for turn reproducibility
+  - [x]* 10.7 Write property test for turn reproducibility
     - **Property 10: Turn reproducibility**
     - **Validates: Requirements 25.1, 25.2, 25.3**
 

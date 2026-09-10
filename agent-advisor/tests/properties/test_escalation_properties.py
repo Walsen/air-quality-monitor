@@ -14,7 +14,6 @@ and the difference matters:
   a model cannot reach it either. Asserted as a signature AND as a module-level
   dependency check in `test_envelope_and_escalation.py`, because a signature survives
   a refactor an expectation does not.
-  not.
 
 Quantifying over a dimension the code cannot observe would be an assertion that cannot fail. The
 structural form is both stronger and honest about which it is.
