@@ -184,7 +184,7 @@ agent-advisor/
 ├── src/aqm_advisor/
 │   ├── domain/                     # pure; no adapters, no clock, no random
 │   │   ├── redflag.py              # RedFlagMatcher — deterministic
-│   │   ├── grounding.py            # numeral extraction + permitted-set comparison
+│   │   ├── grounding.py            # numeral extraction + permitted-set comparison; masks species AND units
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
 │   │   ├── envelope.py             # Req 21.8 resolution order + the A8a drift detector
@@ -338,6 +338,20 @@ compared against the union of every value that arrived in a retrieval and a smal
 **structural constants** — the ~3-day particulate lag, and spelled-out small numbers used as prose
 ("one", "three days") rather than as measurements.
 
+**Two shapes are masked before extraction, and both are load-bearing.** Species names contain digits —
+`PM2.5`, `PM25`, `NO2`, `O3` — so a naive extractor reads every mention of a pollutant as an invented number
+and refuses all guidance. So do concentration UNITS: Service 2 serves `ug.m-3` and a model writing prose says
+`ug/m3`, each containing a 3. The unit case was found by a failing test rather than by inspection, and it
+would have been the worse bug of the two: because `3` is also a structural constant, stating any
+concentration in its units would have been grounded whenever the lag constant was configured and ungrounded
+whenever it was not. ISO instants are masked too, being provenance rather than a claim. Tests assert both
+that each mask works AND that a number ADJACENT to a masked token is still extracted, which is the failure
+that would otherwise be silent.
+
+**Digit forms only, and that limit is recorded rather than hidden.** A generation writing "sixty-eight"
+states a claim this check cannot see. Mapping number words to values reliably is its own problem, and the
+mitigation belongs in the system prompt (task 9.4), which requires numerals in digits.
+
 **Deliberately strict, and the asymmetry justifies it:** a false rejection costs one repair attempt; a
 false acceptance ships an invented health-adjacent number. Where the strictness bites in practice, the
 fix is to add the value to what the retrieval returns — not to loosen the check.
@@ -352,6 +366,18 @@ def unlisted_medications(text: str, listed: frozenset[str]) -> tuple[str, ...]: 
 Patterns cover diagnosis assertions, dosing instructions, and administration verbs adjacent to a
 medication name. A configured set **replaces** the defaults rather than extending them, so a deployment
 can correct a pattern that misfires (Req 8.7).
+
+These rules live in the DOMAIN and the guardrail adapter delegates to them. They were briefly duplicated in
+the local adapter, which made it a second authority on what may be said — and two authorities on a safety
+rule is how they come to disagree. `observability/metrics.py` likewise DERIVES its permitted guardrail
+category labels from the domain's category mapping rather than restating them, so a new category is
+countable the moment it exists.
+
+Recognising an unlisted drug name at all needs a vocabulary, and `KNOWN_MEDICATION_TOKENS` is it. The limit
+is honest: a drug outside the vocabulary cannot be detected as unlisted. Two other defences cover that gap —
+the administration patterns fire on the INSTRUCTION regardless of the drug, and Req 34.5 keeps a managed
+guardrail as an independent second check — so a vocabulary miss degrades one of three defences rather than
+removing the only one.
 
 The medication rule is a **closure** check, not a pattern: any drug name in the text must be in the
 retrieved `Medication_Entry` set. Naming a medication is permitted only in the preparedness construction;

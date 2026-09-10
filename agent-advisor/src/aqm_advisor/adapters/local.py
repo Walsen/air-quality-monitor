@@ -2,37 +2,29 @@
 
 These are NOT test doubles bolted on afterwards — they are what makes the offline suite possible
 (Requirement 26.5), so they ship in the package rather than under ``tests/``. A property test at
-100
-examples needs them importable from the library, and so does a developer running the agent
-locally
-with ``app.run()`` and no AWS.
+100 examples needs them importable from the library, and so does a developer running the agent
+locally with ``app.run()`` and no AWS.
 
 THE CANNED SERVING BODY IS TRANSCRIBED FROM SERVICE 2's REAL RESPONSE SHAPE, NOT INVENTED. That
-is
-the single biggest risk in this package: every one of the 20 correctness properties reads these
-bodies, so a shape that drifts from what Service 2 actually serves would have the whole suite
-proving
-things about a response nobody sends.
+is the single biggest risk in this package: every one of the 20 correctness properties reads
+these bodies, so a shape that drifts from what Service 2 actually serves would have the whole
+suite proving things about a response nobody sends.
 
 It cannot be IMPORTED — the engineering practices forbid importing across service directories
-until
-a shared contract package is specced. So it is transcribed, and
+until a shared contract package is specced. So it is transcribed, and
 ``test_the_canned_body_matches_service_2s_real_response_model`` reads the sibling service's
-model
-definition from disk and compares the field names, skipping when that directory is absent so
-this
-service still builds alone. A filesystem check is not an import: nothing here depends on Service
-2
-at runtime.
+model definition from disk and compares the field names, skipping when that directory is absent
+so this service still builds alone. A filesystem check is not an import: nothing here depends on
+Service 2 at runtime.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
+from aqm_advisor.domain.forbidden import forbidden_matches
 from aqm_advisor.ports.protocols import (
     AdviceRecord,
     GuardrailResult,
@@ -72,17 +64,14 @@ def canned_air_quality(
     """One air-quality body in Service 2's real shape (Requirement 19.2's pinned members).
 
     Every member name here is Service 2's own. The guard named in the module docstring is what
-    keeps
-    that claim true rather than aspirational.
+    keeps that claim true rather than aspirational.
 
     ``hours_available`` defaults to a FULL window; pass fewer to script the partial-window case
     Req 9.3 makes traceable. ``nowcast=False`` scripts an index that was not nowcast-derived at
-    all,
-    which Req 9.3a calls a complete answer rather than a gap. Those are two DIFFERENT states and
-    a
-    caller must be able to tell them apart, so they are separate parameters rather than one
-    nullable
-    number — collapsing them is exactly the confusion Req 9.3a exists to forbid.
+    all, which Req 9.3a calls a complete answer rather than a gap. Those are two DIFFERENT
+    states and a caller must be able to tell them apart, so they are separate parameters rather
+    than one nullable number — collapsing them is exactly the confusion Req 9.3a exists to
+    forbid.
     """
     available = window_hours if hours_available is None else hours_available
     # MIRRORS Service 2's `NOWCAST_COVERAGE_CAPS`, and its FOUR coverage states rather than
@@ -276,26 +265,6 @@ class ScriptedServingClient:
         return tuple(name for name, _args in self.calls)
 
 
-DEFAULT_FORBIDDEN_PATTERNS: tuple[str, ...] = (
-    # Diagnosis assertions (Requirement 8.1).
-    r"\byou (?:have|are having|are suffering from)\b",
-    r"\bthis is (?:an? )?(?:asthma attack|exacerbation|infection)\b",
-    r"\byou (?:probably|likely) have\b",
-    # Dosing and administration (Requirements 8.3, 29.3).
-    r"\btake (?:\d|one|two|three|four|a|another)\b",
-    r"\b\d+\s*(?:puffs?|mg|ml|mcg|doses?)\b",
-    r"\b(?:increase|double|reduce|stop|start)\s+(?:your\s+)?(?:dose|medication|inhaler)\b",
-    r"\bevery\s+\d+\s*(?:hours?|days?)\b",
-)
-"""The default Forbidden_Claim patterns.
-
-A configured set REPLACES these rather than extending them (Requirement 8.7), because
-"configurable" that only ever adds is not configurable — an operator who finds a pattern
-misfiring
-needs to be able to correct it, not only to pile another on top.
-"""
-
-
 @dataclass
 class LocalGuardrailChecker:
     """The offline Guardrail_Checker: pattern matching, no network.
@@ -308,7 +277,8 @@ class LocalGuardrailChecker:
     rejection is diagnosable without storing what was rejected.
     """
 
-    patterns: tuple[str, ...] = DEFAULT_FORBIDDEN_PATTERNS
+    patterns: tuple[str, ...] | None = None
+    """None uses the domain defaults. A supplied set REPLACES them (Req 8.7)."""
     unavailable: bool = False
     """Scripts Requirement 34.6's fail-closed path, where the check cannot run at all."""
 
@@ -317,32 +287,22 @@ class LocalGuardrailChecker:
     point is that generated prose does not get retained anywhere it need not be."""
 
     def check(self, text: str) -> GuardrailResult:
-        """Return the verdict for one generation."""
+        """Return the verdict for one generation, delegating the RULES to the domain.
+
+        The pattern set and the category mapping are not this adapter's to own. They were
+        briefly duplicated here, which made the adapter a second authority on what may be said —
+        and two authorities on a safety rule is how they come to disagree. This is a
+        transport-shaped wrapper over `domain.forbidden`.
+        """
         self.checks.append(len(text))
         if self.unavailable:
             return GuardrailResult(verdict=GuardrailVerdict.UNAVAILABLE)
-        fired = tuple(
-            pattern
-            for pattern in self.patterns
-            if re.search(pattern, text, flags=re.IGNORECASE)
-        )
-        if fired:
+        categories = forbidden_matches(text, self.patterns)
+        if categories:
             return GuardrailResult(
-                verdict=GuardrailVerdict.INTERVENED,
-                categories=tuple(_category_for(pattern) for pattern in fired),
+                verdict=GuardrailVerdict.INTERVENED, categories=categories
             )
         return GuardrailResult(verdict=GuardrailVerdict.PASSED)
-
-
-def _category_for(pattern: str) -> str:
-    """Name the KIND of rule a pattern belongs to, never the pattern's own text.
-
-    A category is what Requirement 8.6 logs and what Requirement 20.2's ``rejection_category``
-    stores, so the mapping lives here rather than at each call site.
-    """
-    if any(word in pattern for word in ("puffs", "dose", "mg", "take", "every")):
-        return "dosing"
-    return "diagnosis"
 
 
 @dataclass
@@ -375,9 +335,8 @@ class RecordingAssociationTrigger:
     """Records requests instead of making them.
 
     Requirement 33.1 forbids awaiting the derivation inside a turn, so the assertion a test
-    wants
-    is that the request HAPPENED and that the turn did not wait for it — which needs the request
-    recorded and nothing else.
+    wants is that the request HAPPENED and that the turn did not wait for it — which needs the
+    request recorded and nothing else.
     """
 
     requests: list[tuple[str, str]] = field(default_factory=list)
@@ -394,7 +353,6 @@ class RecordingAssociationTrigger:
 __all__ = [
     "DEFAULT_DISCLAIMER",
     "DEFAULT_EMERGENCY_GUIDANCE",
-    "DEFAULT_FORBIDDEN_PATTERNS",
     "InMemoryAdviceAuditStore",
     "LocalGuardrailChecker",
     "RecordingAssociationTrigger",

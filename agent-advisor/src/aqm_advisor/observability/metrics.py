@@ -41,12 +41,15 @@ from collections.abc import Iterable
 
 from opentelemetry import metrics as otel_metrics
 
+from aqm_advisor.domain.forbidden import _CATEGORY_BY_PATTERN
 from aqm_advisor.ports.protocols import ServingFailureKind
 
 OTHER = "other"
 """The label value an unrecognised one collapses to. Never a truncation of the original."""
 
-PERMITTED_GUARDRAIL_CATEGORIES: frozenset[str] = frozenset({"diagnosis", "dosing"})
+PERMITTED_GUARDRAIL_CATEGORIES: frozenset[str] = frozenset(
+    _CATEGORY_BY_PATTERN.values()
+) | {"other"}
 """Req 8's Forbidden_Claim families, which are what Req 20.2 stores and Req 24.4 counts."""
 
 PERMITTED_SERVING_FAILURE_KINDS: frozenset[str] = frozenset(
