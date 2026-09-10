@@ -379,16 +379,28 @@ directory.
       the pipeline in 10.2
     - _Requirements: 6.3b, 6.5a, 31.7_
 
-  - [ ] 10.4 Implement the invocation bounds
-    - API established: `Limits` is `strands.types.agent.Limits`, a `TypedDict(total=False)` with `turns`,
-      `output_tokens` and `total_tokens`, passed PER INVOCATION to `__call__`/`invoke_async`/
-      `stream_async` — NOT on `Agent.__init__`, which has no `limits` parameter. Per-invocation suits a
-      per-TURN ceiling better than the task assumed
-    - CAVEAT to carry into Req 22's wording: the SDK documents `output_tokens` and `total_tokens` as SOFT
-      caps — "a single oversized response can overshoot the budget; checked at turn boundaries, not
-      within an individual model call". Priority on simultaneous trip is turns > total_tokens >
-      output_tokens. The requirement must not claim a hard guarantee the SDK does not give
-    - _Requirements: 22.1, 22.1a, 22.2a, 22.3, 22.4_
+  - [x] 10.4 Implement the invocation bounds
+    - `agent/bounds.py`. The model ceiling is expressed as Strands' `limits` (Req 22.1a's named mechanism),
+      with `turns` defaulting to 2 — one generation plus one repair, so a default of 1 would make the
+      repair path dead code. An AST test asserts the module keeps NO model-invocation counter alongside:
+      one reintroduced next to the limits would drift from them and would miss exactly the tool round
+      trips the framework exists to catch
+    - Serving calls are the deliberate exception and ARE a counter of ours (`ServingCallBudget`), because
+      they happen inside a tool body where the framework's limits cannot observe them. Recorded in the
+      module so the inconsistency does not read as an oversight. A refusal degrades rather than raises,
+      and does not consume budget, so the count stays truthful for Req 22.5's metric
+    - Req 22.4's window keeps the MOST RECENT turns in order. A `PriorTurn` turned out to be a PAIR
+      (utterance plus the guidance given back), not a message with a role, so the ceiling bounds exchanges
+      rather than messages — the better unit, since truncating between an utterance and its answer would
+      hand the model half an exchange
+    - SPEC AMENDED — new Reqs 22.1b and 22.1c. 22.1a said the framework "enforces" all three ceilings, but
+      the SDK documents `output_tokens` and `total_tokens` as APPROXIMATE: checked at turn boundaries
+      rather than within a model call, so one oversized response can overshoot. 22.1b records that only
+      `turns` is exact and forbids describing a token ceiling as a hard guarantee to an operator, who would
+      otherwise not set the alarm that catches an overshoot. 22.1c records that an unset ceiling must be
+      OMITTED, not zeroed: `Limits` is `total=False` and validates present keys as positive, so zero raises
+      instead of lifting the cap — a bound that looks configured and is not
+    - _Requirements: 22.1, 22.1a, 22.1b, 22.1c, 22.2a, 22.3, 22.4_
 
   - [ ]* 10.5 Write property test for escalation precedence
     - **Property 4: Escalation precedes advice**
