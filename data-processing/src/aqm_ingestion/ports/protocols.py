@@ -1,4 +1,4 @@
-"""The nine ports: protocols the domain depends on.
+"""The ten ports: protocols the domain depends on.
 
 Design decision DD1: every port is a ``Protocol`` with no implementation and NO
 cloud type in any signature. That is not a stylistic preference — it is what lets
@@ -26,8 +26,10 @@ from typing import Protocol, runtime_checkable
 from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
 from aqm_ingestion.domain.profile import UserProfile
+from aqm_ingestion.domain.symptoms import SymptomEntry
 
-__all__ = ["UserProfile"]  # re-exported: the ProfileStore port is typed on it
+__all__ = ["SymptomEntry", "UserProfile"]
+"""Re-exported: the ProfileStore and SymptomLogStore ports are typed on them."""
 
 # --- boundary value types -------------------------------------------------
 
@@ -346,6 +348,44 @@ class ProfileStore(Protocol):
 
     def delete(self, user_id: str) -> None:
         """Remove a profile; absent is not an error."""
+        ...
+
+
+@runtime_checkable
+class SymptomLogStore(Protocol):
+    """Stores the user's Symptom_Log (Requirement 31.1), keyed by verified identity.
+
+    ``put`` REPLACES any entry for the same user and date rather than accumulating
+    (Requirement 31.7): two entries for one day would let that day contribute twice to the
+    Requirement 32 association. ``forget_user`` DELETES rather than de-identifying, because
+    unlike an Audit_Record a Symptom_Entry carries real clinical content (Requirement 31.9).
+
+    Retention is the adapter's responsibility and is applied at QUERY time against the
+    injected Clock (Requirement 31.8), mirroring the ReadingsStore — so the exclusion moves
+    with the clock and nothing has to run on a timer.
+    """
+
+    def put(self, entry: SymptomEntry) -> SymptomEntry:
+        """Store one entry, replacing any existing entry for the same date."""
+        ...
+
+    def query_window(
+        self, user_id: str, start: dt.date, end: dt.date
+    ) -> Sequence[SymptomEntry]:
+        """Return entries in the INCLUSIVE [start, end] range, retention already applied.
+
+        Inclusive on both ends because the range is calendar dates rather than instants: a
+        user asking for "the last week" means the day at each end, and a half-open range over
+        dates would silently drop today.
+        """
+        ...
+
+    def forget_user(self, user_id: str) -> int:
+        """Delete every entry for a user and return how many were removed."""
+        ...
+
+    def count_all(self) -> int:
+        """Total entries held, for the erasure assertions and operational reporting."""
         ...
 
 

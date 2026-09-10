@@ -30,6 +30,11 @@ from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.aqi.overall import DEFAULT_SPECIES_PRECEDENCE
 from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
+from aqm_ingestion.domain.symptoms import (
+    DEFAULT_SYMPTOM_RETENTION_DAYS,
+    SymptomEntry,
+    retention_floor,
+)
 from aqm_ingestion.observability.logging import get_logger
 from aqm_ingestion.ports.archive_key import derive_archive_id
 from aqm_ingestion.ports.clock import Clock
@@ -388,6 +393,83 @@ class InMemoryProfileStore:
     def delete(self, user_id: str) -> None:
         """Remove a profile; absent is not an error (deletion is idempotent)."""
         self._profiles.pop(user_id, None)
+
+
+class InMemorySymptomLogStore:
+    """Symptom entries keyed by (user, date), so a re-put for a date REPLACES it.
+
+    The key is what implements Requirement 31.7: there is no way to hold two entries for one
+    calendar date, so a day cannot contribute twice to the Requirement 32 association. That also
+    makes a write idempotent under redelivery — a property Service 3 depends on, though it is
+    not
+    why the key was chosen.
+
+    Retention (Requirement 31.8) is applied at QUERY time against the injected clock, mirroring
+    :class:`InMemoryReadingsStore`: the exclusion moves with the clock, so stored data ages out
+    without anything running on a timer.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Clock,
+        retention_days: int = DEFAULT_SYMPTOM_RETENTION_DAYS,
+    ) -> None:
+        """Hold symptom entries, excluding aged ones at query time.
+
+        Args:
+            clock: the Clock retention is measured from (§2 — never read directly).
+            retention_days: Requirement 31.8's retention window.
+        """
+        self._entries: dict[tuple[str, dt.date], SymptomEntry] = {}
+        self._clock = clock
+        self._retention_days = retention_days
+
+    def put(self, entry: SymptomEntry) -> SymptomEntry:
+        """Store one entry, replacing any existing entry for the same date."""
+        self._entries[(entry.user_id, entry.entry_date)] = entry
+        return entry
+
+    def query_window(
+        self, user_id: str, start: dt.date, end: dt.date
+    ) -> Sequence[SymptomEntry]:
+        """Return this user's entries in the inclusive range, retention applied.
+
+        Raises:
+            ValueError: if the range is inverted. Silently returning nothing would hide a
+                caller bug, the same reasoning the ReadingsStore applies (§5).
+        """
+        if end < start:
+            raise ValueError(
+                f"window end {end.isoformat()} precedes its start {start.isoformat()}"
+            )
+        floor = retention_floor(self._clock.now(), self._retention_days)
+        matched = [
+            entry
+            for (held_user, held_date), entry in self._entries.items()
+            if held_user == user_id
+            and start <= held_date <= end
+            and held_date >= floor  # Requirement 31.8
+        ]
+        # Date ascending, which is also Req 32.11's ordering for the series built from it.
+        matched.sort(key=lambda entry: entry.entry_date)
+        return tuple(matched)
+
+    def forget_user(self, user_id: str) -> int:
+        """DELETE every entry for a user and return the count (Requirement 31.9).
+
+        Deletes rather than de-identifies: Requirement 31.9 draws that contrast with the
+        Audit_Record explicitly, because a Symptom_Entry carries real clinical content and a
+        de-identified husk of one would still record a course of illness.
+        """
+        doomed = [key for key in self._entries if key[0] == user_id]
+        for key in doomed:
+            del self._entries[key]
+        return len(doomed)
+
+    def count_all(self) -> int:
+        """Total entries held."""
+        return len(self._entries)
 
 
 class InMemoryMeteorologyProvider:
