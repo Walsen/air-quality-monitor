@@ -755,6 +755,15 @@ one conversation cannot run away with the budget.
    `output_tokens` and `total_tokens` — rather than a counter of this service's own. The framework
    enforces them inside the agent loop where a hand-rolled counter cannot see a tool round trip, and it
    reports a typed `limit_*` stop reason the caller can act on.
+1b. THE Service SHALL treat only the `turns` ceiling as exact. The SDK documents `output_tokens` and
+   `total_tokens` as approximate — checked at turn boundaries rather than within a model call, so a
+   single oversized response can overshoot the budget — and the SDK's priority on a simultaneous trip is
+   `turns`, then `total_tokens`, then `output_tokens`. THE Service SHALL NOT describe a token ceiling as a
+   hard guarantee in an operator-facing message, because an operator who believes the spend is capped
+   exactly will not set the alarm that catches an overshoot.
+1c. THE Service SHALL omit an unset ceiling from the `limits` mapping rather than passing zero. `Limits`
+   is a `total=False` TypedDict whose present keys are each validated as positive integers, so zero raises
+   rather than lifting the cap — a bound that appears configured and is not.
 2. WHEN the bound is reached without a Guidance that passes the Requirement 8 check, THE Service SHALL
    return a degraded response built from the retrieved data and SHALL NOT return the rejected
    generation.

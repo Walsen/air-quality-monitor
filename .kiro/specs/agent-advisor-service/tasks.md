@@ -327,32 +327,94 @@ directory.
       placeholder and never claims a capability the guardrails forbid
     - _Requirements: 31.4_
 
-- [ ] 10. Verification hooks and the turn pipeline
-  - [ ] 10.1 Register the verification hooks
-    - Grounding, forbidden-claim, medication-closure and guardrail checks registered through Strands hooks
-      at the after-generation point rather than called from the ordinary path, so no return path can
-      bypass them; a test asserts a deliberately added early return still gets checked
+- [x] 10. Verification hooks and the turn pipeline
+  - [x] 10.1 Register the verification hooks
+    - `agent/verification.py`. NOTE, established against the installed SDK: `AfterInvocationEvent`
+      carries `result` and `resume` but NO `cancel` field, so a Strands hook can OBSERVE a response and
+      cannot veto it. Bypass-proofing therefore cannot work by the hook blocking. It works by the hook
+      RECORDING a verdict at the after-invocation point (which the SDK fires "regardless of whether it
+      completed successfully or encountered an error") while the ledger starts UNVERIFIED and `release`
+      raises instead of returning text. A return path that skips verification has no verdict, so
+      assembly refuses — the new path does not have to remember to verify, because it cannot obtain the
+      text without a verdict. A failed verdict is also final for the turn, so a retry cannot verify
+      different text and publish on that verdict, and `reset` clears it between turns
+    - The checks themselves are injected rather than imported, so the hook carries no policy: it
+      guarantees they run. A verifier that raises records a FAILING verdict
     - _Requirements: 31.5, 34.7_
 
-  - [ ] 10.2 Implement the `TurnPipeline` Template Method
-    - The six steps in the fixed order red-flag check, retrieve, generate, verify, assemble, audit;
-      escalation determined before generation and placed first in the response; the order recorded by
-      tests that observe the sequence of operations through injected ports rather than asserting on the
-      result alone
+  - [x] 10.2 Implement the `TurnPipeline` Template Method
+    - `agent/pipeline.py`. `run` owns the order; the six steps are abstract, so a subclass fills the
+      sequence in and cannot reorder it. Generic in the retrieved payload and the response type rather
+      than typed `Any`, so the steps carry real types
+    - The order is guaranteed TWICE. Behaviourally, the steps record themselves through an injected
+      `StepRecorder` and the tests assert over the sequence, because a response with the right shape can
+      be produced by steps that ran in the wrong order or never ran. Structurally, an AST test reads
+      `run` itself, so it holds for every subclass rather than for the one pipeline a test instantiated
+    - DESIGN CORRECTION found by a test: the first version passed the escalation INTO `generate` and left
+      each subclass to honour it. That is a guarantee every future subclass must remember, so it is not a
+      guarantee. `run` now short-circuits and never calls `generate` on an escalating turn, so the model
+      cannot hedge, cannot re-assess whether the emergency is real (Req 10.5 forbids the service doing
+      that) and cannot fail in a way that loses the emergency direction. An escalating turn's step
+      sequence OMITS generation, and that absence is the evidence
+    - Every turn is verified, escalating ones included. Exempting that path would leave exactly one route
+      to a user that no verifier inspected, and it would be the highest-stakes route; the emergency text
+      passes because task 6.3's sweep already proves the required texts are not rejected
+    - `run` raises BEFORE assembly on a verdict that did not pass, so task 10.1's fail-closed rule is
+      control flow rather than a check somebody has to remember
     - _Requirements: 10.2, 20.4, 34.7_
 
-  - [ ] 10.3 Implement structured output and stop-reason handling
-    - Obtain the response's structured fields through Strands structured output against a Pydantic model;
-      treat `StructuredOutputException` as a model failure; treat `content_filtered` and
-      `guardrail_intervened` as guardrail rejections rather than failures; handle every stop reason the
-      SDK can return, with a test that fails if one is unhandled
-    - _Requirements: 6.3b, 6.5a, 31.7_
+  - [x] 10.3 Implement structured output and stop-reason handling
+    - `agent/stop_reasons.py` classifies every reason, with `ALL_STOP_REASONS` DERIVED from the SDK's own
+      `StopReason` literal rather than written out, so an upgrade that adds a thirteenth fails the test.
+      The installed SDK has twelve, three of which the spec never anticipated (`cancelled`, `checkpoint`,
+      `interrupt`). `content_filtered` and `guardrail_intervened` are rejections, not failures (Req 6.5a)
+    - FINDING: the SDK has NO stop reason meaning "the model failed" — a failure arrives as an EXCEPTION
+      (`ModelThrottledException`, `EventLoopException`, `StructuredOutputException`), so `MODEL_FAILED` is
+      reachable only via the fallback and the exception path. The reachability test excludes it and says why
+    - `agent/generation.py` obtains the structured fields against `ModelGeneration`, a Pydantic model whose
+      FIELD SET is the statement of what the model may author. It carries the guidance alone, because every
+      other `AdvisoryResponse` field has a different authority: `escalation` (Req 10.2, before generation),
+      `basis` (Req 9.4, never derived), `envelope` (Service 2 or A8a), `answered_at` (the Clock),
+      `degraded` (this service's own judgement). The disjointness is asserted against `AdvisoryResponse`
+      itself, so adding a field to either side cannot quietly widen what the model may invent
+    - `extra="forbid"`, so a model that tries to author `escalation` gets an ERROR rather than a silent
+      drop — a silent drop is indistinguishable from the model never having tried
+    - `StructuredOutputException` and a Pydantic `ValidationError` both become a model failure with NO
+      generation. If the output could not be coerced there is no validated text, and returning the raw
+      output "just this once" is the path Req 6.3b closes. Reason strings name a kind and never quote the
+      provider's message, which can contain the prompt or the partial output (Req 21.4)
+    - RECONCILED Req 6.5 with Req 22.2a: truncation is a "failure" in one and a "bound" in the other. Both
+      DISCARD the partial text, which is the part that protects the user, so there is no conflict in
+      behaviour. `BOUND_REACHED` is recorded because the same prompt would truncate again — a retry spends
+      budget to reproduce the failure, where Req 22.2's degraded response is useful. A throttle is
+      `MODEL_FAILED` for the mirror reason: nothing about the prompt caused it, so it IS worth retrying. A
+      test pins that truncation classifies identically whether it arrives as an exception or a stop reason
+    - `KeyboardInterrupt` and `SystemExit` are deliberately not caught; swallowing them would make the
+      process unkillable mid-turn
+    - _Requirements: 6.3b, 6.5, 6.5a, 31.7_
 
-  - [ ] 10.4 Implement the invocation bounds
-    - Express the per-turn ceilings through Strands' own `limits` for turns, output tokens and total
-      tokens; treat a `limit_*` stop reason as reaching the bound with one warning naming it; bound
-      `ServingClient` calls and the number of prior turns included in a prompt
-    - _Requirements: 22.1, 22.1a, 22.2a, 22.3, 22.4_
+  - [x] 10.4 Implement the invocation bounds
+    - `agent/bounds.py`. The model ceiling is expressed as Strands' `limits` (Req 22.1a's named mechanism),
+      with `turns` defaulting to 2 — one generation plus one repair, so a default of 1 would make the
+      repair path dead code. An AST test asserts the module keeps NO model-invocation counter alongside:
+      one reintroduced next to the limits would drift from them and would miss exactly the tool round
+      trips the framework exists to catch
+    - Serving calls are the deliberate exception and ARE a counter of ours (`ServingCallBudget`), because
+      they happen inside a tool body where the framework's limits cannot observe them. Recorded in the
+      module so the inconsistency does not read as an oversight. A refusal degrades rather than raises,
+      and does not consume budget, so the count stays truthful for Req 22.5's metric
+    - Req 22.4's window keeps the MOST RECENT turns in order. A `PriorTurn` turned out to be a PAIR
+      (utterance plus the guidance given back), not a message with a role, so the ceiling bounds exchanges
+      rather than messages — the better unit, since truncating between an utterance and its answer would
+      hand the model half an exchange
+    - SPEC AMENDED — new Reqs 22.1b and 22.1c. 22.1a said the framework "enforces" all three ceilings, but
+      the SDK documents `output_tokens` and `total_tokens` as APPROXIMATE: checked at turn boundaries
+      rather than within a model call, so one oversized response can overshoot. 22.1b records that only
+      `turns` is exact and forbids describing a token ceiling as a hard guarantee to an operator, who would
+      otherwise not set the alarm that catches an overshoot. 22.1c records that an unset ceiling must be
+      OMITTED, not zeroed: `Limits` is `total=False` and validates present keys as positive, so zero raises
+      instead of lifting the cap — a bound that looks configured and is not
+    - _Requirements: 22.1, 22.1a, 22.1b, 22.1c, 22.2a, 22.3, 22.4_
 
   - [ ]* 10.5 Write property test for escalation precedence
     - **Property 4: Escalation precedes advice**
