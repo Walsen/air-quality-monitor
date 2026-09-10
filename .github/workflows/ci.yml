@@ -1,0 +1,152 @@
+name: CI
+
+# The gates the specs name, run on a clean runner so they are ENFORCED rather than asserted.
+#
+# Two jobs, because the dev-environment steering draws exactly one exception to the offline
+# guarantee and fences it:
+#
+#   offline — must pass with NO cloud credentials and no network beyond localhost. This is the
+#             guarantee itself, so the job deliberately configures no AWS credentials at all.
+#             Having awscli2, aws-cdk-cli and gh on the PATH must not make any test need an
+#             account, and the only way to prove that is to run without one.
+#   fenced  — needs a container engine, which a runner has and a spec cannot pretend away.
+#             Still no cloud credentials: needing an engine is not licence to need an account.
+#
+# Both resolve the toolchain from devbox.json + devbox.lock, so CI and a contributor invoke the
+# same code path through the same `just` recipes. The devbox CLI is pinned for the same reason
+# every package in devbox.json is: an unpinned installer would let the toolchain drift between
+# a contributor's machine and this runner.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # The nightly property profile at 1000 examples. The 100-example floor runs on every push;
+    # this is where the shallower counterexamples were actually found.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref. Never cancel main or a nightly.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  DEVBOX_VERSION: 0.18.0
+
+jobs:
+  offline:
+    name: Offline suite (no credentials, no network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
+        with:
+          enable-cache: "true"
+          devbox-version: ${{ env.DEVBOX_VERSION }}
+
+      - name: Assert no AWS credentials are present
+        # The offline guarantee is only meaningful if nothing could have satisfied a cloud call.
+        # Asserting the absence makes a future workflow edit that adds credentials fail HERE,
+        # rather than silently turning the offline suite into one that quietly needs an account.
+        run: |
+          for var in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE; do
+            if [ -n "${!var:-}" ]; then
+              echo "::error::$var is set; the offline suite must not have cloud credentials"
+              exit 1
+            fi
+          done
+          echo "no AWS credentials in the environment"
+
+      - name: Lint
+        run: devbox run -- just lint
+
+      - name: Typecheck
+        run: devbox run -- just typecheck
+
+      - name: Test
+        run: devbox run -- just test
+
+  fenced:
+    name: Container-fenced suite (engine, still no credentials)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
+        with:
+          enable-cache: "true"
+          devbox-version: ${{ env.DEVBOX_VERSION }}
+
+      - name: Start LocalStack
+        working-directory: data-processing
+        run: docker compose up -d localstack
+
+      - name: Wait for LocalStack to report healthy
+        # Polls rather than sleeps: a fixed sleep is either too short on a slow runner, making the
+        # job flaky, or too long on a fast one, making every run pay for the worst case.
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:4566/_localstack/health > /dev/null; then
+              echo "LocalStack healthy after ${attempt}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::LocalStack did not become healthy within 60s"
+          docker compose -f data-processing/docker-compose.yml logs localstack
+          exit 1
+
+      - name: Fenced simulator checks
+        # Self-managing: these build the container image and generate their own TLS material, so
+        # they need only an engine. Verified locally as 5 passed, 1 skipped (the mosquitto-clients
+        # check skips by design when those binaries are absent).
+        run: devbox run -- just test-integration-simulator
+
+      - name: Fenced ingestion checks
+        run: devbox run -- just test-integration-ingestion
+
+      # `just test-integration-advisor` is deliberately NOT called yet. The advisor has no
+      # integration-marked tests, and `pytest -m integration` exits 5 ("no tests collected") on an
+      # empty selection — so calling it would make CI red for the absence of work rather than for a
+      # defect. Tasks 17.4 and 19.3 add the live-model and deployment-contract checks; add the step
+      # with them. The same emptiness means the aggregate `just test-integration` cannot pass today.
+
+      - name: LocalStack logs on failure
+        if: failure()
+        working-directory: data-processing
+        run: docker compose logs localstack
+
+      - name: Tear down
+        if: always()
+        working-directory: data-processing
+        run: docker compose down -v
+
+  nightly-properties:
+    name: Property suite at 1000 examples
+    # Only on the schedule and on a manual run: every property test at 1000 examples is far too
+    # slow to sit on the pull-request path, and its value is finding the counterexample the
+    # 100-example floor missed rather than gating a merge.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install devbox
+        uses: jetify-com/devbox-install-action@v0.15.0
+        with:
+          enable-cache: "true"
+          devbox-version: ${{ env.DEVBOX_VERSION }}
+
+      - name: Advisor properties at 1000 examples
+        run: devbox run -- just test-advisor-nightly
