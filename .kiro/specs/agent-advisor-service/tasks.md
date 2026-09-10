@@ -102,8 +102,14 @@ directory.
     - _Requirements: 1.1, 1.2, 1.4, 1.5, 1.6, 5.1, 5.6_
 
   - [ ] 3.2 Implement the basis, envelope and escalation models
-    - `SpeciesBasis`, `RecordReference`, `BasisSummary`, `GuardrailEnvelope`, `Escalation`; every field
-      populated by copying a retrieved value, with no code path that computes one
+    - `SpeciesBasis`, `RecordReference`, `NowcastBasis`, `BasisSummary`, `GuardrailEnvelope`,
+      `Escalation`; every field populated by copying a retrieved value, with no code path that computes one
+    - `BasisSummary.nowcast` carries Service 2's `basis.nowcast` (window length, hours available, weight
+      factor), so Req 9.3's traceable derivation accounts for the weighting and not only the breakpoint
+      table; a test must show a partial window (hours available < window length) survives into the summary
+      unchanged rather than being normalised or dropped
+    - A test must pin that `nowcast is None` means NOT nowcast-derived and is a complete answer, not a gap
+      (Req 9.3a) — assert the response is not marked degraded and no disclosure is added
     - `BasisSummary.records` carries Service 2's `basis.records`, so Req 20.2's "the identifiers of the
       retrieved records the Basis_Summary named" has something to name
     - `RecordReference.identifier()` composes site code, species, instant AND duration; a test must show
@@ -111,7 +117,7 @@ directory.
       DIFFERENT identifiers — a bare site code would collapse both and silently under-report provenance
     - Add `domain/instants.py` with this service's OWN `iso_z` (whole-second UTC, `Z` suffix) and a
       round-trip test; do not import Service 2's, and let the architecture check prove no such import
-    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 20.2_
+    - _Requirements: 9.1, 9.2, 9.3, 9.3a, 9.4, 9.5, 20.2_
 
   - [ ] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
     - `RetrievedValues` with the ordered `tool_calls` trajectory; `SymptomEntryDraft` with `confirmed`

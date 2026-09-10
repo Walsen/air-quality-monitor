@@ -213,7 +213,8 @@ Terms are capitalized with underscores where a requirement depends on their exac
 - **Air_Quality_Snapshot** — the body Service 2 returns from `/v1/air-quality/me`, unmodified.
 - **Basis_Summary** — the retrieved provenance the agent shows alongside its guidance: driving
   pollutant, the sub-index and band that drove it, the threshold that was crossed if any, the
-  confidence, and the breakpoint table and calibration strategy Service 2 named in `basis`.
+  confidence, and the breakpoint table, calibration strategy, nowcast window and record identifiers
+  Service 2 named in `basis`.
 - **Guardrail_Envelope** — the `advisoryScope`, `emergencyGuidance` and `disclaimer` strings Service 2
   returns.
 - **Escalation** — a determination that the turn must direct the user to emergency services or to their
@@ -426,8 +427,11 @@ recommendation is independently reviewable rather than a black box.
    its distance, and the reading's confidence.
 2. WHERE a threshold was crossed, THE Service SHALL name the threshold value and its source as Service 2
    reported them in `personalized.thresholdSource`.
-3. THE Service SHALL name the breakpoint table and the calibration strategy from the retrieved `basis`,
-   so the derivation of the index is traceable.
+3. THE Service SHALL name the breakpoint table, the calibration strategy, and the nowcast window — its
+   length, the hours actually available within it, and the weighting applied — from the retrieved
+   `basis`, so the derivation of the index is traceable.
+3a. WHERE the retrieved `basis` reports no nowcast, THE Service SHALL treat that as meaning the index was
+   not nowcast-derived, and SHALL NOT present it as a nowcast whose window is unknown.
 4. THE Service SHALL read the Basis_Summary from the retrieved response and SHALL NOT recompute or
    re-derive any part of it.
 5. THE Service SHALL make the Basis_Summary available whether or not the user asked for it.

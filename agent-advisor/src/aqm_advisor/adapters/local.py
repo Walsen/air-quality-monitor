@@ -65,13 +65,26 @@ def canned_air_quality(
     threshold_crossed: bool = False,
     threshold_source: str | None = "sensitivity_level",
     escalation_sub_index: int | None = 101,
+    window_hours: int = 12,
+    hours_available: int | None = None,
+    nowcast: bool = True,
 ) -> dict[str, object]:
     """One air-quality body in Service 2's real shape (Requirement 19.2's pinned members).
 
     Every member name here is Service 2's own. The guard named in the module docstring is what
     keeps
     that claim true rather than aspirational.
+
+    ``hours_available`` defaults to a FULL window; pass fewer to script the partial-window case
+    Req 9.3 makes traceable. ``nowcast=False`` scripts an index that was not nowcast-derived at
+    all,
+    which Req 9.3a calls a complete answer rather than a gap. Those are two DIFFERENT states and
+    a
+    caller must be able to tell them apart, so they are separate parameters rather than one
+    nullable
+    number — collapsing them is exactly the confusion Req 9.3a exists to forbid.
     """
+    available = window_hours if hours_available is None else hours_available
     return {
         "user": user,
         "generatedAt": generated_at,
@@ -132,7 +145,15 @@ def canned_air_quality(
             "calibrationStrategies": {"PM25": "rh_linear"},
             "humiditySource": "provider",
             "conversionSource": None,
-            "nowcast": {"windowHours": 12, "hoursAvailable": 12, "weightFactor": 0.72},
+            "nowcast": (
+                {
+                    "windowHours": window_hours,
+                    "hoursAvailable": available,
+                    "weightFactor": 0.72,
+                }
+                if nowcast
+                else None
+            ),
             # Requirement 9.5's record references — the specific Readings a claim rests on. The
             # drift guard caught this block missing `records` and `nowcast` on its first run,
             # which

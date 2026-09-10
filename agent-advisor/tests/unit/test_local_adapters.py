@@ -177,6 +177,46 @@ def test_the_canned_body_is_configurable_where_a_test_needs_variation() -> None:
     assert personalized["thresholdSource"] == "learned"
 
 
+def test_a_partial_nowcast_window_is_scriptable() -> None:
+    # Req 9.3: the weighting is part of how the sub-index was derived, so a window with fewer
+    # hours
+    # available than its length has to reach the basis unchanged rather than being normalised
+    # away.
+    basis = canned_air_quality(window_hours=12, hours_available=8)["basis"]
+    assert isinstance(basis, dict)
+    assert basis["nowcast"] == {
+        "windowHours": 12,
+        "hoursAvailable": 8,
+        "weightFactor": 0.72,
+    }
+
+
+def test_an_absent_nowcast_is_a_distinct_state_from_a_partial_window() -> None:
+    # Req 9.3a: no nowcast means the index was NOT nowcast-derived — a complete answer, not a
+    # gap.
+    # These are two different things and a caller must be able to produce each, so this asserts
+    # they
+    # are actually distinguishable rather than both arriving as some flavour of missing.
+    absent = canned_air_quality(nowcast=False)["basis"]
+    partial = canned_air_quality(hours_available=8)["basis"]
+    assert isinstance(absent, dict)
+    assert isinstance(partial, dict)
+    assert absent["nowcast"] is None
+    assert partial["nowcast"] is not None
+
+
+def test_an_absent_nowcast_still_matches_service_2s_basis_shape() -> None:
+    # The drift guard must hold in BOTH nowcast states: Service 2 declares `nowcast` as
+    # `NowcastOut | None`, so omitting the KEY entirely would be a different shape from sending
+    # null.
+    if not _SERVICE_2_MODELS.is_file():
+        pytest.skip("the sibling service is not present")
+    declared = _model_fields(_SERVICE_2_MODELS.read_text(encoding="utf-8"), "BasisOut")
+    basis = canned_air_quality(nowcast=False)["basis"]
+    assert isinstance(basis, dict)
+    assert set(basis) == declared, "the key must be present and null, not dropped"
+
+
 # --- the local guardrail checker ----------------------------------------
 
 @pytest.mark.parametrize(

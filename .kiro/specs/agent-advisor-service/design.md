@@ -188,7 +188,7 @@ agent-advisor/
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
 │   │   ├── instants.py             # iso_z — this service's own copy, no cross-service import
-│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary, RecordReference, Escalation
+│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary + RecordReference/Nowcast
 │   ├── ports/
 │   │   ├── clock.py                # Clock protocol + Fixed/System
 │   │   └── protocols.py            # ServingClient, GuardrailChecker, AdviceAuditStore,
@@ -408,6 +408,12 @@ class RecordReference(BaseModel):
         """The stable composite identifier an Advice_Record stores (Req 20.2)."""
         return f"{self.site_code}:{self.species}:{iso_z(self.date_time)}:{self.duration}"
 
+class NowcastBasis(BaseModel):
+    """The nowcast weighting behind the sub-index, as Service 2 names it in `basis.nowcast`."""
+    window_hours: int
+    hours_available: int
+    weight_factor: float
+
 class BasisSummary(BaseModel):
     driving_pollutant: str | None
     site_code: str
@@ -418,6 +424,7 @@ class BasisSummary(BaseModel):
     threshold_source: str | None             # includes "learned" (Service 2 Req 32.7)
     breakpoint_table: str | None
     calibration_strategies: Mapping[str, str]
+    nowcast: NowcastBasis | None             # None = not nowcast-derived, NOT unknown (Req 9.3a)
     records: tuple[RecordReference, ...]     # Service 2's `basis.records`
 
 class GuardrailEnvelope(BaseModel):
@@ -444,6 +451,22 @@ name. The engineering practices forbid importing across service directories unti
 package is specced, so each service keeps its own copy covered by its own round-trip test — the same rule
 that already governs the record contract. The name is deliberately identical because the wire form it
 must produce is: a whole-second UTC instant with a `Z` suffix.
+
+`nowcast` is here because the nowcast weighting is part of how the sub-index was derived: the same
+readings under a different window length, a different count of hours actually available, or a different
+weight factor produce a different sub-index. Req 9.3 requires the derivation to be traceable, so a summary
+that named the breakpoint table and calibration strategy but not the weighting left a step of that
+derivation unaccounted for.
+
+`nowcast is None` means **the index was not nowcast-derived** — not that the window is unknown (Req 9.3a).
+That distinction has to be written down because the two readings of `None` lead to opposite behaviour: an
+absent nowcast is an ordinary, complete answer, whereas an unknown one would be a gap worth disclosing.
+This is the same trap as Service 2's correlation returning `None` on zero variance, where "nothing to
+compare" is not "no relationship".
+
+Naming the nowcast does not by itself put it in the Guidance text. Req 9.5 returns the Basis_Summary with
+every response, which is what makes the derivation reviewable by a clinician; whether a partial window
+should also be *spoken* in the guidance belongs to the confidence-disclosure requirement, not here.
 
 ### Escalation
 
