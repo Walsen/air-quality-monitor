@@ -870,14 +870,17 @@ record.
    verified user identity that Requirement 18 establishes.
 2. THE Service SHALL model a User_Profile with exactly these fields: the user identity, the Condition,
    the Sensitivity_Level, the Personal_Threshold set, the User_Location entries, the optional activity
-   inputs of Requirement 23, the Consent_Record, and the instants the profile was created and last
-   updated.
+   inputs of Requirement 23, the Medication_Entry set of Requirement 30, the Routine_Entry set of
+   Requirement 30, the Consent_Record, and the instants the profile was created and last updated.
 3. THE Service SHALL accept Condition as exactly one of `asthma`, `copd`, `allergic_rhinitis`,
    `asthma_copd_overlap`, or `none_declared`, and Sensitivity_Level as exactly one of `standard`,
    `elevated`, or `high`.
-4. THE Service SHALL store no free-text clinical field, no medication name, no symptom narrative, no
-   diagnosis code, no date of birth, and no name or contact detail, and SHALL reject a profile write
-   carrying any field outside the set criterion 2 defines, naming the offending field.
+4. THE Service SHALL store no free-text clinical field beyond the bounded Symptom_Note of Requirement
+   31, no diagnosis code, no date of birth, and no name or contact detail, and SHALL reject a profile
+   write carrying any field outside the set criterion 2 defines, naming the offending field. THE Service
+   SHALL store a medication only as a Medication_Entry under Requirement 30 — a name and a role, never a
+   dose, a frequency, a route, or an administration schedule — so that there is nowhere in the stored
+   shape to put the information that would make dosing advice expressible.
 5. THE Service SHALL store each User_Location as a name from the set `home`, `work`, or `commute`
    together with a latitude and longitude rounded to the configured precision, with default 3 decimal
    places — approximately 110 m — so that a stored location is precise enough to select nearby sensors
@@ -1146,8 +1149,10 @@ than a national average one, so that a warning arrives while it is still actiona
 #### Acceptance Criteria
 
 1. THE Service SHALL determine an effective escalation Sub_Index for the user as the first available of:
-   a Personal_Threshold for the species, the Sensitivity_Level mapping of criterion 2, and the
-   Orange_Band lower bound of 101.
+   a Personal_Threshold for the species, a Learned_Threshold for the species under Requirement 32, the
+   Sensitivity_Level mapping of criterion 2, and the Orange_Band lower bound of 101. A Learned_Threshold
+   SHALL rank BELOW a Personal_Threshold and SHALL NOT displace one: a threshold the user stated is
+   their explicit instruction, and inference does not overrule an instruction.
 2. THE Service SHALL define the default Sensitivity_Level mapping to escalation Sub_Index as `standard`
    to 101, `elevated` to 76, and `high` to 51, so that a respiratory user escalates at the Orange_Band
    or earlier rather than at the public `Unhealthy` threshold of 151
@@ -1187,6 +1192,14 @@ run in moderate air is not treated as equivalent to resting in the same air.
    SHALL compute an Inhaled_Dose per species as
    `dose_ug = corrected_concentration_ug_m3 * breathing_rate_m3_per_h * duration_h` and SHALL report it
    with its unit.
+1a. WHERE the User_Profile supplies Routine_Entry records under Requirement 30 that fall within the
+   window being reported, THE Service SHALL compute the Inhaled_Dose per routine window using that
+   window's own activity level and duration against the concentration measured in that window, and SHALL
+   report the per-window doses and their sum. A single whole-day activity figure attributes a morning
+   run's breathing rate to the whole day, which is the error this criterion exists to remove.
+1b. WHERE both a Routine_Entry set and the whole-day activity inputs are present, THE Service SHALL use
+   the Routine_Entry records and SHALL report which basis it used, because reporting a dose without
+   saying which basis produced it would make two different numbers indistinguishable.
 2. THE Service SHALL accept an activity level from the set `rest`, `light`, `moderate`, or `vigorous`,
    and SHALL map each to a configurable breathing rate in m³/h whose defaults are 0.5, 1.0, 2.0, and
    3.2 respectively.
@@ -1416,3 +1429,133 @@ tell a healthy pipeline from a degrading one without reading raw payloads.
    naming the supplied value and the permitted values.
 10. THE Service SHALL treat metric transport and alarm definition as a deployment concern, exposing the
     counters and gauges through one internal interface that a deployment adapter publishes.
+
+### Requirement 30: Medication List and Routine Schedule
+
+**User Story:** As a user, I want the service to know what my clinician has already prescribed and what
+my week actually looks like, so that guidance can name the inhaler I own and can be about the run I
+actually do at seven in the morning.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL model a Medication_Entry with exactly two fields — a display name and a
+   Medication_Role — and SHALL reject a Medication_Entry carrying any other field, naming the offending
+   field without echoing its value.
+2. THE Service SHALL accept Medication_Role as exactly one of `reliever`, `preventer`, or `other`,
+   because the role is what makes preparedness guidance expressible and is the only clinical property
+   the guidance needs.
+3. THE Service SHALL store NO dose, NO frequency, NO route of administration, NO prescriber, and NO
+   administration schedule for any Medication_Entry. This is a structural prohibition rather than a
+   validation rule: with nowhere in the stored shape to put a dose, medication-dosing advice has no
+   input to draw on, which is the same technique Requirement 25 criterion 8 applies to the Audit_Record.
+4. THE Service SHALL accept at most the configured number of Medication_Entry records per profile, with
+   default 10, rejecting a write beyond it naming the limit.
+5. THE Service SHALL model a Routine_Entry with exactly these fields: a set of days of the week, a start
+   time of day, a duration in hours, an activity level from Requirement 23's set, and an optional
+   User_Location name from Requirement 17 criterion 5's set.
+6. THE Service SHALL accept at most the configured number of Routine_Entry records per profile, with
+   default 14, rejecting a write beyond it naming the limit.
+7. THE Service SHALL reject a Routine_Entry whose duration is not greater than zero, or whose duration
+   would extend the window past the end of its start day, naming the field and the permitted range
+   without echoing the value.
+8. THE Service SHALL order Routine_Entry records deterministically by day of week then start time, so
+   that a per-window dose report and any iteration reaching a response is reproducible.
+9. THE Service SHALL treat a Medication_Entry name and a Routine_Entry as profile fields under
+   Requirement 17 criterion 9, so neither appears in any log entry, any error message, or any
+   Audit_Record, and the User_Profile's own rendering continues to reveal only the pseudonymous
+   identity.
+10. THE Service SHALL include Medication_Entry and Routine_Entry records in the erasure of Requirement 17
+    criterion 8, and SHALL report them in the deletion receipt's counts.
+11. THE Service SHALL NOT return a Medication_Entry to any caller other than the authenticated owner,
+    and SHALL NOT include a Medication_Entry in the air-quality response body of Requirement 19; the
+    advisor reads the profile explicitly when it needs one.
+
+### Requirement 31: Symptom Log
+
+**User Story:** As a user, I want to record how I felt each day, so that over time the advice is about
+what actually affects me rather than about a population average.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL access Symptom_Entry values exclusively through a SymptomLogStore port, keyed by the
+   verified user identity.
+2. THE Service SHALL model a Symptom_Entry with exactly these fields: the user identity, the calendar
+   date the entry describes, a Symptom_Severity, a set of Symptom_Marker values, whether a reliever was
+   used, an optional bounded Symptom_Note, and the instant the entry was recorded.
+3. THE Service SHALL accept Symptom_Severity as an integer from 1 to 5 inclusive, and SHALL reject a
+   value outside that range naming the field and the range.
+4. THE Service SHALL accept Symptom_Marker values from a closed configured set whose defaults are
+   `cough`, `wheeze`, `breathlessness`, `chest_tightness`, `nasal_congestion`, and `sleep_disturbance`,
+   and SHALL reject an unrecognized marker naming the recognized set.
+5. THE Service SHALL accept an optional Symptom_Note of at most a configured length, with default 280
+   characters, and SHALL NOT accept any other free-text field.
+6. THE Service SHALL treat the Symptom_Note as recorded FOR THE USER'S OWN RECALL ONLY: it SHALL NOT
+   contribute to any computation, SHALL NOT be returned in the air-quality response body, and SHALL NOT
+   be included in any value the Requirement 32 association reads. Prose is a clinical narrative and an
+   injection vector; the structured fields are what the association is computed from, and keeping the
+   note out of every derivation is what lets it exist at all.
+7. THE Service SHALL store at most one Symptom_Entry per user per calendar date, and a write for a date
+   that already has an entry SHALL replace it rather than accumulate, because two entries for one day
+   would double-count that day in the association.
+8. THE Service SHALL apply a configured retention window to Symptom_Entry records, with default 365
+   days, and SHALL exclude an entry older than the window from every query, applied at query time
+   against the injected Clock as Requirement 14 criterion 7 does for Readings.
+9. THE Service SHALL remove every Symptom_Entry for a user on the erasure of Requirement 17 criterion 8,
+   and SHALL report the number removed in the deletion receipt. Unlike the Audit_Record, a Symptom_Entry
+   carries real clinical content, so erasure here deletes rather than de-identifies.
+10. THE Service SHALL never write a Symptom_Severity, a Symptom_Marker, a reliever-use flag, or a
+    Symptom_Note to any log entry, and SHALL log at most the pseudonymous identity and the date of an
+    entry that was recorded.
+11. THE Service SHALL accept a Symptom_Entry whose date is not in the future relative to the injected
+    Clock, rejecting a future-dated entry naming the field.
+
+### Requirement 32: Exposure–Symptom Association and Learned Thresholds
+
+**User Story:** As a user with a diary, I want the service to notice which pollutant at which delay
+actually tracks how I feel, so that my alerts fire at my own threshold rather than a default one.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL compute an Exposure_Association between the Symptom_Severity series and the stored
+   Sub_Index series per species, evaluated at each of a configured set of lags in whole days whose
+   defaults are 0 and 3.
+2. THE Service SHALL evaluate lag 3 by default because the evidence base places the gaseous-pollutant
+   effect at the same day and the particulate effect about three days later
+   (`docs/research/FINDINGS.md`, cycle 2). A same-day-only association would systematically miss the
+   particulate signal, which is the signal that matters most for the PM-sensitive user this feature
+   exists to serve.
+3. THE Service SHALL report with every Exposure_Association the species, the lag, the number of paired
+   observations it was computed from, and the association strength.
+4. THE Service SHALL compute no Exposure_Association from fewer than a configured minimum of paired
+   observations, with default 14, and SHALL report the shortfall rather than a value. A threshold learned
+   from four days is worse than no learned threshold, because it will be stated with the same
+   confidence and acted on.
+5. THE Service SHALL bound the association's reach by the Readings retention window of Requirement 14,
+   and WHERE the Symptom_Entry retention window is the longer of the two THE Service SHALL report the
+   effective reach as the shorter, so a diary entry with no surviving exposure data to pair with is not
+   counted as an observation.
+6. THE Service SHALL derive a Learned_Threshold for a species only WHERE the Exposure_Association for
+   that species meets both the minimum observation count of criterion 4 and a configured minimum
+   association strength, and SHALL record the species, the Sub_Index, the lag, and the observation count
+   the derivation rested on.
+7. THE Service SHALL expose a Learned_Threshold through the Requirement 22 criterion 1 precedence as the
+   Threshold_Source value `learned`, ranked below a Personal_Threshold, and SHALL report that source in
+   the response exactly as it reports the others.
+8. THE Service SHALL constrain a Learned_Threshold to the Sub_Index range 1 to 500 and SHALL NOT emit
+   one below a configured floor, with default 51, because learning an escalation point inside the Good
+   band would alert continuously and teach the user to ignore the alerts.
+9. THE Service SHALL describe an Exposure_Association as an ASSOCIATION and SHALL NOT name it, type it,
+   or report it as a cause. It is computed on one person's small sample; a personalized
+   concentration-to-symptom response is evidence-backed as a phenomenon
+   (`docs/research/FINDINGS.md`, cycle 4) but a specific individual's correlation is not a causal
+   finding, and the distinction is the difference between an observation and a clinical claim.
+10. THE Service SHALL compute the Exposure_Association as a pure function of the stored entries, the
+    stored Readings, and the configuration, using no source of randomness and reading no wall clock, so
+    that the same stored data yields the same association and the derivation is reproducible from an
+    audit.
+11. THE Service SHALL apply a defined order to every iteration the association performs — dates
+    ascending, species by the configured precedence of Requirement 14 criterion 3 — so no incidental
+    ordering reaches a stored or reported value.
+12. THE Service SHALL NOT compute an Exposure_Association on the serving path of Requirement 19; the
+    derivation reads a history and SHALL be performed on its own schedule, with the Learned_Threshold it
+    produces stored for the serving path to read.
