@@ -94,14 +94,14 @@ directory.
       proving each detector can actually fail, so no rule can pass vacuously
     - _Requirements: 25.2, 25.3, 32.2_
 
-- [ ] 3. Domain models
-  - [ ] 3.1 Implement the turn contract models
+- [x] 3. Domain models
+  - [x] 3.1 Implement the turn contract models
     - `AdvisoryRequest` with the length bounds and `credential` as a `SecretStr` excluded from
       serialisation; `AdvisoryResponse` with the exact field set from the design; `PriorTurn`;
       assert rendering the request exposes no credential in `repr`, `str` or any f-string form
     - _Requirements: 1.1, 1.2, 1.4, 1.5, 1.6, 5.1, 5.6_
 
-  - [ ] 3.2 Implement the basis, envelope and escalation models
+  - [x] 3.2 Implement the basis, envelope and escalation models
     - `SpeciesBasis`, `RecordReference`, `NowcastBasis`, `BasisSummary`, `GuardrailEnvelope`,
       `Escalation`; every field populated by copying a retrieved value, with no code path that computes one
     - `BasisSummary.nowcast` carries Service 2's `basis.nowcast` (window length, hours available, weight
@@ -119,7 +119,7 @@ directory.
       round-trip test; do not import Service 2's, and let the architecture check prove no such import
     - _Requirements: 9.1, 9.2, 9.3, 9.3a, 9.4, 9.5, 20.2_
 
-  - [ ] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
+  - [x] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
     - `RetrievedValues` with the ordered `tool_calls` trajectory; `SymptomEntryDraft` with `confirmed`
       defaulting to False; `AdviceRecord` with the pinned field set, an `idempotency_key`, and a test
       asserting there is no field able to hold an utterance, guidance text, condition, threshold or
