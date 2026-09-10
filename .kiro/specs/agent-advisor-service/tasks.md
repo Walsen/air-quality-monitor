@@ -511,7 +511,11 @@ directory.
     - Drive `POST /invocations` and `GET /ping` against the locally served application with no AWS; assert
       the health response shape; assert `/ping` stays responsive and reports `HealthyBusy` for the whole
       time a turn is in flight
-    - _Requirements: 26.5a, 32.4b_
+    - Req 32.14: assert the inbound authorizer's configured audience equals the audience configured for
+      Service 2. A4's direct forwarding is documented as sufficient only WHERE those match, so this is the
+      test that keeps the assumption true rather than merely asserted. Drift here fails at Service 2, not
+      here, which is the hardest place to attribute it
+    - _Requirements: 26.5a, 32.4b, 32.14_
 
   - [ ]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**

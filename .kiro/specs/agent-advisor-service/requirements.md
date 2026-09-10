@@ -92,9 +92,9 @@ or override.
   announcement of 2025-10-13.
 
 
-- **A4 — The end user's own Cognito JWT reaches Service 2, by forwarding rather than by brokering, and
-  this is a deliberate deviation from the AWS-endorsed pattern.** Research on 2026-09-10 verified three
-  things that together settle it. First, AgentCore Runtime accepts an end-user Cognito JWT **directly**
+- **A4 — The end user's own Cognito JWT reaches Service 2 by forwarding, and AWS documents this as
+  sufficient for a single-tenant agent.** Research on 2026-09-10 verified three things about the
+  mechanism. First, AgentCore Runtime accepts an end-user Cognito JWT **directly**
   at its own front door: a `customJWTAuthorizer` configured with the pool's `discoveryUrl`,
   `allowedClients` and `allowedAudience` validates the token before this service's code runs, and a
   missing token is refused with `401`. Second, AgentCore Identity's outbound model is a token **BROKER**,
@@ -106,12 +106,21 @@ or override.
   `Authorization` header reachable in agent code; forwarding it from there is implementable but
   unendorsed.
 
-  This spec chooses forwarding anyway, because the alternative is worse: a brokered token is a *different*
-  credential, and Service 2's authenticator — already implemented, already in review — verifies a Cognito
-  JWT against a specific issuer and audience. Adopting the endorsed pattern would mean changing a shipped
-  service's authentication to accept a second token shape, which trades a documented mechanism for a
-  larger blast radius. Confirm this trade; if the endorsed pattern is preferred, Service 2's Requirement
-  18 is what changes, and it should change deliberately rather than as a side effect.
+  **Corrected 2026-09-10 (later the same day), and the correction is favourable.** AWS's own guidance on
+  on-behalf-of token exchange states: "The OBO pattern is essential whenever an agent fronts multiple
+  downstream services or tenants and the inbound token's audience differs from any single downstream API.
+  **For a single-tenant agent where the inbound audience already matches the downstream service, direct
+  token forwarding can be sufficient.**" (*Implement on-behalf-of token exchange for multi-tenant agents
+  with Amazon Bedrock AgentCore Gateway*, AWS Machine Learning Blog, 13 July 2026.)
+
+  This service is exactly that case: ONE Cognito pool, ONE downstream API. So forwarding is not a
+  deviation to be justified — it is the documented sufficient choice, and the earlier framing of it as
+  unendorsed was wrong. The condition attached to it is a real one and becomes a requirement: the audience
+  AgentCore Runtime's `customJWTAuthorizer` accepts and the audience Service 2's authorizer accepts MUST
+  be the same, or forwarding stops being sufficient. That is asserted in the deployment-contract tests.
+
+  The consequence for Service 2 is that its Requirement 18 does NOT change. What would have changed it —
+  adopting a brokered token of a different shape — is no longer motivated.
 
 - **A4a — Service 3 needs no JWT verifier of its own.** A consequence of the above worth stating because
   it removes a component the first draft implied: AgentCore validates the inbound token before this
@@ -198,6 +207,40 @@ or override.
   erasure it does not control, when Service 2's Requirement 31 already owns the one clinical store with
   its own retention and its own erasure. Statelessness (A6) is the mechanism; not creating a second,
   ungoverned home for health data is the reason.
+
+- **A13 — AgentCore Gateway is evaluated and NOT adopted, and the reason is a chain rather than a
+  preference.** Gateway turns an existing REST API into MCP tools from an OpenAPI specification or a
+  Smithy model, or fronts an API Gateway target directly, adding inbound auth and observability. Service
+  2's serving API is an API Gateway HTTP API with an OpenAPI shape, so it is a plausible target and the
+  default answer under "prefer AgentCore where one fits" would be yes. Three findings, verified
+  2026-09-10, say no here.
+
+  First, **it would break the credential model A4 just validated.** AWS's OBO guidance states that direct
+  token forwarding "is rarely true in multi-tenant systems and **never true when the agent fronts a tool
+  gateway**", because the inbound token's audience becomes the Gateway's rather than the downstream API's.
+  Adopting Gateway therefore forces RFC 8693 on-behalf-of token exchange — which is a correct pattern, but
+  one this service does not otherwise need.
+
+  Second, **the exchange needs an authorization server whose support for it is unconfirmed for Cognito.**
+  AWS's own reference implementation uses Okta, and the same post cautions: "Amazon Cognito user pools can
+  serve as the provider IdP that authenticates the inbound agent call. **Confirm the current grant-type
+  support against the AgentCore Identity documentation if you plan to use Cognito for the consumer-side
+  OBO role.**" This monorepo is standardised on Cognito. So adopting Gateway means either depending on an
+  unconfirmed Cognito capability on the highest-stakes path, or introducing a second identity provider for
+  a project that needs one IdP — a larger change than the tool layer it would replace.
+
+  Third, **it moves the tool surface off the machine and out of the offline suite.** Requirement 32.2
+  keeps every AgentCore dependency at the deployment boundary so no advisory component imports an
+  AgentCore type and the offline suite is unaffected by the deploy target; Requirement 26 requires that
+  suite to pass with no credentials and no network beyond localhost. Gateway-sourced tools are defined in
+  AWS, so their shapes could not be enumerated or exercised offline without stubbing the very thing under
+  test. The five tools as Python functions over an injected `ServingClient` port are what make the offline
+  suite possible.
+
+  Recorded because "we evaluated it" is only useful if the evaluation is written down. If Cognito's
+  token-exchange support is later confirmed AND a second downstream service appears, the first two
+  objections fall and this should be revisited; the third would remain and would need Requirement 32.2
+  amended deliberately.
 
 ## Glossary
 
@@ -1000,6 +1043,13 @@ isolation, scaling and long-running invocations are the platform's problem rathe
     ordinary Advisory_Turn. The Runtime permits 8 hours on a microVM and up to 14 days on an Instance; a
     conversational turn that took minutes would be a defect rather than a feature, and the long window
     serves the scheduled work of Requirement 33, not the conversation.
+
+14. THE Service SHALL configure the audience its inbound `customJWTAuthorizer` accepts to be the SAME
+    audience Service 2's authorizer accepts, and SHALL assert that agreement in the offline
+    deployment-contract tests. Per assumption A4, direct forwarding of the end user's token is sufficient
+    only WHERE the inbound audience already matches the downstream service; if the two configurations
+    drift apart, forwarding silently stops being the documented pattern and every retrieval fails
+    authorization at Service 2 rather than here, which is the hardest place to attribute it.
 
 ### Requirement 33: Asynchronous Association Job
 
