@@ -113,6 +113,24 @@ class CrossingOut(_ResponseModel):
     threshold: int
 
 
+class DoseWindowOut(_ResponseModel):
+    """One routine window's Inhaled_Dose (Requirement 23.1a).
+
+    Carries no band, severity or risk member, inheriting Requirement 23.8's framing: a dose is
+    an
+    exposure quantity, and there is nowhere here to put a clinical interpretation of one.
+    """
+
+    startTime: str
+    durationHours: float
+    activityLevel: str
+    location: str | None
+    concentrationUgM3: float
+    breathingRateM3PerH: float
+    micrograms: float
+    confidence: str
+
+
 class PersonalizedOut(_ResponseModel):
     """The personalization members of Requirements 20 through 23."""
 
@@ -127,6 +145,11 @@ class PersonalizedOut(_ResponseModel):
     crossings: tuple[CrossingOut, ...] = ()
     pollen: dict[str, str] | None = None
     inhaledDose: float | None = None
+    # Requirement 23.1b: reporting a dose without saying which basis produced it would make a
+    # per-window sum and a whole-day figure indistinguishable, and they can differ by a lot.
+    doseBasis: str | None = None
+    inhaledDoseWindows: tuple[DoseWindowOut, ...] = ()
+    unavailableDoseWindows: int = 0
 
 
 class ForecastOut(_ResponseModel):

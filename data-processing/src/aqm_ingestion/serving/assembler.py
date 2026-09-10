@@ -26,6 +26,8 @@ formula
 
 from __future__ import annotations
 
+import datetime as dt
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -38,30 +40,34 @@ from aqm_ingestion.domain.aqi.overall import (
 from aqm_ingestion.domain.dose import (
     DEFAULT_BREATHING_RATES,
     MASS_CONCENTRATION_UNIT,
+    DoseBasis,
     activity_inputs_from,
     compute_inhaled_dose,
+    compute_routine_doses,
     dose_concentration_from,
+    resolve_dose_basis,
 )
 from aqm_ingestion.domain.escalation import (
     CrossingReport,
     MeasuredSubIndex,
     evaluate_crossings,
 )
-from aqm_ingestion.domain.models import CalibratedReading
-from aqm_ingestion.domain.profile import UserProfile
+from aqm_ingestion.domain.models import CalibratedReading, lowest_confidence
+from aqm_ingestion.domain.profile import WEEKDAY_ORDER, RoutineEntry, UserProfile
 from aqm_ingestion.domain.weighting import (
     ConditionWeightingRegistry,
     compute_weighted_focus,
     order_species,
 )
 from aqm_ingestion.ports.clock import Clock
-from aqm_ingestion.ports.protocols import VerifiedIdentity
+from aqm_ingestion.ports.protocols import ReadingsStore, VerifiedIdentity
 from aqm_ingestion.serving.basis import Basis, assemble_basis
 from aqm_ingestion.serving.enrichment import Enricher, primary_position
 from aqm_ingestion.serving.geo import GeoSelector, SelectedSite
 from aqm_ingestion.serving.guardrails import GuardrailSettings, guardrail_envelope
 from aqm_ingestion.serving.models import (
     CrossingOut,
+    DoseWindowOut,
     ForecastOut,
     LocationOut,
     MeasurementOut,
@@ -72,6 +78,15 @@ from aqm_ingestion.serving.models import (
 )
 from aqm_ingestion.serving.profiles import ProfileService
 from aqm_ingestion.serving.symptoms import SymptomLogService
+
+_DOSE_SPECIES = "PM25"
+"""The species a dose is computed from.
+
+Requirement 23.1's formula is in µg/m³ and NO2 is stored in ppb, which
+``dose_concentration_from`` refuses outright rather than converting silently — so a per-window
+query asks for this species alone rather than filtering afterwards.
+"""
+
 
 DEFAULT_TABLE_ID = "epa-2024-05-06"
 """The Breakpoint_Table a response is built against, resolved from configuration."""
@@ -113,6 +128,7 @@ class ResponseAssembler:
         weightings: ConditionWeightingRegistry | None = None,
         settings: AssemblySettings | None = None,
         symptoms: SymptomLogService | None = None,
+        readings: ReadingsStore | None = None,
     ) -> None:
         """Hold the stages. Each owns one rule; this object owns only the order."""
         self._profiles = profiles
@@ -126,6 +142,12 @@ class ResponseAssembler:
         # symptom log there are no Learned_Thresholds, and Requirement 22.1's remaining three
         # tiers apply unchanged.
         self._symptoms = symptoms
+        # Requirement 23.1a needs the concentration measured IN a routine window, and the
+        # selector only holds the LATEST reading per species — so a per-window dose needs its
+        # own
+        # look at the history. Optional, so a deployment without it falls back to the whole-day
+        # basis and REPORTS that basis rather than pretending to a precision it does not have.
+        self._readings = readings
 
     def assemble(self, identity: VerifiedIdentity) -> AssembledResponse:
         """Assemble the response, returning it and whether a crossing was reported.
@@ -186,6 +208,9 @@ class ResponseAssembler:
 
         basis = assemble_basis(contributing)
         envelope = guardrail_envelope(self._settings.guardrails)
+        dose_total, dose_basis, dose_windows, dose_unavailable = self._dose_report(
+            profile, contributing, nearest.siteCode if nearest else None, self._clock.now()
+        )
 
         response = ServingResponse(
             user=identity.user_id,
@@ -218,7 +243,10 @@ class ResponseAssembler:
                     if enrichment.pollen is not None
                     else None
                 ),
-                inhaledDose=self._dose_for(profile, contributing),
+                inhaledDose=dose_total,
+                doseBasis=dose_basis,
+                inhaledDoseWindows=dose_windows,
+                unavailableDoseWindows=dose_unavailable,
             ),
             forecast=ForecastOut(
                 tomorrowAqi=enrichment.forecast_aqi,
@@ -312,6 +340,97 @@ class ResponseAssembler:
         if driving is not None and driving in effective:
             return str(effective[driving].source)
         return str(effective[sorted(effective)[0]].source)
+
+    def _dose_report(
+        self,
+        profile: UserProfile,
+        readings: Sequence[CalibratedReading],
+        site_code: str | None,
+        now: dt.datetime,
+    ) -> tuple[float | None, str, tuple[DoseWindowOut, ...], int]:
+        """The dose to report, which basis produced it, and the per-window breakdown.
+
+        Requirements 23.1, 23.1a and 23.1b. Routine windows WIN over the whole-day inputs where
+        both are present, and the basis is always reported — a per-window sum and a whole-day
+        figure are both truthfully "the dose", so reporting either unlabelled makes two
+        different
+        numbers indistinguishable.
+        """
+        basis = resolve_dose_basis(profile)
+        if basis is DoseBasis.ROUTINE_WINDOWS and self._readings is not None:
+            report = compute_routine_doses(
+                profile.routines,
+                concentration_for_window=lambda entry: self._window_concentration(
+                    entry, site_code, now
+                ),
+                rates=DEFAULT_BREATHING_RATES,
+                day=WEEKDAY_ORDER[now.weekday()],
+            )
+            windows = tuple(
+                DoseWindowOut(
+                    startTime=dose.window_start.isoformat(),
+                    durationHours=dose.duration_hours,
+                    activityLevel=str(dose.activity_level),
+                    location=None if dose.location is None else str(dose.location),
+                    concentrationUgM3=round(dose.concentration_ug_m3, 2),
+                    breathingRateM3PerH=dose.breathing_rate_m3_per_h,
+                    micrograms=round(dose.micrograms, 2),
+                    confidence=dose.confidence,
+                )
+                for dose in report.per_window
+            )
+            total = (
+                None
+                if report.total_micrograms is None
+                else round(report.total_micrograms, 2)
+            )
+            return total, str(basis), windows, report.unavailable_windows
+
+        # THE REPORTED BASIS IS THE ONE THAT ACTUALLY PRODUCED THE NUMBER, which is why this
+        # recomputes it rather than reusing `basis` above. Where routines exist but no readings
+        # port does, the routine path cannot run and the number comes from the whole-day inputs
+        # —
+        # reporting `routine_windows` there would be exactly the confusion Requirement 23.1b
+        # exists to prevent, a label naming a basis that did not produce the value. A test
+        # caught
+        # this: the first version returned `str(basis)` on both paths.
+        fallback = (
+            DoseBasis.WHOLE_DAY_ACTIVITY
+            if activity_inputs_from(profile) is not None
+            else DoseBasis.NONE
+        )
+        return self._dose_for(profile, readings), str(fallback), (), 0
+
+    def _window_concentration(
+        self, entry: RoutineEntry, site_code: str | None, now: dt.datetime
+    ) -> tuple[float | None, str | None]:
+        """The corrected µg/m³ concentration measured IN one routine window.
+
+        THE MEAN over the window, which is a different choice from the association's daily
+        MAXIMUM and right for a different reason. A dose is an integral of concentration over
+        time, so the time-weighted mean is what the formula wants; the association looks for a
+        symptom response, which tracks the worst part of a day rather than its average. Two
+        aggregations, two reasons, both deliberate.
+
+        Returns ``(None, None)`` when the window has no mass-concentration reading, which
+        ``compute_routine_doses`` reports as unavailable rather than pricing at an assumption.
+        """
+        if self._readings is None or site_code is None:
+            return (None, None)
+        start = dt.datetime.combine(now.date(), entry.start_time, tzinfo=dt.UTC)
+        end = start + dt.timedelta(hours=entry.duration_hours)
+        window = self._readings.query_window(
+            site_code, frozenset({_DOSE_SPECIES}), start, end
+        )
+        usable = [
+            reading
+            for reading in window.readings
+            if reading.units == MASS_CONCENTRATION_UNIT
+        ]
+        if not usable:
+            return (None, None)
+        mean = math.fsum(dose_concentration_from(r) for r in usable) / len(usable)
+        return (mean, str(lowest_confidence([r.confidence for r in usable])))
 
     def _dose_for(
         self, profile: UserProfile, readings: Sequence[CalibratedReading]
