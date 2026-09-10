@@ -238,7 +238,7 @@ directory.
     - **Property 6: Medication naming closure**
     - **Validates: Requirements 29.1, 29.3, 29.6**
 
-- [ ] 7. Action mapping and guidance content rules
+- [x] 7. Action mapping and guidance content rules
   - [x] 7.1 Implement the condition-keyed action registry
     - `CONDITION_ACTIONS` and `actions_for`, keyed by condition so a new condition is an entry not a
       branch; every template is exposure-reduction phrasing; an AST test asserts resolution compares no
@@ -251,14 +251,14 @@ directory.
       never compute a weighting; handle an overlap condition by using the returned weighting
     - _Requirements: 12.1, 12.2, 12.3, 12.6_
 
-  - [ ] 7.3 Implement anticipatory warning and activity timing
+  - [x] 7.3 Implement anticipatory warning and activity timing
     - State the forecast trend attributed to its provider; explain the ~3-day particulate lag and the
       same-day gaseous effect as a general pattern, never a prediction about the user; answer activity
       questions in terms of retrieved conditions and the trend; relate guidance to the retrieved
       `inhaledDose` where the profile records an activity; never instruct starting or stopping exercise
     - _Requirements: 13.1, 13.2, 13.3, 13.4, 13.5, 14.1, 14.2, 14.3, 14.4_
 
-  - [ ] 7.4 Implement confidence, dose and pollen reporting
+  - [x] 7.4 Implement confidence, dose and pollen reporting
     - State the driving reading's confidence and say so in the guidance when it is not the highest value;
       never present a low-cost reading as reference-grade; disclose a qualified quality flag; explain the
       dose as concentration times an activity-adjusted breathing rate over a duration without recomputing
