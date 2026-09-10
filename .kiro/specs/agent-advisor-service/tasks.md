@@ -328,10 +328,18 @@ directory.
     - _Requirements: 31.4_
 
 - [ ] 10. Verification hooks and the turn pipeline
-  - [ ] 10.1 Register the verification hooks
-    - Grounding, forbidden-claim, medication-closure and guardrail checks registered through Strands hooks
-      at the after-generation point rather than called from the ordinary path, so no return path can
-      bypass them; a test asserts a deliberately added early return still gets checked
+  - [x] 10.1 Register the verification hooks
+    - `agent/verification.py`. NOTE, established against the installed SDK: `AfterInvocationEvent`
+      carries `result` and `resume` but NO `cancel` field, so a Strands hook can OBSERVE a response and
+      cannot veto it. Bypass-proofing therefore cannot work by the hook blocking. It works by the hook
+      RECORDING a verdict at the after-invocation point (which the SDK fires "regardless of whether it
+      completed successfully or encountered an error") while the ledger starts UNVERIFIED and `release`
+      raises instead of returning text. A return path that skips verification has no verdict, so
+      assembly refuses — the new path does not have to remember to verify, because it cannot obtain the
+      text without a verdict. A failed verdict is also final for the turn, so a retry cannot verify
+      different text and publish on that verdict, and `reset` clears it between turns
+    - The checks themselves are injected rather than imported, so the hook carries no policy: it
+      guarantees they run. A verifier that raises records a FAILING verdict
     - _Requirements: 31.5, 34.7_
 
   - [ ] 10.2 Implement the `TurnPipeline` Template Method
@@ -341,17 +349,31 @@ directory.
       result alone
     - _Requirements: 10.2, 20.4, 34.7_
 
-  - [ ] 10.3 Implement structured output and stop-reason handling
-    - Obtain the response's structured fields through Strands structured output against a Pydantic model;
-      treat `StructuredOutputException` as a model failure; treat `content_filtered` and
-      `guardrail_intervened` as guardrail rejections rather than failures; handle every stop reason the
-      SDK can return, with a test that fails if one is unhandled
+  - [~] 10.3 Implement structured output and stop-reason handling — STOP REASONS DONE
+    - DONE: `agent/stop_reasons.py` classifies every reason, and `ALL_STOP_REASONS` is DERIVED from the
+      SDK's own `StopReason` literal rather than written out, so an upgrade that adds a thirteenth fails
+      the test. The installed SDK has TWELVE, three of which the spec never anticipated (`cancelled`,
+      `checkpoint`, `interrupt`). `content_filtered` and `guardrail_intervened` are rejections, not
+      failures (Req 6.5a); the three `limit_*` reasons and the provider's `max_tokens` are bounds; an
+      unrecognised reason falls back to model failure rather than success
+    - FINDING: the SDK has NO stop reason meaning "the model failed" — a failure arrives as an EXCEPTION
+      (`ModelThrottledException`, `EventLoopException`, `StructuredOutputException`), so `MODEL_FAILED`
+      is reachable only by the fallback and the exception path. The reachability test excludes it
+      deliberately and says why
+    - REMAINING: structured output itself. `Agent.structured_output(output_model, prompt)` is confirmed
+      present and `StructuredOutputException` exists; wiring it to a Pydantic response model belongs with
+      the pipeline in 10.2
     - _Requirements: 6.3b, 6.5a, 31.7_
 
   - [ ] 10.4 Implement the invocation bounds
-    - Express the per-turn ceilings through Strands' own `limits` for turns, output tokens and total
-      tokens; treat a `limit_*` stop reason as reaching the bound with one warning naming it; bound
-      `ServingClient` calls and the number of prior turns included in a prompt
+    - API established: `Limits` is `strands.types.agent.Limits`, a `TypedDict(total=False)` with `turns`,
+      `output_tokens` and `total_tokens`, passed PER INVOCATION to `__call__`/`invoke_async`/
+      `stream_async` — NOT on `Agent.__init__`, which has no `limits` parameter. Per-invocation suits a
+      per-TURN ceiling better than the task assumed
+    - CAVEAT to carry into Req 22's wording: the SDK documents `output_tokens` and `total_tokens` as SOFT
+      caps — "a single oversized response can overshoot the budget; checked at turn boundaries, not
+      within an individual model call". Priority on simultaneous trip is turns > total_tokens >
+      output_tokens. The requirement must not claim a hard guarantee the SDK does not give
     - _Requirements: 22.1, 22.1a, 22.2a, 22.3, 22.4_
 
   - [ ]* 10.5 Write property test for escalation precedence
