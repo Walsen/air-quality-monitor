@@ -156,6 +156,7 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     # days",
     # and a bare `you have` diagnosis pattern rejected it — the pattern was keyed on the WORDS
     # rather than the CLAIM, and only a guard over all required texts finds that.
+    from aqm_advisor.domain.attribution import unavailable_text
     from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
     from aqm_advisor.domain.reporting import (
         GASEOUS_SAME_DAY_TEXT,
@@ -170,6 +171,11 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
         CLINICIAN_SUGGESTION_TEXT,
         PARTICULATE_LAG_TEXT,
         GASEOUS_SAME_DAY_TEXT,
+        # Req 7.3's unavailable-value sentence. Added when it was written rather than left for a
+        # later
+        # sweep to discover, since that is the whole point of generalising this guard.
+        unavailable_text("ozone"),
+        unavailable_text("PM2.5"),
         *TIMING_TEMPLATES,
     )
     for text in required:
