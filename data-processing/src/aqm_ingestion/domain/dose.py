@@ -21,11 +21,20 @@ subject.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import datetime as dt
+import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 from aqm_ingestion.domain.models import CalibratedReading, Confidence
-from aqm_ingestion.domain.profile import ActivityLevel, UserProfile
+from aqm_ingestion.domain.profile import (
+    ActivityLevel,
+    LocationName,
+    RoutineEntry,
+    UserProfile,
+    Weekday,
+)
 
 DOSE_UNIT = "ug"
 """Requirement 23.1's dose unit, fixed by the formula's own name (``dose_ug``)."""
@@ -159,14 +168,146 @@ def activity_inputs_from(profile: UserProfile | None) -> ActivityInputs | None:
     )
 
 
+class DoseBasis(StrEnum):
+    """Which basis produced a reported Inhaled_Dose (Requirement 23.1b).
+
+    Requirement 23.1b exists because a per-window sum and a whole-day figure are both truthfully
+    "the dose", so reporting either without naming its basis would make two different numbers
+    indistinguishable. ``NONE`` is a first-class member rather than an absence for the same
+    reason: "no dose, because no activity was recorded" is a report, not a gap.
+    """
+
+    ROUTINE_WINDOWS = "routine_windows"
+    WHOLE_DAY_ACTIVITY = "whole_day_activity"
+    NONE = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class RoutineWindowDose:
+    """One routine window's dose, and the inputs that explain it (Requirement 23.1a).
+
+    Carries no band, severity, risk or advice field, inheriting Requirement 23.8's framing from
+    :class:`InhaledDose` — a test asserts the field set so a later addition fails loudly.
+    """
+
+    window_start: dt.time
+    micrograms: float
+    concentration_ug_m3: float
+    breathing_rate_m3_per_h: float
+    duration_hours: float
+    activity_level: ActivityLevel
+    location: LocationName | None
+    confidence: str
+
+
+@dataclass(frozen=True, slots=True)
+class RoutineDoseReport:
+    """Every window's dose for one day, plus the sum (Requirement 23.1a).
+
+    ``total_micrograms`` is None rather than 0.0 when nothing could be computed. Zero
+    would claim
+    the user breathed nothing in, which is a different statement from "this day has no recorded
+    activity window" or "the concentration for that window is unavailable".
+    """
+
+    per_window: tuple[RoutineWindowDose, ...]
+    total_micrograms: float | None
+    unit: str
+    unavailable_windows: int
+
+
+def resolve_dose_basis(profile: UserProfile | None) -> DoseBasis:
+    """Decide which basis a dose report should use (Requirement 23.1b).
+
+    Routine records WIN over the whole-day inputs where both are present, which is 23.1b's
+    explicit instruction: the whole-day figure is the less precise of the two, and keeping the
+    more precise one would be pointless if the coarser one could shadow it.
+    """
+    if profile is None:
+        return DoseBasis.NONE
+    if profile.routines:
+        return DoseBasis.ROUTINE_WINDOWS
+    if activity_inputs_from(profile) is not None:
+        return DoseBasis.WHOLE_DAY_ACTIVITY
+    return DoseBasis.NONE
+
+
+def compute_routine_doses(
+    routines: Sequence[RoutineEntry],
+    concentration_for_window: Callable[[RoutineEntry], tuple[float | None, str | None]],
+    rates: Mapping[ActivityLevel, float],
+    day: Weekday,
+) -> RoutineDoseReport:
+    """Compute the Inhaled_Dose for each routine window falling on ``day`` (Requirement 23.1a).
+
+    Args:
+        routines: the stored Routine_Entry records, already in Req 30.8's order — so this
+            report inherits a defined order rather than establishing a second one.
+        concentration_for_window: supplies the corrected µg/m³ concentration measured IN a
+            window, with its Confidence. Injected rather than looked up here, because
+            selecting a
+            window's readings needs a store and this module is pure domain logic. Returning None
+            means unavailable, which is reported rather than replaced by an assumption.
+        rates: Requirement 23.2's breathing rates, passed in as configuration.
+        day: which weekday is being reported.
+
+    Returns:
+        A dose per window that could be priced, the sum of those, and a count of windows
+        whose
+        concentration was unavailable.
+    """
+    doses: list[RoutineWindowDose] = []
+    unavailable = 0
+
+    for entry in routines:
+        if day not in entry.days:
+            continue
+        concentration, confidence = concentration_for_window(entry)
+        if concentration is None or confidence is None:
+            # Requirement 23.3's reasoning, carried into the per-window case: an assumed
+            # concentration is not a measured one, so the window is reported as unavailable
+            # rather than priced at a guess.
+            unavailable += 1
+            continue
+        if concentration < 0:
+            raise ValueError(
+                f"cannot compute a dose from a negative concentration: {concentration}"
+            )
+        rate = rates[entry.activity_level]
+        doses.append(
+            RoutineWindowDose(
+                window_start=entry.start_time,
+                micrograms=concentration * rate * entry.duration_hours,
+                concentration_ug_m3=concentration,
+                breathing_rate_m3_per_h=rate,
+                duration_hours=entry.duration_hours,
+                activity_level=entry.activity_level,
+                location=entry.location,
+                confidence=confidence,
+            )
+        )
+
+    return RoutineDoseReport(
+        per_window=tuple(doses),
+        total_micrograms=math.fsum(d.micrograms for d in doses) if doses else None,
+        unit=DOSE_UNIT,
+        unavailable_windows=unavailable,
+    )
+
+
 __all__ = [
     "DEFAULT_BREATHING_RATES",
     "DEFAULT_MAX_DURATION_HOURS",
     "DOSE_UNIT",
     "MASS_CONCENTRATION_UNIT",
     "ActivityInputs",
+    "DoseBasis",
     "InhaledDose",
+    "RoutineDoseReport",
+    "RoutineWindowDose",
     "activity_inputs_from",
     "compute_inhaled_dose",
+    "compute_routine_doses",
     "dose_concentration_from",
+    "resolve_dose_basis",
 ]
