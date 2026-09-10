@@ -239,13 +239,13 @@ directory.
     - **Validates: Requirements 29.1, 29.3, 29.6**
 
 - [ ] 7. Action mapping and guidance content rules
-  - [ ] 7.1 Implement the condition-keyed action registry
+  - [x] 7.1 Implement the condition-keyed action registry
     - `CONDITION_ACTIONS` and `actions_for`, keyed by condition so a new condition is an entry not a
       branch; every template is exposure-reduction phrasing; an AST test asserts resolution compares no
       condition-name literal; the registry never chooses a weighting
     - _Requirements: 12.4, 12.5_
 
-  - [ ] 7.2 Implement condition-weighted interpretation from the retrieved block
+  - [x] 7.2 Implement condition-weighted interpretation from the retrieved block
     - Read condition, sensitivity, `weightedFocus` and `unavailableWeightedSpecies` and present species in
       the order Service 2 returned; state that unavailable weighted species matter but are not measured;
       never compute a weighting; handle an overlap condition by using the returned weighting
