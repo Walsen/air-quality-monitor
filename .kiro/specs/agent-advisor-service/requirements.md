@@ -176,6 +176,21 @@ or override.
   the contract without hand-written HTTP, and `app.run()` serves `/invocations` **locally with no AWS**,
   which is what lets Requirement 26 exercise the deployment contract in the offline suite.
 
+- **A11a — Asynchrony and the long-running contract are verified.** Confirmed 2026-09-10 against the
+  AgentCore developer guide's asynchronous and long-running page, and an AWS blog of 2026-08-19 on
+  asynchronous patterns for calling AgentCore agents. There is **no separate fire-and-forget job API**:
+  one invocation API serves both modes, and asynchrony is an agent-side behaviour — the agent responds
+  immediately and keeps working, tracked by `add_async_task` / `complete_async_task`, which also manage the
+  `/ping` status. Background work **does** survive the response to the client, which is the documented
+  purpose. Event-driven triggering is supported through Step Functions `waitForTaskToken`, the Step
+  Functions direct SDK integration, and Lambda durable functions. A session idles out after **15 minutes**
+  in `Healthy` and stays alive while `HealthyBusy`.
+
+  The load-bearing consequence is a hazard rather than a capability: **a blocking `/invocations` handler
+  also blocks `/ping`**, and a session whose ping is blocked is treated as unhealthy — the documented
+  outcome is termination and the reported field outcome is the entrypoint being re-invoked mid-turn. It
+  does not reproduce locally. Requirements 32.4a to 32.4c exist for this.
+
 - **A12 — AgentCore Memory is deliberately not used, and the reason is stronger than mere statelessness.**
   Its long-term strategies EXTRACT facts, preferences and summaries **asynchronously into managed
   storage** with an event expiry of up to 365 days. For this service that is precisely the wrong
@@ -913,9 +928,28 @@ isolation, scaling and long-running invocations are the platform's problem rathe
    THE Service SHALL use the Advisory_Request and Advisory_Response of Requirement 1 as those bodies
    rather than a second wire shape that would then need keeping in step.
 4. THE Service SHALL answer `GET /ping` with `{"status": "Healthy"}` when able to accept work and
-   `{"status": "HealthyBusy"}` while a turn is in flight, and SHALL NOT advance the optional
-   `time_of_last_update` on every ping, because a value that always moves prevents the idle session
-   timeout from ever firing.
+   `{"status": "HealthyBusy"}` while a turn or a background task is in flight, and SHALL NOT advance the
+   optional `time_of_last_update` on every ping. A timestamp that always moves signals a continuous status
+   change, which prevents the idle session timeout from ever firing — sessions then persist to
+   `MaxLifetime` and **can exhaust the account's session quota**. Using the AgentCore SDK's task API
+   handles this correctly, which is a reason to prefer it over a hand-rolled status handler.
+4a. THE Service SHALL NOT perform a blocking operation in the `/invocations` handler. A blocking call
+   there also blocks the `/ping` health endpoint, and a session whose ping thread is blocked is treated as
+   unhealthy: the documented consequence is termination, and the reported field consequence is the
+   entrypoint being RE-INVOKED while the first turn is still working. Every model call, every
+   Serving_Client call and every guardrail call SHALL therefore be awaited on the async path or run on a
+   separate thread.
+4b. THE Service SHALL assert in the OFFLINE suite that `GET /ping` stays responsive while a turn is in
+   flight, and that it reports `HealthyBusy` for the duration. THIS IS THE ONE PRODUCTION FAILURE MODE
+   THAT DOES NOT REPRODUCE LOCALLY BY DEFAULT — a blocked ping thread costs nothing on a developer's
+   machine, where no platform is watching the health endpoint, and only appears once deployed. The
+   documentation's own advice is to run the server locally and check ping status while simulating the
+   scenario, so this converts an unreproducible deployed fault into an ordinary failing test.
+4c. THE Service SHALL make every write it performs through the Serving_Client idempotent with respect to a
+   re-invoked entrypoint, because a retry can deliver the same turn twice. A Symptom_Entry write is
+   already safe by Service 2's Requirement 31 criterion 7, which replaces rather than accumulates an entry
+   for a date; an Advice_Record write and a profile write are not inherently safe and SHALL be keyed so a
+   duplicate delivery does not double-apply.
 5. THE Service SHALL return an Advisory_Response for every handled failure of Requirement 21, and SHALL
    NOT allow an unhandled error to become a 4xx or 5xx from the container. A container error is surfaced
    to the caller as an opaque `424 RuntimeClientError`, which would replace a documented degraded answer
@@ -930,6 +964,14 @@ isolation, scaling and long-running invocations are the platform's problem rathe
    allowlist and SHALL forward it unmodified to the Serving_Client, per assumption A4, keeping Service 2's
    own authorization the single enforcement point. THE Service SHALL NOT parse, validate or re-issue the
    credential, per assumption A4a.
+8a. THE Service SHALL treat a credential rejected for remaining lifetime as an authentication failure under
+   Requirement 5 criterion 4 rather than as a service fault. A forwarded token is a token that keeps
+   ageing: it may be accepted at the front door and then be near or past expiry when a later
+   Serving_Client call is made within the same turn, and there is a reported behaviour of AgentCore
+   refusing a token that expires within the next minute. THE Service SHALL NOT attempt to refresh, extend
+   or reissue it — that is the caller's responsibility — and SHALL bound a turn short enough that a
+   credential valid at the start is still valid at the last retrieval, which Requirement 32 criterion 13's
+   turn budget already requires for other reasons.
 9. THE Service SHALL NOT use AgentCore Memory for conversational state or for any derived value, per
    assumption A12.
 10. THE Service SHALL emit traces, metrics and logs through OpenTelemetry, which AgentCore Observability
@@ -971,15 +1013,27 @@ a person waiting for advice never waits for a statistical computation.
    personalization and does not break the advice.
 7. THE Service SHALL NOT notify the user on the completion of an association job, consistent with
    Requirement 20 criterion 6's prohibition on autonomous action.
-8. THE Service SHALL record the association job's TRIGGER MECHANISM as an open design decision rather
-   than assume one. Whether AgentCore exposes a fire-and-forget invocation, whether an agent continues to
-   completion after a client disconnects, and whether AgentCore work can be driven from an event source
-   are **not verified** as of 2026-09-10 — the research pass that would have settled them did not
-   complete. Nothing in this document depends on the answer: every criterion above constrains this
-   service's own behaviour and is phrased so that a scheduled job, an event-driven trigger, or a separate
-   process each satisfy it. The candidate is the EventBridge-to-Lambda-to-SQS shape of assumption A10's
-   reference article; the design document SHALL choose and justify one, and SHALL verify the chosen
-   mechanism before relying on it.
+8. THE Service SHALL use the AgentCore SDK's asynchronous task API — `add_async_task` when background
+   work begins and `complete_async_task` when it ends — for any work that continues after a response has
+   been returned. Verified 2026-09-10: AgentCore supports agents that "continue processing after
+   responding to the client", and the SDK's task API tracks the work AND manages the `/ping` status
+   automatically, which is the part a hand-rolled background thread gets wrong.
+9. THE Service SHALL treat asynchrony as an AGENT-SIDE behaviour rather than a separate client API. There
+   is no fire-and-forget job endpoint to call: the documented model is one invocation API where the agent
+   itself decides to respond immediately and keep working, so a client cannot tell a synchronous turn from
+   an asynchronous one. An Advisory_Request therefore needs no async variant.
+10. WHERE the association job is driven from a serverless pipeline rather than from within a turn, THE
+    Service SHALL use one of the documented AWS integrations rather than a bespoke poller: a Step
+    Functions `waitForTaskToken` state whose dispatcher returns as soon as the agent is started, the Step
+    Functions direct SDK integration `aws-sdk:bedrockagentcore:invokeAgentRuntime`, or a Lambda durable
+    function's `waitForCallback`. A caller that blocks on the agent is billed for the whole wait while
+    doing nothing, which is the documented anti-pattern.
+11. THE Service SHALL derive the `runtimeSessionId` for a triggered job from a stable property of the
+    triggering execution rather than generating a fresh one, so that a retried trigger resumes the same
+    session instead of starting a second one — which is also what makes Requirement 33 criterion 4's
+    idempotency achievable rather than merely asserted.
+12. THE Service SHALL set an explicit timeout on any callback-based wait, so a silent agent fails the
+    execution cleanly rather than leaving it paused indefinitely.
 
 ### Requirement 34: Guardrail Enforcement and Output Verification
 
