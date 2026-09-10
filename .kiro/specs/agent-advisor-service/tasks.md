@@ -481,12 +481,35 @@ directory.
     - Both new required texts joined task 6.3's sweep as they were written
     - _Requirements: 21.1, 21.2, 21.3, 21.7, 21.8_
 
-  - [ ] 11.2 Implement the boundary error handling
-    - Catch the expected exception types at the boundaries with a broad catch only at the entrypoint,
-      which logs; never return a raw exception, stack trace, model error body or Service 2 error body;
-      report a malformed request as such naming the field, never as a server error; report a rejected
-      credential as needing re-authentication without naming it or Service 2's detail
-    - _Requirements: 5.4, 21.4, 21.5, 21.6_
+  - [x] 11.2 Implement the boundary error handling
+    - `agent/boundary.py`. Req 32.5 sets the shape: every handled failure becomes an `AdvisoryResponse`,
+      NOT a status code, because an unhandled error becomes an opaque `424 RuntimeClientError` from the
+      container that replaces a documented degraded answer with a transport fault and loses the envelope
+      and any escalation with it
+    - So even a MALFORMED REQUEST carries the emergency guidance. A user in trouble who typed something
+      unparseable still needs to be told to call for help, and Req 10.4 does not depend on the request
+      being well-formed
+    - Req 21.4 holds by construction: every message is a fixed sentence chosen by KIND, never built from an
+      exception's own words, and `BoundaryFault` has deliberately nowhere to put a provider message. The
+      tests plant a marker string inside each exception and assert it does not surface — quantified over the
+      expected types, because a test using one fixed error body would pass while a different one leaked
+    - Req 21.6 names the offending FIELD but never the offending INPUT: a Pydantic error carries the value
+      too, and echoing it would return the user's own utterance in an error message, which Req 19.2 keeps
+      out of logs and an error body is no better a place for
+    - Req 5.4's message says the session needs re-authenticating and nothing else. Req 5.2 names this case
+      explicitly — "including a message reporting an authentication failure" — because it is where an author
+      reaches for the token to debug with. Only UNAUTHORIZED maps to re-authentication; sending a user to
+      sign in again because Service 2 timed out points them at something that is not broken
+    - `fault_for` returns None for the UNEXPECTED, deliberately: that is what routes a surprise to
+      `handle_at_top_level`, whose log is the only record one occurred. A `fault_for` answering everything
+      would make that handler dead code and the log with it. The top-level log records the exception TYPE,
+      never its message
+    - TEST-DRIVEN CORRECTION: the first structural test expected the broad `except` inside
+      `handle_at_top_level` and failed, because that function RECEIVES an already-caught error. The catch
+      belongs at the entrypoint, so this module now asserts the stronger local property — it catches nothing
+      broadly anywhere — and Req 21.5's placement clause is recorded against task 17.1 rather than left to
+      be rediscovered
+    - _Requirements: 5.4, 21.4, 21.6_
 
   - [ ]* 11.3 Write property test for degradation completeness
     - **Property 12: Degradation is complete and honest**
@@ -623,7 +646,11 @@ directory.
       `Healthy` or `HealthyBusy`; `time_of_last_update` omitted or set only on a real status change; the
       `AdvisoryRequest` and `AdvisoryResponse` as the `/invocations` bodies; every handled failure returned
       as a response rather than a container status
-    - _Requirements: 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
+    - CARRIED FROM 11.2: Req 21.5's PLACEMENT clause must be asserted HERE. `agent/boundary.py` holds the
+      handler but not the catch — `handle_at_top_level` receives an already-caught error — so the broad
+      `except` lives at this entrypoint, and the AST test that it appears nowhere else belongs with it.
+      `boundary.py` already asserts it catches nothing broadly, which is the other half
+    - _Requirements: 21.5, 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
 
   - [ ] 17.2 Implement inbound identity and credential forwarding
     - Read the inbound `Authorization` header from the request-header allowlist and forward it unmodified;
