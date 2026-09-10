@@ -245,16 +245,22 @@ class BasisSummary(_StrictModel):
 
 
 class GuardrailEnvelope(_StrictModel):
-    """The three strings Service 2 returns, carried through unchanged.
+    """The strings Service 2 returns, carried through unchanged.
 
-    Never composed here. Req 8.5 requires the envelope on every response including a degraded
-    one, and a locally-composed fallback would be this service inventing a disclaimer Service 2
-    is responsible for.
+    `emergency_guidance` is REQUIRED; the other two are not, and the asymmetry is deliberate
+    (Req 21.9, assumption A8a). Where no envelope can be resolved, a scope or disclaimer is
+    OMITTED rather than invented, because a locally-authored disclaimer would be this service
+    making a compliance statement that is Service 2's to word.
+
+    An absent emergency direction is a different matter: Req 10.4 requires escalating even when
+    Service 2 is unreachable, so there has to be something to escalate WITH. That is the one
+    configured fallback A8a permits, and `domain/envelope.py` holds the resolution order and the
+    drift check that earns the exception.
     """
 
-    advisory_scope: str
     emergency_guidance: str
-    disclaimer: str
+    advisory_scope: str | None = None
+    disclaimer: str | None = None
 
 
 class Escalation(_StrictModel):
@@ -284,10 +290,19 @@ class AdvisoryResponse(_StrictModel):
     structural rather than a rule a future field could break.
     """
 
+    # `escalation` is declared BEFORE `guidance` on purpose. Req 10.2 places the emergency
+    # direction first in the response, and design Property 4 asserts the emergency guidance
+    # appears before any exposure guidance — with a structured response that is field ORDER, so
+    # a
+    # consumer rendering top to bottom meets the emergency direction before the advice. Req
+    # 1.2's
+    # enumeration is a field SET ("carrying exactly these fields"), not a serialisation
+    # contract,
+    # so ordering this way satisfies 10.2 without violating 1.2.
+    escalation: Escalation | None
     guidance: str | None
     basis: BasisSummary | None
     envelope: GuardrailEnvelope
-    escalation: Escalation | None
     degraded: bool = False
     answered_at: dt.datetime
 

@@ -155,6 +155,22 @@ or override.
 - **A8 — Guardrail texts come from Service 2's response**, not from a second copy here. Service 2
   already returns `advisoryScope`, `emergencyGuidance` and `disclaimer` on every body. Duplicating
   those strings in this service would let the two drift, and the drift would be invisible.
+
+  **A8a — one narrow exception, for `emergencyGuidance` only, because A8's own reason is addressable.**
+  A8's objection is not duplication as such; it is that the drift would be INVISIBLE. Requirement 10.4
+  requires an Escalation even when the Serving_Client is unavailable, and Requirement 21.3 requires the
+  envelope in a degraded response — so on the highest-stakes path the service has, A8 as written leaves no
+  text to escalate with at all. Nothing is worse than drifted wording at the moment somebody is describing
+  a severe attack.
+
+  So this service MAY hold a configured `emergencyGuidance` fallback, and the drift is made VISIBLE rather
+  than tolerated: on the first successful retrieval of each run the configured text is compared against
+  what Service 2 returned and a mismatch is logged as a warning (Requirement 21.8). That satisfies A8's
+  actual concern instead of overriding it.
+
+  The exception is `emergencyGuidance` ALONE. `advisoryScope` and `disclaimer` remain strictly Service 2's,
+  with no local copy and no fallback, because drift in compliance boilerplate is a nit while absence of an
+  emergency direction is not — the asymmetry that justifies the exception does not extend to them.
 - **A9 — Pinned versions:** `strands-agents==1.55.1` (released 2026-09-09, Apache-2.0, authored by AWS,
   classifiers list Python 3.12), pinned exactly as engineering practice §0 and the dev-environment
   steering require. The `otel` extra is taken for tracing. `strands-agents-tools` is **not** taken: this
@@ -716,6 +732,15 @@ it cannot see.
    is reported as such, naming the offending field.
 7. WHERE only part of the retrieved data is available, THE Service SHALL advise on what it has and state
    what is missing, rather than failing the whole turn.
+
+8. THE Service SHALL resolve the Guardrail_Envelope in this order and SHALL record which source supplied
+   it: the envelope Service 2 returned this turn; else the last envelope successfully retrieved in this
+   process; else, for `emergencyGuidance` only, the configured fallback of assumption A8a. THE Service
+   SHALL compare the configured fallback against the first successfully retrieved `emergencyGuidance` of
+   each run and SHALL log one warning naming the field, but never either text, WHERE they differ.
+9. THE Service SHALL NOT substitute a local `advisoryScope` or `disclaimer`, and WHERE no envelope can be
+   resolved for those, THE Service SHALL omit them rather than invent them. An escalation SHALL still be
+   returned, because Requirement 10.4 does not depend on the envelope being complete.
 
 ### Requirement 22: Invocation Bounds
 

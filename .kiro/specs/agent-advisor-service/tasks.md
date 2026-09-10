@@ -150,28 +150,32 @@ directory.
       matching neither "lips look blue" nor "face looks blue"
     - _Requirements: 10.3, 10.4, 10.5_
 
-  - [ ] 4.4 Assert escalation survives a failed retrieval, end to end — **BLOCKED**
-    - Blocked on the degraded-envelope decision below, not merely unstarted. Assert that an escalating
-      turn returns its Escalation and the Guardrail_Envelope when the `ServingClient` raises, and that the
-      emergency direction is placed first (Req 10.2)
-    - **THE OPEN DECISION.** Req 10.1 sources the escalation text from the `emergencyGuidance` Service 2
-      returned; Req 10.4 requires escalating even when the Serving_Client is unavailable; Req 21.3
-      requires the envelope even in a degraded response; and assumption A8 forbids a second copy of those
-      strings in this service because the two could drift invisibly. When Service 2 is unreachable there
-      is therefore NO text to escalate with, on the highest-stakes path the service has. A8's reasoning
-      holds for the disclaimer, where drift is a compliance nit; for the emergency direction the tradeoff
-      inverts, because having no wording at the one moment it matters is worse than drifted wording.
-      Options: cache the last-seen envelope; except `emergencyGuidance` from A8 and configure a fallback;
-      or escalate with a form of words this service owns. Resolve before task 7 assembles the response
-    - `GuardrailEnvelope` currently has no default and no local composition, so this path cannot be built
-      until the decision is made — deliberately, so the gap fails loudly rather than being papered over
-    - _Requirements: 10.2, 10.4, 21.3, A8_
+  - [x] 4.4 Assert escalation survives a failed retrieval, end to end
+    - RESOLVED by assumption A8a and Req 21.8/21.9. A8's objection was that a second copy of the guardrail
+      texts would drift INVISIBLY, not duplication as such — so the exception is bought with a detector
+      (`emergency_guidance_drifted`) rather than by overriding the reason
+    - `domain/envelope.py` resolves served -> cached -> configured fallback and records the source;
+      `domain/turn.py` assembles the escalating response. Both are pure and parameterised, so escalation
+      cannot be made conditional on a client, a model or a clock
+    - The exception covers `emergencyGuidance` ALONE: `resolve_envelope` takes ONE configured string, so no
+      local `advisoryScope` or `disclaimer` can be introduced without changing that signature and the test
+      that pins it. Those two are omitted rather than invented (Req 21.9)
+    - `escalation` now precedes `guidance` in `AdvisoryResponse`. Req 10.2 places the emergency direction
+      first and Property 4 asserts it appears before any exposure guidance; with a structured response that
+      is field ORDER, asserted on the DUMPED body so a later `model_config` change cannot reorder it quietly
+    - _Requirements: 10.2, 10.4, 21.3, 21.8, 21.9, A8a_
 
-  - [ ]* 4.3 Write property test for unconditional escalation — needs 4.4
+  - [ ]* 4.3 Write property test for unconditional escalation — PARTIAL, needs task 10
     - **Property 3: Red-flag escalation is unconditional**
-    - Requires driving retrieval success/failure and model success/failure through the pipeline, so it
-      cannot be written before 4.4's decision and task 7's assembly exist
-    - **Validates: Requirements 10.1, 10.3, 10.4**
+    - `tests/properties/test_escalation_properties.py` covers the two dimensions that exist: retrieval
+      success or failure as the envelope source (served / cached / configured), and air-quality band, which
+      is irrelevant BY CONSTRUCTION since the matcher has no parameter for it. Phrases are drawn from the
+      rule set itself, so a new pattern is covered without anyone remembering to add it
+    - Still open: the model success-or-failure dimension needs task 10's pipeline. Do NOT mark Property 3
+      discharged until then — a property marked validated is a property nobody re-reads
+    - Also asserts the converse, that ordinary text does not escalate. Without it a matcher returning every
+      marker for every input would satisfy the property perfectly while directing every user to emergency care
+    - **Validates: Requirements 10.1, 10.3, 10.4 (partially)**
 
 - [ ] 5. Grounding
   - [ ] 5.1 Implement numeral extraction and the permitted-set comparison
@@ -345,6 +349,9 @@ directory.
 
 - [ ] 11. Degradation and failure handling
   - [ ] 11.1 Implement the degradation paths
+    - Req 21.8's WARNING is not yet emitted anywhere: `emergency_guidance_drifted` exists and is tested, but
+      the one-warning-per-run log naming the field (and neither text) belongs on this path. The detector
+      without the log leaves A8a's guard unarmed, which is the whole basis of the exception
     - A `ServingClient` failure yields a degraded response stating conditions are unavailable with no
       condition value; a `Model_Port` failure yields a response built from retrieved data without prose;
       the envelope and any escalation are present in every degraded response; partial retrieval advises on

@@ -193,11 +193,29 @@ def test_every_record_reference_field_is_required() -> None:
         assert field.is_required(), f"{name} has a default"
 
 
-def test_the_envelope_is_carried_whole_and_has_no_defaults() -> None:
-    # Req 8.5 requires the envelope on every response. A default would let this service invent a
-    # disclaimer that is Service 2's responsibility to word.
-    for name, field in GuardrailEnvelope.model_fields.items():
-        assert field.is_required(), f"{name} has a default"
+def test_the_envelope_requires_the_emergency_direction_but_not_the_boilerplate() -> None:
+    # Changed by assumption A8a. This test previously asserted ALL THREE fields were required,
+    # which
+    # was right until Req 10.4 met Req 21.3: escalating with Service 2 unreachable left nothing
+    # to
+    # escalate with. The exception is narrow and the asymmetry is the point — an absent
+    # emergency
+    # direction is unacceptable, while an absent disclaimer is preferable to one this service
+    # invented
+    # (Req 21.9).
+    fields = GuardrailEnvelope.model_fields
+    assert fields["emergency_guidance"].is_required()
+    assert not fields["advisory_scope"].is_required()
+    assert not fields["disclaimer"].is_required()
+
+
+def test_the_envelope_defaults_are_absence_and_never_invented_text() -> None:
+    # A default that was a STRING would be this service authoring a disclaimer, which is what
+    # Req 21.9
+    # forbids. `None` is the only acceptable default here.
+    envelope = GuardrailEnvelope(emergency_guidance="Seek emergency care now.")
+    assert envelope.advisory_scope is None
+    assert envelope.disclaimer is None
 
 
 def test_a_naive_basis_instant_is_refused() -> None:

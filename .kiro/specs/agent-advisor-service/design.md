@@ -187,6 +187,8 @@ agent-advisor/
 │   │   ├── grounding.py            # numeral extraction + permitted-set comparison
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
+│   │   ├── envelope.py             # Req 21.8 resolution order + the A8a drift detector
+│   │   ├── turn.py                 # escalating_response — the assembly that must always work
 │   │   ├── instants.py             # iso_z — this service's own copy, no cross-service import
 │   │   ├── models.py               # AdvisoryRequest/Response, BasisSummary + RecordReference/Nowcast
 │   │   └── records.py              # RetrievedValues, SymptomEntryDraft, AdviceRecord
@@ -421,10 +423,10 @@ class AdvisoryRequest(_StrictModel):
         return trimmed
 
 class AdvisoryResponse(_StrictModel):
+    escalation: Escalation | None            # FIRST — Req 10.2, see below
     guidance: str | None                     # None in a degraded response
     basis: BasisSummary | None
     envelope: GuardrailEnvelope              # always present
-    escalation: Escalation | None
     degraded: bool = False
     answered_at: datetime                    # aware; refuses a naive value
 ```
@@ -459,6 +461,14 @@ The prose stays reachable through `get_secret_value()` for the prompt that legit
 
 Both models forbid unknown fields and are frozen, so Req 1.1 and 1.2's "exactly these fields" holds at
 construction as well as under inspection: a typo becomes a refusal rather than a silently ignored value.
+
+**`escalation` is declared before `guidance` deliberately.** Req 10.2 places the emergency direction first in
+the response and Property 4 asserts the emergency guidance appears before any exposure guidance — with a
+structured response that is field ORDER, so a consumer rendering top to bottom meets the emergency direction
+before the advice and no renderer has to remember to. Req 1.2's enumeration is a field SET ("carrying exactly
+these fields"), not a serialisation contract, so ordering this way satisfies 10.2 without violating 1.2. A
+test asserts the order in the DUMPED body, not only on the class, so a future `model_config` change cannot
+reorder the safety-critical field silently.
 
 ### Basis and envelope (read, never recomputed)
 
@@ -503,13 +513,39 @@ class BasisSummary(BaseModel):
     @property
     def nowcast_window_is_complete(self) -> bool | None: ...  # None = not nowcast-derived
 
-class GuardrailEnvelope(BaseModel):
-    advisory_scope: str
-    emergency_guidance: str
-    disclaimer: str
+class GuardrailEnvelope(_StrictModel):
+    emergency_guidance: str                  # REQUIRED — Req 10.4 needs something to escalate with
+    advisory_scope: str | None = None        # omitted, never invented (Req 21.9)
+    disclaimer: str | None = None
+
+class EnvelopeSource(StrEnum):
+    SERVED = "served"; CACHED = "cached"; CONFIGURED = "configured"
+
+def resolve_envelope(*, served, cached, configured_emergency_guidance) -> ResolvedEnvelope: ...
+def emergency_guidance_drifted(*, served: str, configured: str) -> bool: ...
 ```
 
 Every field is copied from the retrieved response. There is no code path that computes one (Req 9.4).
+
+**The envelope's asymmetry, and the assumption that permits it.** Four clauses collide when somebody
+describes a red flag while Service 2 is unreachable: Req 10.1 sources the emergency text from Service 2,
+Req 10.4 requires escalating anyway, Req 21.3 requires the envelope anyway, and A8 forbade a local copy.
+A8's stated objection is not duplication but that the drift would be **invisible** — so A8a buys the
+exception with a detector rather than overriding the reason. `emergency_guidance_drifted` compares the
+configured fallback against the first text actually retrieved in a run, and Req 21.8 logs one warning naming
+the field and neither text.
+
+The exception is `emergencyGuidance` ALONE. `resolve_envelope` takes ONE configured string, so there is no
+parameter through which a local `advisoryScope` or `disclaimer` could be introduced — A8a cannot widen by
+accident, only by someone changing that signature and the test pinning it. Those two are omitted rather than
+invented (Req 21.9), because a locally-authored disclaimer would be this service making a compliance
+statement that is Service 2's to word, while an absent emergency direction fails a person in trouble.
+
+Resolution order is served, then the last envelope retrieved in this process, then the configured fallback.
+A stale cache never shadows a live answer; the fallback is reached only on a cold start, which is the first
+turn of a run and therefore exactly the turn that cannot be left without an emergency direction. The source
+is recorded because escalations answered from `CONFIGURED` mean retrieval has been failing since the process
+started — a different and more serious signal than one degraded turn.
 
 `records` is here because **Req 20.2 requires the Advice_Record to store "the identifiers of the
 retrieved records the Basis_Summary named"** — and without this field the Basis_Summary names none, so
