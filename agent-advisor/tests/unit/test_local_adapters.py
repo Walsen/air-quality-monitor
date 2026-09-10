@@ -1,17 +1,14 @@
 """Tests for the local port implementations (task 2.4).
 
 `test_the_canned_body_matches_service_2s_real_response_model` is the one with teeth. Every one
-of
-the 20 correctness properties reads these canned bodies, so a shape that has drifted from what
-Service 2 actually serves would have the entire offline suite proving things about a response
-nobody
-sends — passing green the whole time.
+of the 20 correctness properties reads these canned bodies, so a shape that has drifted from
+what Service 2 actually serves would have the entire offline suite proving things about a
+response nobody sends — passing green the whole time.
 
 The shape cannot be imported: the engineering practices forbid importing across service
-directories
-until a shared contract package is specced. So the guard reads the sibling service's model
-definition from disk and compares field names, skipping when that directory is absent so this
-service still builds and tests alone. A filesystem read is not a runtime dependency.
+directories until a shared contract package is specced. So the guard reads the sibling service's
+model definition from disk and compares field names, skipping when that directory is absent so
+this service still builds and tests alone. A filesystem read is not a runtime dependency.
 """
 
 from __future__ import annotations
@@ -24,13 +21,13 @@ import pytest
 
 from aqm_advisor.adapters.local import (
     DEFAULT_EMERGENCY_GUIDANCE,
-    DEFAULT_FORBIDDEN_PATTERNS,
     InMemoryAdviceAuditStore,
     LocalGuardrailChecker,
     RecordingAssociationTrigger,
     ScriptedServingClient,
     canned_air_quality,
 )
+from aqm_advisor.domain.forbidden import DEFAULT_FORBIDDEN_PATTERNS
 from aqm_advisor.ports.protocols import (
     AdviceAuditStore,
     AdviceRecord,
@@ -354,6 +351,31 @@ def test_a_configured_pattern_set_replaces_the_defaults() -> None:
     checker = LocalGuardrailChecker(patterns=(r"\bnever say this\b",))
     assert checker.check("Take two puffs.").verdict is GuardrailVerdict.PASSED
     assert checker.check("never say this").verdict is GuardrailVerdict.INTERVENED
+
+
+def test_the_checker_delegates_its_rules_to_the_domain() -> None:
+    # The pattern set and the category mapping are the DOMAIN's. They were briefly duplicated in
+    # this
+    # adapter, which made it a second authority on what may be said. Asserted by importing the
+    # defaults
+    # from the domain above and checking the adapter honours them with no set of its own.
+    import ast as _ast
+    import pathlib as _pathlib
+
+    import aqm_advisor.adapters.local as module
+
+    source = _pathlib.Path(module.__file__).read_text(encoding="utf-8")
+    tree = _ast.parse(source)
+    assigned = {
+        target.id
+        for node in _ast.walk(tree)
+        if isinstance(node, _ast.AnnAssign | _ast.Assign)
+        for target in ([node.target] if isinstance(node, _ast.AnnAssign) else node.targets)
+        if isinstance(target, _ast.Name)
+    }
+    assert "DEFAULT_FORBIDDEN_PATTERNS" not in assigned, (
+        "the adapter has its own pattern set again"
+    )
 
 
 def test_the_default_patterns_are_not_empty() -> None:

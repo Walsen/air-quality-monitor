@@ -184,11 +184,16 @@ directory.
     - **Validates: Requirements 10.1, 10.3, 10.4**
 
 - [ ] 5. Grounding
-  - [ ] 5.1 Implement numeral extraction and the permitted-set comparison
+  - [x] 5.1 Implement numeral extraction and the permitted-set comparison
     - `numerals`, `permitted_values`, `ungrounded`; normalisation of trailing zeros and thousands
       separators; the permitted set is retrieved values union a configured set of structural constants;
       tests pin that an invented number is caught, that a retrieved number in a different but equivalent
       rendering is accepted, and that the ~3-day lag constant is permitted as prose
+    - Species names AND concentration units must be masked before extraction: `PM2.5`, `NO2`, `ug/m3` all
+      contain digits. The unit case was found by a failing test and would have been intermittent, since
+      `3` is also the lag constant — grounded when it was configured, ungrounded when it was not
+    - Digit forms only. A spelled-out number is a claim this check cannot see; the mitigation is the
+      system prompt (task 9.4) requiring digits, and the limit is documented in the module
     - _Requirements: 7.1, 7.2, 34.8_
 
   - [ ] 5.2 Write the unavailable-value and forecast-attribution tests
@@ -206,20 +211,20 @@ directory.
     - **Validates: Requirements 7.2, 22.2**
 
 - [ ] 6. Forbidden claims and medication closure
-  - [ ] 6.1 Implement the forbidden-claim pattern check
+  - [x] 6.1 Implement the forbidden-claim pattern check
     - `forbidden_matches` over diagnosis assertions, dosing instructions and administration verbs adjacent
       to a medication name; a configured set REPLACES the defaults rather than extending them; a rejection
       logs the pattern category and never the rejected text
     - _Requirements: 8.1, 8.2, 8.3, 8.6, 8.7_
 
-  - [ ] 6.2 Implement the medication-closure check
+  - [x] 6.2 Implement the medication-closure check
     - `unlisted_medications` asserting any drug name in the text is in the retrieved `Medication_Entry`
       set; the preparedness construction is the only one in which a medication name may appear; an
       administration instruction adjacent to any medication name is rejected regardless of listing; with
       no retrieved set, only generic role language is permitted
     - _Requirements: 29.1, 29.2, 29.3, 29.5, 29.6, 29.7, 29.8_
 
-  - [ ] 6.3 Write the guardrail-text self-consistency guard
+  - [x] 6.3 Write the guardrail-text self-consistency guard
     - Assert the required emergency guidance and disclaimer texts are not themselves rejected by the
       pattern set — a real risk, since the emergency text must mention a reliever inhaler, so a bare
       medication-word pattern would make the required text unpublishable
