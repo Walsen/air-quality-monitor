@@ -188,7 +188,8 @@ agent-advisor/
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
 │   │   ├── instants.py             # iso_z — this service's own copy, no cross-service import
-│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary + RecordReference/Nowcast
+│   │   ├── models.py               # AdvisoryRequest/Response, BasisSummary + RecordReference/Nowcast
+│   │   └── records.py              # RetrievedValues, SymptomEntryDraft, AdviceRecord
 │   ├── ports/
 │   │   ├── clock.py                # Clock protocol + Fixed/System
 │   │   └── protocols.py            # ServingClient, GuardrailChecker, AdviceAuditStore,
@@ -369,24 +370,66 @@ bracketed by `add_async_task` / `complete_async_task`, which also manage the pin
 ### Turn contract
 
 ```python
-class AdvisoryRequest(BaseModel):
-    utterance: str = Field(min_length=1, max_length=4000)
-    credential: SecretStr                    # opaque; excluded from every dump
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+class PriorTurn(_StrictModel):
+    utterance: SecretStr                     # the user's own words
+    guidance: SecretStr                      # what was said back
+
+class AdvisoryRequest(_StrictModel):
+    utterance: str                           # non-blank; length checked against CONFIG, not here
+    credential: Annotated[SecretStr, Field(exclude=True)]
     prior_turns: tuple[PriorTurn, ...] = ()
     locale: str | None = None
 
-class AdvisoryResponse(BaseModel):
+    @field_validator("utterance")
+    @classmethod
+    def _reject_blank(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise BlankUtteranceError
+        return trimmed
+
+class AdvisoryResponse(_StrictModel):
     guidance: str | None                     # None in a degraded response
     basis: BasisSummary | None
     envelope: GuardrailEnvelope              # always present
     escalation: Escalation | None
     degraded: bool = False
-    answered_at: datetime
+    answered_at: datetime                    # aware; refuses a naive value
 ```
 
 `credential` is a `SecretStr` so an accidental interpolation renders as a placeholder rather than the
 token, and it is excluded from serialisation — the same structural approach Service 2 took to making its
-`UserProfile` refuse to render itself.
+`UserProfile` refuse to render itself. Excluded rather than masked: a masked placeholder in a dump still
+advertises that a credential was there and invites a caller to go looking for the real one.
+
+**`utterance` carries no `max_length`, deliberately.** Req 1.5 makes the maximum CONFIGURED with a default
+of 4000, and a constraint pinned at class-definition time would be a SECOND authority that a configured
+value could disagree with. That is the fault Req 15.6 forbids for measurement weakness, and the one that
+made Service 2's profile limits "configured" in name only until they were actually wired. Length is checked
+once, by `validate_utterance_length(utterance, max_length=...)`, at the edge before the Model_Port is
+invoked — which is where Req 1.5 requires it, since a check after the model call has already paid for the
+thing it was meant to prevent.
+
+A `min_length=1` constraint would also not have satisfied Req 1.4, which names a whitespace-only utterance
+explicitly: `"   "` passes a length constraint. The validator trims and refuses a blank, and stores the
+trimmed value so the stored text and the length-checked text are the same one — two differing lengths for
+one request would make the configured limit ambiguous at the boundary.
+
+`UtteranceTooLongError` names the field and the limit and never the text. Rejection messages are logged, so
+an error that quoted the offending utterance would carry the user's words into a log Req 19.2 keeps them
+out of. Service 2 shipped this defect once already, in a message that named the remaining hours and thereby
+disclosed the start time it was withholding.
+
+**`PriorTurn` holds both fields as `SecretStr`.** It carries no credential, but it carries the user's own
+words and the guidance given back — the exact material Req 19.2 keeps out of logs. Making them refuse to
+render means a debug log of the whole request cannot leak the conversation, whatever the call site does.
+The prose stays reachable through `get_secret_value()` for the prompt that legitimately needs it.
+
+Both models forbid unknown fields and are frozen, so Req 1.1 and 1.2's "exactly these fields" holds at
+construction as well as under inspection: a typo becomes a refusal rather than a silently ignored value.
 
 ### Basis and envelope (read, never recomputed)
 
@@ -427,6 +470,10 @@ class BasisSummary(BaseModel):
     nowcast: NowcastBasis | None             # None = not nowcast-derived, NOT unknown (Req 9.3a)
     records: tuple[RecordReference, ...]     # Service 2's `basis.records`
 
+    def record_identifiers(self) -> tuple[str, ...]: ...   # what an Advice_Record stores
+    @property
+    def nowcast_window_is_complete(self) -> bool | None: ...  # None = not nowcast-derived
+
 class GuardrailEnvelope(BaseModel):
     advisory_scope: str
     emergency_guidance: str
@@ -464,6 +511,12 @@ absent nowcast is an ordinary, complete answer, whereas an unknown one would be 
 This is the same trap as Service 2's correlation returning `None` on zero variance, where "nothing to
 compare" is not "no relationship".
 
+`nowcast_window_is_complete` is therefore THREE-valued rather than a boolean. Returning `True` for an
+absent nowcast would claim a completeness that was never measured; returning `False` would invent a
+weakness that does not exist. `record_identifiers()` lives on the basis because Req 20.2 names "the
+retrieved records the Basis_Summary named" — deriving them anywhere else would let the audit trail claim
+provenance the response never cited.
+
 Naming the nowcast does not by itself put it in the Guidance text, and it deliberately must not. An
 incomplete window DOES reach the user, but through the confidence value: Service 2 caps confidence at
 `medium` for an incomplete window and at `low` where there were too few hours to compute a nowcast at all
@@ -489,6 +542,10 @@ class Escalation(BaseModel):
 
 ```python
 @dataclass(frozen=True, slots=True)
+class ToolCall:
+    name: str
+
+@dataclass(frozen=True, slots=True)
 class RetrievedValues:
     numerals: frozenset[str]
     medications: frozenset[str]
@@ -496,7 +553,18 @@ class RetrievedValues:
     tool_calls: tuple[ToolCall, ...]         # ordered — the trajectory
 ```
 
-`tool_calls` is ordered because Req 35.4 asserts *which* tools were called and in what order.
+A frozen slotted dataclass rather than a Pydantic model, unlike everything else in this section: these are
+assembled INTERNALLY from an already-validated response, so they never cross a trust boundary and there is
+nothing for a validator to check. `slots=True` also turns an attribute typo into an `AttributeError`
+instead of a silently-added field.
+
+The value collections are `frozenset` because grounding asks a MEMBERSHIP question — was this numeral
+served? — so a set makes the order of retrieved values irrelevant to the answer and grounding cannot come
+to depend on it.
+
+`tool_calls` is ordered because Req 35.4 asserts *which* tools were called and in what order. It is a
+sequence of events rather than a set of names: collapsing a repeated call would hide a retry loop, which is
+exactly what a trajectory assertion exists to reveal.
 
 ### Symptom entry draft
 
@@ -508,11 +576,19 @@ class SymptomEntryDraft(BaseModel):
     reliever_used: bool
     note: str | None = Field(default=None, max_length=280)
     confirmed: bool = False
+
+    def confirm(self) -> Self: ...           # returns a confirmed COPY
+    def correct(self, **fields) -> Self: ... # returns an UNCONFIRMED copy
 ```
 
 `confirmed` defaults to **False** and a write is refused unless it is True (Req 28.3). The draft is
 restated to the user and corrected by them before it becomes a write, because inferring a severity from
 prose is a judgement about their health and they are the authority on it.
+
+Both transitions return a NEW draft rather than mutating the one the user reviewed. `correct()` returns an
+**unconfirmed** draft on purpose: the user saying the agent misread them is not the same as the user
+agreeing to whatever it substituted, so a correction goes back for confirmation rather than straight to a
+write.
 
 ### Advice record (audit)
 
@@ -537,8 +613,22 @@ delivers the same turn twice (Req 32.4c).
 
 `record_references` holds `RecordReference.identifier()` for each record the Basis_Summary named, one
 composite string per Reading — flat, because an audit row is queried by identity and date, not joined.
-It is populated from `BasisSummary.records` and from nothing else: deriving it anywhere but from the
-basis the response actually cited would let the trail claim provenance the guidance never had.
+It is populated from `BasisSummary.record_identifiers()` and from nothing else: deriving it anywhere but
+from the basis the response actually cited would let the trail claim provenance the guidance never had.
+
+`threshold_crossed` is a `bool` so the TYPE refuses the value: Req 20.2 records THAT a threshold was
+crossed, and Req 20.3 forbids recording the threshold itself, which is a personal health parameter.
+
+```python
+def advice_idempotency_key(*, user_id: str, turn_at: datetime, route: str) -> str: ...
+```
+
+The key is a SHA-256 digest of the user identity, the instant normalised through `iso_z`, and the route.
+Derived from the turn's own identity rather than from a random value or the current time, either of which
+would make every delivery look new and defeat the deduplication Req 32.4c exists for. Normalising the
+instant first means the same instant expressed in another offset yields the same key, so a retry cannot be
+recorded twice. A digest rather than a concatenation because the key is stored and may be logged, and one
+embedding the raw identity would put it somewhere Req 5.3 does not sanction.
 
 ## Correctness Properties
 

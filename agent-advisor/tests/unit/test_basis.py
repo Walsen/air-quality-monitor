@@ -1,14 +1,11 @@
 """Tests for the reviewable basis (task 3.2).
 
 The identifier tests are the load-bearing ones. `RecordReference.identifier()` is what an
-Advice_Record
-stores for Req 20.2, and a collapse there fails in the worst way available: the trail keeps a
-plausible
-number of references, each one valid, while silently under-reporting which Readings a claim
-actually rested
-on. So two Readings differing only in species, and two differing only in instant, are each
-asserted to
-produce DIFFERENT identifiers — the two collapses a bare site code would cause.
+Advice_Record stores for Req 20.2, and a collapse there fails in the worst way available: the
+trail keeps a plausible number of references, each one valid, while silently under-reporting
+which Readings a claim actually rested on. So two Readings differing only in species, and two
+differing only in instant, are each asserted to produce DIFFERENT identifiers — the two
+collapses a bare site code would cause.
 """
 
 from __future__ import annotations

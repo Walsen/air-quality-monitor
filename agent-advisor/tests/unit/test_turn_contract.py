@@ -3,18 +3,13 @@
 Two of these are structural rather than behavioural, and deliberately so.
 
 Req 1.1 and 1.2 say the request and response carry **exactly** these fields. An assertion over
-the field
-SET is what makes that enforceable: it fails when a field is added as well as when one is
-removed, so a
-future turn cannot quietly widen the contract. Service 2 used the same technique to make a
-medication
-entry structurally unable to hold a dose.
+the field SET is what makes that enforceable: it fails when a field is added as well as when one
+is removed, so a future turn cannot quietly widen the contract. Service 2 used the same
+technique to make a medication entry structurally unable to hold a dose.
 
 The credential tests check every rendering path rather than one, because Req 5.2 forbids the
-credential
-reaching *any* log entry, record, response or error message — and a model that hides it in
-`repr` while
-`model_dump()` returns it plainly satisfies the wording and fails the intent.
+credential reaching *any* log entry, record, response or error message — and a model that hides
+it in `repr` while `model_dump()` returns it plainly satisfies the wording and fails the intent.
 """
 
 from __future__ import annotations

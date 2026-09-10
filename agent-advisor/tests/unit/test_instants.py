@@ -1,11 +1,9 @@
 """Tests for this service's own instant formatter (task 3.2).
 
 Service 2 has a function of the same name. This is deliberately a SEPARATE implementation,
-because the
-engineering practices forbid importing across service directories until a shared contract
-package is
-specced — so what has to be tested is that the two produce the same WIRE FORM, not that they
-share code.
+because the engineering practices forbid importing across service directories until a shared
+contract package is specced — so what has to be tested is that the two produce the same WIRE
+FORM, not that they share code.
 """
 
 from __future__ import annotations

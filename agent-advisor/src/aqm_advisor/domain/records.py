@@ -1,34 +1,28 @@
 """The grounding set, the symptom draft and the audit record (task 3.3).
 
 **The audit record's minimisation is structural.** Req 20.3 keeps the utterance, the guidance
-text, a
-condition, a sensitivity, a personal threshold and a coordinate out of the trail, so that
-erasure has only
-an identity to remove. There is no field able to hold any of them — a convention would rely on
-every future
-call site remembering, whereas an absent field cannot be populated. `threshold_crossed` is a
-`bool` for the
-same reason: Req 20.2 records THAT a threshold was crossed, and the type refuses the value.
+text, a condition, a sensitivity, a personal threshold and a coordinate out of the trail, so
+that erasure has only an identity to remove. There is no field able to hold any of them — a
+convention would rely on every future call site remembering, whereas an absent field cannot be
+populated. `threshold_crossed` is a `bool` for the same reason: Req 20.2 records THAT a
+threshold was crossed, and the type refuses the value.
 
 **The draft is immutable and starts unconfirmed.** Req 28.2 says inferring a severity from prose
-is a
-judgement about the user's health and the user is the authority on it, so `confirm()` and
-`correct()` return
-new drafts rather than mutating the one the user reviewed. A correction also comes back
-UNCONFIRMED: the
-user agreeing that the agent misread them is not the same as agreeing to the replacement.
+is a judgement about the user's health and the user is the authority on it, so `confirm()` and
+`correct()` return new drafts rather than mutating the one the user reviewed. A correction also
+comes back UNCONFIRMED: the user agreeing that the agent misread them is not the same as
+agreeing to the replacement.
 
 **Nothing here reads a clock or generates randomness.** The idempotency key is a digest of the
-turn's own
-identity, so a retry of the same turn produces the same key — a random or time-based key would
-defeat
-Req 32.4c by making every delivery look new.
+turn's own identity, so a retry of the same turn produces the same key — a random or time-based
+key would defeat Req 32.4c by making every delivery look new.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import hashlib
+from dataclasses import dataclass
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -42,26 +36,29 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ToolCall(_StrictModel):
+@dataclass(frozen=True, slots=True)
+class ToolCall:
     """One retrieval the agent performed, as an event in the turn's trajectory."""
 
     name: str
 
 
-class RetrievedValues(_StrictModel):
+@dataclass(frozen=True, slots=True)
+class RetrievedValues:
     """What Service 2 actually served, as the permitted set for grounding.
 
+    A frozen slotted dataclass rather than a Pydantic model, unlike everything else here: this
+    value object is assembled INTERNALLY from an already-validated response, so it never crosses
+    a trust boundary and there is nothing for a validator to check. `slots=True` also turns an
+    attribute typo into an `AttributeError` instead of a silently-added field.
+
     The value collections are `frozenset` because grounding asks a MEMBERSHIP question — was
-    this numeral
-    served? — and a set makes the order of retrieved values irrelevant to the answer, so
-    grounding cannot
-    accidentally depend on it.
+    this numeral served? — and a set makes the order of retrieved values irrelevant to the
+    answer, so grounding cannot accidentally come to depend on it.
 
     `tool_calls` is a tuple because Req 35.4 asserts which tools were called and IN WHAT ORDER.
-    It is a
-    sequence of events rather than a set of names: collapsing a repeated call would hide a retry
-    loop,
-    which is exactly what a trajectory assertion exists to reveal.
+    It is a sequence of events rather than a set of names: collapsing a repeated call would hide
+    a retry loop, which is exactly what a trajectory assertion exists to reveal.
     """
 
     numerals: frozenset[str]
@@ -95,10 +92,8 @@ class SymptomEntryDraft(_StrictModel):
         """Apply the user's correction, returning an UNCONFIRMED copy (Req 28.2).
 
         Unconfirmed on purpose. The user telling the agent it misread them is not the same as
-        the user
-        agreeing to whatever the agent substituted, so the corrected draft goes back for
-        confirmation
-        rather than straight to a write.
+        the user agreeing to whatever the agent substituted, so the corrected draft goes back
+        for confirmation rather than straight to a write.
         """
         update: dict[str, object] = {"confirmed": False}
         if severity is not None:
@@ -116,18 +111,14 @@ def advice_idempotency_key(*, user_id: str, turn_at: dt.datetime, route: str) ->
     """Derive the key that collapses a duplicate Advice_Record write (Req 32.4c).
 
     A re-invoked entrypoint delivers the same turn twice, so the key is derived from the turn's
-    own
-    identity — never from a random value or the current time, either of which would make every
-    delivery
-    look new and defeat the deduplication this exists for.
+    own identity — never from a random value or the current time, either of which would make
+    every delivery look new and defeat the deduplication this exists for.
 
     The instant is normalised through `iso_z` first, so the same instant expressed in another
-    offset
-    yields the same key: without that, a retry could be recorded twice.
+    offset yields the same key: without that, a retry could be recorded twice.
 
     Returns a digest rather than a concatenation, because the key is stored and may be logged,
-    and a key
-    embedding the raw identity would put it somewhere Req 5.3 does not sanction.
+    and a key embedding the raw identity would put it somewhere Req 5.3 does not sanction.
     """
     material = f"{user_id}|{iso_z(turn_at)}|{route}".encode()
     return hashlib.sha256(material).hexdigest()
@@ -137,10 +128,8 @@ class AdviceRecord(_StrictModel):
     """Req 20's audit entry: what was advised, on what retrieved data, at what instant.
 
     Every field here is either an identity, a flag, a category, or a public sensor fact. There
-    is
-    deliberately nowhere to put an utterance, guidance text, a condition, a sensitivity, a
-    personal
-    threshold or a coordinate (Req 20.3).
+    is deliberately nowhere to put an utterance, guidance text, a condition, a sensitivity, a
+    personal threshold or a coordinate (Req 20.3).
     """
 
     user_id: str

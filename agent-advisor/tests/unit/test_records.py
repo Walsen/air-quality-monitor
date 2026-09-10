@@ -1,18 +1,14 @@
 """Tests for the grounding set, the symptom draft and the audit record (task 3.3).
 
 `test_the_audit_record_has_nowhere_to_put_health_adjacent_content` is the one that matters. Req
-20.3 keeps
-the audit trail free of the utterance, the guidance text, a condition, a sensitivity, a personal
-threshold
-and a coordinate — so that erasure has only an identity to remove. A test that checked one
-recorded
-instance would pass while the FIELD still existed, waiting for a future call site to populate
-it. So this
-asserts over the field set: there must be nowhere to put those things.
+20.3 keeps the audit trail free of the utterance, the guidance text, a condition, a sensitivity,
+a personal threshold and a coordinate — so that erasure has only an identity to remove. A test
+that checked one recorded instance would pass while the FIELD still existed, waiting for a
+future call site to populate it. So this asserts over the field set: there must be nowhere to
+put those things.
 
 That technique is carried from Service 2, where a medication entry was made structurally unable
-to hold a
-dose — the test asserted no such field exists rather than that it was empty.
+to hold a dose — the test asserted no such field exists rather than that it was empty.
 """
 
 from __future__ import annotations
