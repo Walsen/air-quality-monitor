@@ -73,7 +73,7 @@ forbids and grounding would flag.
 _DIGITS = re.compile(r"\d")
 
 
-def _describe(subject: str) -> str:
+def describe_subject(subject: str) -> str:
     """Render a subject without digits.
 
     A known digit-bearing name maps to its written form; anything else has its digit-bearing
@@ -102,14 +102,12 @@ def unavailable_text(subject: str) -> str:
     """Say a value is unavailable, without estimating it (Req 7.3).
 
     Raises:
-        ValueError: for a blank subject. A message refusing to state nothing in particular would
-        be
-            incomprehensible, and the caller has a bug worth surfacing rather than papering
-            over.
+        ValueError: for a blank subject. A message refusing to state nothing in particular
+            would be incomprehensible, and the caller has a bug worth surfacing.
     """
     if not subject.strip():
         raise ValueError("a subject is required to say which value is unavailable")
-    return _UNAVAILABLE_TEMPLATE.format(subject=_describe(subject))
+    return _UNAVAILABLE_TEMPLATE.format(subject=describe_subject(subject))
 
 
 def _tokens(text: str) -> set[str]:
@@ -167,6 +165,7 @@ def forecast_attributed(text: str, view: ForecastView) -> bool:
 __all__ = [
     "FORECAST_TENSE_TOKENS",
     "MEASUREMENT_VERBS",
+    "describe_subject",
     "forecast_attributed",
     "presents_forecast_as_measurement",
     "unavailable_text",

@@ -448,33 +448,78 @@ directory.
     - **Property 10: Turn reproducibility**
     - **Validates: Requirements 25.1, 25.2, 25.3**
 
-- [ ] 11. Degradation and failure handling
-  - [ ] 11.1 Implement the degradation paths
-    - Req 21.8's WARNING is not yet emitted anywhere: `emergency_guidance_drifted` exists and is tested, but
-      the one-warning-per-run log naming the field (and neither text) belongs on this path. The detector
-      without the log leaves A8a's guard unarmed, which is the whole basis of the exception
-    - A `ServingClient` failure yields a degraded response stating conditions are unavailable with no
-      condition value; a `Model_Port` failure yields a response built from retrieved data without prose;
-      the envelope and any escalation are present in every degraded response; partial retrieval advises on
-      what is available and states what is missing
-    - _Requirements: 21.1, 21.2, 21.3, 21.7_
+- [x] 11. Degradation and failure handling
+  - [x] 11.1 Implement the degradation paths
+    - `domain/degradation.py`. Req 21.8's warning is now EMITTED, which was the flagged gap:
+      `emergency_guidance_drifted` existed and was tested, but nothing ever called it, so A8a's narrow
+      exception was bought with a guard that was never armed. A detector nobody invokes is worse than no
+      detector, because the design cites it as the reason the exception is safe
+    - `DriftWatcher` holds three load-bearing properties, each tested. ONCE PER RUN, not per turn — a
+      per-turn warning on a busy process is a flood, and an operator who filters it out has exactly the
+      protection of one with no detector. The FIRST SUCCESSFUL retrieval of the run decides, so a failed
+      retrieval must not consume the comparison or the run records having compared something it never saw
+      and the drift goes unreported for the whole process lifetime. And the FIELD NAME ONLY, never either
+      text. A blank served guidance is an unusable body rather than a comparison, so it neither reports
+      spurious drift nor closes the latch. `has_compared` is observable so the absence of a warning does
+      not have to stand for both "no drift" and "never checked"
+    - The warning is asserted on the FORMATTED log line, not on `getMessage()`. Context arrives as `extra`
+      and the formatter is what reaches stdout, so the first version of that test passed while the field
+      never appeared in a real log at all
+    - `degraded_response` keeps the envelope and any escalation (Reqs 21.3, 21.9) — a degraded turn is
+      exactly when the user most needs the emergency direction, so dropping it under failure inverts the
+      priority. `escalation` still precedes `guidance` in the dumped body; Req 10.2's field order does not
+      relax under failure. `basis` is always None on this path: a basis is provenance for values, and
+      there are no values. Every `ServingFailureKind` is quantified over, so a new kind without a path is
+      a failing test
+    - Req 21.7's partial case advises on what IS available and names what is missing, rather than failing
+      the whole turn. `available_guidance` is the caller's ALREADY-VERIFIED text — this function never
+      generates prose, since passing unverified text here would route around the pipeline's fail-closed rule
+    - DESIGN CORRECTION found by a test: `missing_data_note` first left the digit-free property to the
+      CALLER, and `("PM2.5", ...)` echoed the digits straight through. `describe_subject` was promoted from
+      private in `attribution.py` to shared, so Reqs 7.3 and 21.7 get the same guarantee from one place
+      rather than from a duty somebody must remember
+    - Both new required texts joined task 6.3's sweep as they were written
+    - _Requirements: 21.1, 21.2, 21.3, 21.7, 21.8_
 
-  - [ ] 11.2 Implement the boundary error handling
-    - Catch the expected exception types at the boundaries with a broad catch only at the entrypoint,
-      which logs; never return a raw exception, stack trace, model error body or Service 2 error body;
-      report a malformed request as such naming the field, never as a server error; report a rejected
-      credential as needing re-authentication without naming it or Service 2's detail
-    - _Requirements: 5.4, 21.4, 21.5, 21.6_
+  - [x] 11.2 Implement the boundary error handling
+    - `agent/boundary.py`. Req 32.5 sets the shape: every handled failure becomes an `AdvisoryResponse`,
+      NOT a status code, because an unhandled error becomes an opaque `424 RuntimeClientError` from the
+      container that replaces a documented degraded answer with a transport fault and loses the envelope
+      and any escalation with it
+    - So even a MALFORMED REQUEST carries the emergency guidance. A user in trouble who typed something
+      unparseable still needs to be told to call for help, and Req 10.4 does not depend on the request
+      being well-formed
+    - Req 21.4 holds by construction: every message is a fixed sentence chosen by KIND, never built from an
+      exception's own words, and `BoundaryFault` has deliberately nowhere to put a provider message. The
+      tests plant a marker string inside each exception and assert it does not surface — quantified over the
+      expected types, because a test using one fixed error body would pass while a different one leaked
+    - Req 21.6 names the offending FIELD but never the offending INPUT: a Pydantic error carries the value
+      too, and echoing it would return the user's own utterance in an error message, which Req 19.2 keeps
+      out of logs and an error body is no better a place for
+    - Req 5.4's message says the session needs re-authenticating and nothing else. Req 5.2 names this case
+      explicitly — "including a message reporting an authentication failure" — because it is where an author
+      reaches for the token to debug with. Only UNAUTHORIZED maps to re-authentication; sending a user to
+      sign in again because Service 2 timed out points them at something that is not broken
+    - `fault_for` returns None for the UNEXPECTED, deliberately: that is what routes a surprise to
+      `handle_at_top_level`, whose log is the only record one occurred. A `fault_for` answering everything
+      would make that handler dead code and the log with it. The top-level log records the exception TYPE,
+      never its message
+    - TEST-DRIVEN CORRECTION: the first structural test expected the broad `except` inside
+      `handle_at_top_level` and failed, because that function RECEIVES an already-caught error. The catch
+      belongs at the entrypoint, so this module now asserts the stronger local property — it catches nothing
+      broadly anywhere — and Req 21.5's placement clause is recorded against task 17.1 rather than left to
+      be rediscovered
+    - _Requirements: 5.4, 21.4, 21.6_
 
-  - [ ]* 11.3 Write property test for degradation completeness
+  - [x]* 11.3 Write property test for degradation completeness
     - **Property 12: Degradation is complete and honest**
     - **Validates: Requirements 21.1, 21.2, 21.4, 7.3**
 
-  - [ ]* 11.4 Write property test that malformed input never yields a server error
+  - [x]* 11.4 Write property test that malformed input never yields a server error
     - **Property 13: Malformed input never yields a server error**
     - **Validates: Requirements 1.4, 1.5, 21.6, 32.5**
 
-  - [ ]* 11.5 Write property test for envelope invariance
+  - [x]* 11.5 Write property test for envelope invariance
     - **Property 7: Envelope invariance**
     - **Validates: Requirements 8.5, 21.3**
 
@@ -601,7 +646,11 @@ directory.
       `Healthy` or `HealthyBusy`; `time_of_last_update` omitted or set only on a real status change; the
       `AdvisoryRequest` and `AdvisoryResponse` as the `/invocations` bodies; every handled failure returned
       as a response rather than a container status
-    - _Requirements: 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
+    - CARRIED FROM 11.2: Req 21.5's PLACEMENT clause must be asserted HERE. `agent/boundary.py` holds the
+      handler but not the catch — `handle_at_top_level` receives an already-caught error — so the broad
+      `except` lives at this entrypoint, and the AST test that it appears nowhere else belongs with it.
+      `boundary.py` already asserts it catches nothing broadly, which is the other half
+    - _Requirements: 21.5, 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
 
   - [ ] 17.2 Implement inbound identity and credential forwarding
     - Read the inbound `Authorization` header from the request-header allowlist and forward it unmodified;
