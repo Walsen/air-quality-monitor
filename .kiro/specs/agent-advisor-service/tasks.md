@@ -183,7 +183,7 @@ directory.
       every marker would satisfy the property perfectly while directing every user to emergency care
     - **Validates: Requirements 10.1, 10.3, 10.4**
 
-- [ ] 5. Grounding
+- [x] 5. Grounding
   - [x] 5.1 Implement numeral extraction and the permitted-set comparison
     - `numerals`, `permitted_values`, `ungrounded`; normalisation of trailing zeros and thousands
       separators; the permitted set is retrieved values union a configured set of structural constants;
@@ -196,21 +196,41 @@ directory.
       system prompt (task 9.4) requiring digits, and the limit is documented in the module
     - _Requirements: 7.1, 7.2, 34.8_
 
-  - [ ] 5.2 Write the unavailable-value and forecast-attribution tests
-    - A value the user asked about that was not retrieved is reported unavailable rather than estimated;
-      a forecast is never presented as a measurement and is attributed to the provider Service 2 named; a
-      degraded forecast yields no next-day value
+  - [x] 5.2 Write the unavailable-value and forecast-attribution tests
+    - Req 7.5 and Req 7.4's attribution clause were ALREADY covered by `test_reporting.py` (a degraded
+      forecast yields no next-day value and still names its provider). Two gaps remained and are now
+      closed in `domain/attribution.py` with `tests/unit/test_attribution.py`
+    - Req 7.3 had no path at all. `unavailable_text` says a value is unavailable, and the load-bearing
+      test is that the sentence CONTAINS NO NUMERAL: a number inside the message that refuses to estimate
+      IS the estimate the requirement forbids, and it would also be an ungrounded claim since nothing was
+      retrieved. So the subject is DESCRIBED rather than quoted — `PM2.5` and `PM25` contain digits, and
+      echoing the user's words would put a numeral in the sentence. Estimate hedging ("roughly",
+      "probably around") is excluded for the same reason: that is estimating with a disclaimer attached
+    - Req 7.4's FIRST clause had no check. Reading a forecast faithfully does not stop a generation
+      describing it as a reading, so `presents_forecast_as_measurement` looks for forecast tense PAIRED
+      with a measurement verb. The pairing is the design: a measurement verb alone is correct for a
+      measurement, forecast tense alone is correct for a forecast, and only together do they
+      misrepresent one as the other. A check firing on either alone would reject the correct wording for
+      both — the `you have` defect's exact shape — so the near-misses are tested explicitly
+    - `is`/`was` are excluded from the measurement verbs deliberately: "tomorrow's index is 5" is how a
+      forecast is legitimately stated, and including the copula would make every forecast a violation
+    - DEFECT found by the first run: the token scan yielded `tomorrow's`, which is not the token
+      `tomorrow`, so the highest-value phrasing slipped through. Possessives are now stripped as an
+      ADDITIONAL form rather than apostrophes being dropped from the pattern, which would mangle
+      contractions. Kept as a regression test
+    - Req 7.3's new sentence was added to task 6.3's required-texts sweep when it was written, rather
+      than left for a later sweep to discover — which is the point of having generalised that guard
     - _Requirements: 7.3, 7.4, 7.5_
 
-  - [ ]* 5.3 Write property test for grounding totality
+  - [x]* 5.3 Write property test for grounding totality
     - **Property 1: Grounding totality**
     - **Validates: Requirements 7.1, 7.2, 34.8**
 
-  - [ ]* 5.4 Write property test for refusing ungrounded generations
+  - [x]* 5.4 Write property test for refusing ungrounded generations
     - **Property 2: Ungrounded generations are never returned**
     - **Validates: Requirements 7.2, 22.2**
 
-- [ ] 6. Forbidden claims and medication closure
+- [x] 6. Forbidden claims and medication closure
   - [x] 6.1 Implement the forbidden-claim pattern check
     - `forbidden_matches` over diagnosis assertions, dosing instructions and administration verbs adjacent
       to a medication name; a configured set REPLACES the defaults rather than extending them; a rejection
@@ -230,11 +250,11 @@ directory.
       medication-word pattern would make the required text unpublishable
     - _Requirements: 8.4, 8.5_
 
-  - [ ]* 6.4 Write property test for guardrail verdict totality
+  - [x]* 6.4 Write property test for guardrail verdict totality
     - **Property 5: Guardrail verdict totality**
     - **Validates: Requirements 8.2, 34.4, 34.7**
 
-  - [ ]* 6.5 Write property test for medication naming closure
+  - [x]* 6.5 Write property test for medication naming closure
     - **Property 6: Medication naming closure**
     - **Validates: Requirements 29.1, 29.3, 29.6**
 
@@ -273,7 +293,7 @@ directory.
     - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3,
       17.4, 17.5_
 
-- [ ] 8. Basis assembly and clinician deference
+- [x] 8. Basis assembly and clinician deference
   - [x] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
     - Read every field including `nowcast` and `records`; name the threshold and its source including
       `learned`; name the breakpoint table
@@ -288,7 +308,7 @@ directory.
       trajectory clinically
     - _Requirements: 11.1, 11.2, 11.3, 11.4_
 
-  - [ ]* 8.3 Write property test that nothing is recomputed
+  - [x]* 8.3 Write property test that nothing is recomputed
     - **Property 20: Nothing is recomputed**
     - **Validates: Requirements 2.2, 2.3, 9.4, 12.1, 16.2**
 
@@ -416,15 +436,15 @@ directory.
       instead of lifting the cap — a bound that looks configured and is not
     - _Requirements: 22.1, 22.1a, 22.1b, 22.1c, 22.2a, 22.3, 22.4_
 
-  - [ ]* 10.5 Write property test for escalation precedence
+  - [x]* 10.5 Write property test for escalation precedence
     - **Property 4: Escalation precedes advice**
     - **Validates: Requirement 10.2**
 
-  - [ ]* 10.6 Write property test for invocation bounds
+  - [x]* 10.6 Write property test for invocation bounds
     - **Property 11: Invocation bounds hold**
     - **Validates: Requirements 22.1, 22.1a, 22.3**
 
-  - [ ]* 10.7 Write property test for turn reproducibility
+  - [x]* 10.7 Write property test for turn reproducibility
     - **Property 10: Turn reproducibility**
     - **Validates: Requirements 25.1, 25.2, 25.3**
 
