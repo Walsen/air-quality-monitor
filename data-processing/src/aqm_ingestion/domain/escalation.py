@@ -23,6 +23,7 @@ from types import MappingProxyType
 
 from aqm_ingestion.domain.aqi.breakpoints import BreakpointTableRegistry
 from aqm_ingestion.domain.aqi.subindex import compute_sub_index
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.models import Confidence
 from aqm_ingestion.domain.profile import (
     PersonalThreshold,
@@ -48,9 +49,17 @@ still actionable for them. A test pins that ceiling so raising a value fails lou
 
 
 class ThresholdSource(StrEnum):
-    """Which tier of Requirement 22.1's precedence supplied the escalation point."""
+    """Which tier of Requirement 22.1's precedence supplied the escalation point.
+
+    The order of the members is the order of the precedence, and ``LEARNED`` sits BELOW
+    ``PERSONAL_THRESHOLD`` deliberately (Requirement 32.7): a threshold the user stated is their
+    explicit instruction, and inference does not overrule an instruction. A learned threshold
+    that
+    displaced a stated one would silently move the trigger point the user chose.
+    """
 
     PERSONAL_THRESHOLD = "personal_threshold"
+    LEARNED = "learned"
     SENSITIVITY_LEVEL = "sensitivity_level"
     DEFAULT_ORANGE_BAND = "default_orange_band"
 
@@ -108,24 +117,43 @@ def resolve_escalation(
     species: str,
     registry: BreakpointTableRegistry,
     table_id: str,
+    *,
+    learned: Mapping[str, LearnedThreshold] | None = None,
 ) -> EffectiveEscalation:
-    """Return the escalation Sub_Index for one species (Requirements 22.1, 22.5).
+    """Return the escalation Sub_Index for one species (Requirements 22.1, 22.5, 32.7).
 
-    ``profile`` is optional so Requirement 22.1's third tier is reachable without building
+    ``profile`` is optional so Requirement 22.1's last tier is reachable without building
     an unlawful profile: with no profile there is no Sensitivity_Level either, and the
     Orange_Band bound applies.
-    """
-    if profile is None:
-        return EffectiveEscalation(
-            sub_index=DEFAULT_ORANGE_BAND_LOWER,
-            source=ThresholdSource.DEFAULT_ORANGE_BAND,
-        )
 
-    threshold = profile.personal_thresholds.get(species)
+    ``learned`` is a keyword so every existing call site keeps its meaning unchanged, and is
+    consulted only AFTER a Personal_Threshold: Requirement 32.7 ranks it below one and
+    Requirement
+    22.1 says it "SHALL NOT displace" one. It is honoured even when ``profile`` is None,
+    because a
+    user may have kept a diary without filling in a profile, and a tier that needed a profile to
+    be
+    reachable would silently be dead for them.
+    """
+    threshold = None if profile is None else profile.personal_thresholds.get(species)
     if threshold is not None:
         return EffectiveEscalation(
             sub_index=_threshold_as_sub_index(threshold, species, registry, table_id),
             source=ThresholdSource.PERSONAL_THRESHOLD,
+        )
+
+    # Requirement 32.7's tier, below a stated threshold and above the Sensitivity_Level mapping.
+    learned_threshold = None if learned is None else learned.get(species)
+    if learned_threshold is not None:
+        return EffectiveEscalation(
+            sub_index=learned_threshold.sub_index,
+            source=ThresholdSource.LEARNED,
+        )
+
+    if profile is None:
+        return EffectiveEscalation(
+            sub_index=DEFAULT_ORANGE_BAND_LOWER,
+            source=ThresholdSource.DEFAULT_ORANGE_BAND,
         )
 
     return EffectiveEscalation(
@@ -139,6 +167,8 @@ def evaluate_crossings(
     profile: UserProfile | None,
     registry: BreakpointTableRegistry,
     table_id: str,
+    *,
+    learned: Mapping[str, LearnedThreshold] | None = None,
 ) -> CrossingReport:
     """Report every Threshold_Crossing among the measurements (Requirements 22.3, 22.6-22.10).
 
@@ -157,7 +187,7 @@ def evaluate_crossings(
     for measurement in ordered:
         if measurement.species not in effective:
             effective[measurement.species] = resolve_escalation(
-                profile, measurement.species, registry, table_id
+                profile, measurement.species, registry, table_id, learned=learned
             )
         point = effective[measurement.species]
 
