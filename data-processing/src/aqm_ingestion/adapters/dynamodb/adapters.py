@@ -34,6 +34,7 @@ from decimal import Decimal
 from typing import Any, cast
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 from aqm_ingestion.domain.dedup import resolve_stored_reading
@@ -44,6 +45,11 @@ from aqm_ingestion.domain.models import (
     QualityFlag,
 )
 from aqm_ingestion.domain.profile import UserProfile, build_profile
+from aqm_ingestion.domain.symptoms import (
+    DEFAULT_SYMPTOM_RETENTION_DAYS,
+    SymptomEntry,
+    retention_floor,
+)
 from aqm_ingestion.observability.logging import get_logger
 from aqm_ingestion.ports.clock import Clock
 from aqm_ingestion.ports.protocols import (
@@ -409,6 +415,108 @@ class DynamoDbProfileStore:
     def delete(self, user_id: str) -> None:
         """Remove a profile. Idempotent, per Requirement 17.8's erasure."""
         self._table.delete_item(Key={"user_id": user_id})
+
+
+class DynamoDbSymptomLogStore:
+    """The Symptom_Log in DynamoDB, keyed by identity and calendar date (Requirement 31.1).
+
+    THE COMPOSITE KEY IS WHAT IMPLEMENTS REQUIREMENT 31.7. ``user_id`` partitions and the ISO
+    date sorts, so there is nowhere to hold two entries for one calendar date and a re-put for
+    that date REPLACES rather than accumulating — a day cannot contribute twice to the
+    Requirement 32 association. The in-memory adapter reaches the same guarantee with a
+    ``(user, date)`` dict key, which is why the shared contract suite can hold both to it.
+
+    Retention (Requirement 31.8) is applied at QUERY time against the injected clock, matching
+    the in-memory adapter rather than relying on a DynamoDB TTL: a TTL deletes on the service's
+    own schedule, so an entry past its window could still be returned until the sweeper reached
+    it, and the exclusion would no longer move with the clock the tests inject.
+    """
+
+    def __init__(
+        self,
+        table_name: str,
+        *,
+        clock: Clock,
+        retention_days: int = DEFAULT_SYMPTOM_RETENTION_DAYS,
+        endpoint_url: str | None = None,
+    ) -> None:
+        """Bind the table.
+
+        Args:
+            table_name: the DynamoDB table.
+            clock: the Clock retention is measured from (§2 — never read directly).
+            retention_days: Requirement 31.8's retention window.
+            endpoint_url: an override for a local emulator; None uses the real service.
+        """
+        self._table = boto3.resource(
+            "dynamodb", endpoint_url=endpoint_url
+        ).Table(table_name)
+        self._clock = clock
+        self._retention_days = retention_days
+
+    def put(self, entry: SymptomEntry) -> SymptomEntry:
+        """Store one entry, replacing any existing entry for the same date."""
+        self._table.put_item(
+            Item={
+                "user_id": entry.user_id,
+                "entry_date": entry.entry_date.isoformat(),
+                "entry": entry.model_dump_json(),
+            }
+        )
+        return entry
+
+    def query_window(
+        self, user_id: str, start: dt.date, end: dt.date
+    ) -> Sequence[SymptomEntry]:
+        """Return this user's entries in the inclusive range, retention applied.
+
+        Raises:
+            ValueError: if the range is inverted — the same refusal the in-memory adapter makes,
+                since silently returning nothing would hide a caller bug (§5).
+        """
+        if end < start:
+            raise ValueError(
+                f"window end {end.isoformat()} precedes its start {start.isoformat()}"
+            )
+        floor = retention_floor(self._clock.now(), self._retention_days)
+        # The retention floor is folded into the KEY CONDITION rather than filtered afterwards,
+        # so an aged entry is never read and never billed for.
+        lower = max(start, floor)
+        if end < lower:
+            return ()
+        response = self._table.query(
+            KeyConditionExpression=(
+                Key("user_id").eq(user_id)
+                & Key("entry_date").between(lower.isoformat(), end.isoformat())
+            )
+        )
+        entries = [
+            SymptomEntry.model_validate_json(str(item["entry"]))
+            for item in response.get("Items", [])
+        ]
+        entries.sort(key=lambda entry: entry.entry_date)
+        return tuple(entries)
+
+    def forget_user(self, user_id: str) -> int:
+        """DELETE every entry for a user and return the count (Requirement 31.9).
+
+        Deletes rather than de-identifying: a Symptom_Entry carries real clinical content, so a
+        de-identified husk of one would still record a course of illness.
+        """
+        response = self._table.query(
+            KeyConditionExpression=Key("user_id").eq(user_id),
+            ProjectionExpression="user_id, entry_date",
+        )
+        items = response.get("Items", [])
+        for item in items:
+            self._table.delete_item(
+                Key={"user_id": item["user_id"], "entry_date": item["entry_date"]}
+            )
+        return len(items)
+
+    def count_all(self) -> int:
+        """Total entries held. A full scan, so operational reporting only, not a hot path."""
+        return int(self._table.scan(Select="COUNT").get("Count", 0))
 
 
 def _is_active(record: object, at: dt.datetime) -> bool:
