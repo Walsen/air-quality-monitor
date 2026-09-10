@@ -39,8 +39,10 @@ from aqm_ingestion.adapters.memory import (
     InMemoryRawArchive,
     InMemoryReadingsStore,
     InMemorySensorRegistryStore,
+    InMemorySymptomLogStore,
 )
 from aqm_ingestion.contract.records import SensorMetadataRecord
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.models import (
     CalibratedReading,
     Confidence,
@@ -53,6 +55,7 @@ from aqm_ingestion.domain.profile import (
     SensitivityLevel,
     build_profile,
 )
+from aqm_ingestion.domain.symptoms import SymptomEntry, build_symptom_entry
 from aqm_ingestion.ports.archive_key import archive_key, derive_archive_id
 from aqm_ingestion.ports.clock import FixedClock
 from aqm_ingestion.ports.protocols import (
@@ -63,6 +66,7 @@ from aqm_ingestion.ports.protocols import (
     RawArchive,
     ReadingsStore,
     SensorRegistryStore,
+    SymptomLogStore,
     UpsertOutcome,
 )
 
@@ -244,6 +248,20 @@ def _dynamodb_profiles() -> ProfileStore:
     return store
 
 
+def _dynamodb_symptoms() -> SymptomLogStore:
+    pytest.importorskip("boto3")
+    endpoint = _require_endpoint()
+    from aqm_ingestion.adapters.dynamodb import DynamoDbSymptomLogStore
+
+    store = DynamoDbSymptomLogStore(
+        table_name="aqm-symptoms",
+        clock=FixedClock(_T0),
+        endpoint_url=endpoint,
+    )
+    _probe(lambda: _purge_table("aqm-symptoms", endpoint))
+    return store
+
+
 def _s3_archive() -> RawArchive:
     pytest.importorskip("boto3")
     endpoint = _require_endpoint()
@@ -293,6 +311,10 @@ _ARCHIVE_ADAPTERS: tuple[tuple[str, Callable[[], RawArchive]], ...] = (
     ("memory", InMemoryRawArchive),
     ("s3", _s3_archive),
 )
+_SYMPTOM_ADAPTERS: tuple[tuple[str, Callable[[], SymptomLogStore]], ...] = (
+    ("memory", lambda: InMemorySymptomLogStore(clock=FixedClock(_T0))),
+    ("dynamodb", _dynamodb_symptoms),
+)
 
 
 @pytest.fixture(params=_READINGS_ADAPTERS, ids=lambda entry: entry[0])
@@ -316,6 +338,12 @@ def profiles(request: pytest.FixtureRequest) -> Iterator[ProfileStore]:
 @pytest.fixture(params=_ARCHIVE_ADAPTERS, ids=lambda entry: entry[0])
 def archive(request: pytest.FixtureRequest) -> Iterator[RawArchive]:
     """Every RawArchive adapter (Requirement 16.8)."""
+    yield request.param[1]()
+
+
+@pytest.fixture(params=_SYMPTOM_ADAPTERS, ids=lambda entry: entry[0])
+def symptoms(request: pytest.FixtureRequest) -> Iterator[SymptomLogStore]:
+    """Every SymptomLogStore adapter (Requirements 31.1, 31.7, 31.8, 31.9)."""
     yield request.param[1]()
 
 
@@ -766,3 +794,193 @@ def test_an_unavailable_observation_returns_none_rather_than_raising(
     # would fail an ingestion the requirements say proceeds — so None is the contract, for every
     # adapter, however it came to have no answer.
     assert unavailable_meteorology.observation("AQM1", _T0) is None
+
+
+# --- SymptomLogStore: Requirement 31 ----------------------------------
+# One suite, both adapters. The in-memory store keys on a ``(user, date)`` dict entry and the
+# DynamoDB store on a partition-plus-sort key; those are different mechanisms for the same
+# guarantee, which is exactly the kind of pair that drifts when each has its own tests.
+
+
+def _symptom(
+    user_id: str = "user-1",
+    on: dt.date | None = None,
+    severity: int = 3,
+    note: str | None = None,
+) -> SymptomEntry:
+    return build_symptom_entry(
+        {
+            "user_id": user_id,
+            "entry_date": on or _T0.date(),
+            "severity": severity,
+            "markers": ["cough"],
+            "reliever_used": True,
+            "note": note,
+        },
+        now=_T0,
+    )
+
+
+def test_a_stored_symptom_entry_is_returned(symptoms: SymptomLogStore) -> None:
+    symptoms.put(_symptom())
+    held = symptoms.query_window("user-1", _T0.date(), _T0.date())
+    assert len(held) == 1
+    assert held[0].severity == 3
+
+
+def test_an_absent_symptom_window_returns_nothing(symptoms: SymptomLogStore) -> None:
+    assert symptoms.query_window("user-1", _T0.date(), _T0.date()) == ()
+
+
+def test_a_second_symptom_write_for_a_date_replaces_it(symptoms: SymptomLogStore) -> None:
+    # Requirement 31.7, held by BOTH mechanisms: two entries for one day would let that day
+    # contribute twice to the Requirement 32 association.
+    symptoms.put(_symptom(severity=1))
+    symptoms.put(_symptom(severity=5))
+    held = symptoms.query_window("user-1", _T0.date(), _T0.date())
+    assert len(held) == 1
+    assert held[0].severity == 5
+
+
+def test_symptom_entries_are_returned_date_ascending(symptoms: SymptomLogStore) -> None:
+    # Requirement 32.11's ordering, asserted at the STORE so the series a caller folds is
+    # ordered however it was written.
+    for offset in (2, 0, 1):
+        symptoms.put(_symptom(on=_T0.date() - dt.timedelta(days=offset)))
+    held = symptoms.query_window(
+        "user-1", _T0.date() - dt.timedelta(days=5), _T0.date()
+    )
+    assert [entry.entry_date for entry in held] == sorted(
+        entry.entry_date for entry in held
+    )
+
+
+def test_a_symptom_window_is_inclusive_at_both_ends(symptoms: SymptomLogStore) -> None:
+    # Inclusive because the range is calendar DATES, not instants: a half-open range would
+    # silently drop the day the caller named as the end.
+    start = _T0.date() - dt.timedelta(days=2)
+    symptoms.put(_symptom(on=start))
+    symptoms.put(_symptom(on=_T0.date()))
+    assert len(symptoms.query_window("user-1", start, _T0.date())) == 2
+
+
+def test_a_symptom_window_is_scoped_to_its_user(symptoms: SymptomLogStore) -> None:
+    symptoms.put(_symptom(user_id="user-1", severity=5))
+    assert symptoms.query_window("user-2", _T0.date(), _T0.date()) == ()
+
+
+def test_an_inverted_symptom_window_is_refused(symptoms: SymptomLogStore) -> None:
+    # §5: returning nothing would hide a caller bug. Both adapters raise.
+    with pytest.raises(ValueError):
+        symptoms.query_window("user-1", _T0.date(), _T0.date() - dt.timedelta(days=1))
+
+
+def test_symptom_erasure_deletes_and_reports_the_count(symptoms: SymptomLogStore) -> None:
+    for offset in range(3):
+        symptoms.put(_symptom(on=_T0.date() - dt.timedelta(days=offset)))
+    assert symptoms.forget_user("user-1") == 3
+    assert (
+        symptoms.query_window("user-1", _T0.date() - dt.timedelta(days=5), _T0.date())
+        == ()
+    )
+
+
+def test_symptom_erasure_of_an_unknown_user_reports_zero(
+    symptoms: SymptomLogStore,
+) -> None:
+    assert symptoms.forget_user("nobody") == 0
+
+
+def test_symptom_erasure_leaves_another_user_alone(symptoms: SymptomLogStore) -> None:
+    symptoms.put(_symptom(user_id="user-1"))
+    symptoms.put(_symptom(user_id="user-2"))
+    assert symptoms.forget_user("user-1") == 1
+    assert len(symptoms.query_window("user-2", _T0.date(), _T0.date())) == 1
+
+
+def test_a_note_round_trips_unchanged(symptoms: SymptomLogStore) -> None:
+    symptoms.put(_symptom(note="slept badly"))
+    assert symptoms.query_window("user-1", _T0.date(), _T0.date())[0].note == "slept badly"
+
+
+def test_learned_thresholds_round_trip(symptoms: SymptomLogStore) -> None:
+    learned = (
+        LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),
+    )
+    symptoms.put_learned_thresholds("user-1", learned)
+    assert symptoms.learned_thresholds("user-1") == {"PM25": learned[0]}
+
+
+def test_learned_thresholds_default_to_empty(symptoms: SymptomLogStore) -> None:
+    assert symptoms.learned_thresholds("user-1") == {}
+
+
+def test_learned_thresholds_are_replaced_not_merged(symptoms: SymptomLogStore) -> None:
+    # A re-derivation over a longer diary may legitimately stop supporting a species; merging
+    # would leave that stale threshold alerting forever with no data behind it.
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (
+            LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),
+            LearnedThreshold(species="NO2", sub_index=70, lag_days=0, observations=20),
+        ),
+    )
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=95, lag_days=3, observations=40),),
+    )
+    held = symptoms.learned_thresholds("user-1")
+    assert set(held) == {"PM25"}
+    assert held["PM25"].sub_index == 95
+
+
+def test_learned_thresholds_are_erased_with_the_diary(symptoms: SymptomLogStore) -> None:
+    # They are DERIVED from the entries, so leaving them behind would keep an inference about a
+    # user whose underlying data was erased.
+    symptoms.put(_symptom())
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+    symptoms.forget_user("user-1")
+    assert symptoms.learned_thresholds("user-1") == {}
+
+
+def test_learned_thresholds_are_scoped_to_their_user(symptoms: SymptomLogStore) -> None:
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+    assert symptoms.learned_thresholds("user-2") == {}
+
+
+def test_a_learned_threshold_never_appears_as_a_diary_entry(
+    symptoms: SymptomLogStore,
+) -> None:
+    # The DynamoDB adapter files the derivation under a reserved sort key in the SAME table, so
+    # this is the assertion that the key choice really keeps it out of a date-range query.
+    # The in-memory adapter holds them in a separate dict and passes trivially — which is
+    # fine: one suite, and the adapter with the risk is the one it constrains.
+    symptoms.put(_symptom())
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+    held = symptoms.query_window(
+        "user-1", _T0.date() - dt.timedelta(days=400), _T0.date() + dt.timedelta(days=1)
+    )
+    assert len(held) == 1, "the learned-threshold item leaked into a diary window query"
+    assert held[0].severity == 3
+
+
+def test_the_erasure_count_excludes_the_learned_threshold_item(
+    symptoms: SymptomLogStore,
+) -> None:
+    # Req 31.9 reports the number of ENTRIES removed, and a derived value is not an entry
+    # the user recorded — so storing a derivation must not inflate the receipt.
+    symptoms.put(_symptom())
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+    assert symptoms.forget_user("user-1") == 1
