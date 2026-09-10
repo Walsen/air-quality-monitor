@@ -489,6 +489,18 @@ class InMemorySymptomLogStore:
         """Total entries held."""
         return len(self._entries)
 
+    def user_ids_with_entries(self) -> Sequence[str]:
+        """Every user with an entry inside the retention window, sorted.
+
+        Retention-filtered like every other read (Requirement 31.8), so a user whose entries
+        have
+        all aged out is not handed to the association job to find nothing for.
+        """
+        floor = retention_floor(self._clock.now(), self._retention_days)
+        return tuple(
+            sorted({user for user, on in self._entries if on >= floor})
+        )
+
 
 class InMemoryMeteorologyProvider:
     """Meteorology observations configured per site and instant."""

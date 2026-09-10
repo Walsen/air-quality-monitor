@@ -517,6 +517,38 @@ def _cognito_key_resolver() -> Callable[[str], object]:
     return resolve
 
 
+def load_runtime(environment: Mapping[str, str], clock: Clock) -> Runtime:
+    """Resolve configuration and build the runtime, or raise.
+
+    Extracted from :func:`main` so the scheduled-job entry point shares exactly this path rather
+    than repeating it: two copies of "resolve, then build" would eventually differ in which
+    failures they report, and the drifted one would be the one an operator hit.
+
+    Raises:
+        ConfigError: carrying every rejected value. Nothing is built.
+        StartupError: when a required runtime setting is absent.
+    """
+    file_data = read_config_file(environment.get("AQM_CONFIG_FILE"))
+    config = resolve_and_validate(
+        environment, file_data, credential_exists=_credential_exists
+    )
+    return build_runtime(config, clock)
+
+
+def report_startup_failure(error: ConfigError | StartupError) -> int:
+    """Log a startup failure as one message per fault and return the exit code (§5).
+
+    One message per invalid value: the loader accumulated them all, so splitting here keeps
+    Requirement 26.3's one-per-value promise visible in the log.
+    """
+    if isinstance(error, ConfigError):
+        for problem in str(error).split("; "):
+            _logger.error("config_rejected", problem=problem)
+    else:
+        _logger.error("startup_failed", problem=str(error))
+    return 1
+
+
 def main(
     env: Mapping[str, str] | None = None,
     clock: Clock | None = None,
@@ -535,23 +567,9 @@ def main(
     configure_logging(environment.get("AQM_LOG_LEVEL", "info"))
 
     try:
-        file_data = read_config_file(environment.get("AQM_CONFIG_FILE"))
-        config = resolve_and_validate(
-            environment, file_data, credential_exists=_credential_exists
-        )
-    except ConfigError as rejected:
-        # One message per invalid value: the loader accumulated them all, so splitting here
-        # keeps
-        # Requirement 26.3's one-per-value promise visible in the log.
-        for problem in str(rejected).split("; "):
-            _logger.error("config_rejected", problem=problem)
-        return 1
-
-    try:
-        runtime = build_runtime(config, clock or SystemClock())
-    except StartupError as failure:
-        _logger.error("startup_failed", problem=str(failure))
-        return 1
+        runtime = load_runtime(environment, clock or SystemClock())
+    except (ConfigError, StartupError) as failure:
+        return report_startup_failure(failure)
 
     if serve and runtime.app is not None:
         return _serve(runtime)

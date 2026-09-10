@@ -571,6 +571,41 @@ class DynamoDbSymptomLogStore:
         """Total entries held. A full scan, so operational reporting only, not a hot path."""
         return int(self._table.scan(Select="COUNT").get("Count", 0))
 
+    def user_ids_with_entries(self) -> Sequence[str]:
+        """Every user with an entry inside the retention window, sorted.
+
+        A PAGINATED FULL SCAN, and that cost is accepted rather than hidden. DynamoDB has no
+        distinct-key operation, so the alternatives were a second index maintained on every
+        write
+        or a scan on a schedule — and this runs once per derivation cycle, not per request,
+        which
+        is exactly the trade Requirement 32.12 makes by keeping the derivation off the serving
+        path. Projecting only the key attributes keeps the read small.
+
+        The reserved learned-threshold rows are excluded: a user whose entries have all aged out
+        but who still carries a stale derivation has nothing to derive FROM, so handing them to
+        the job would guarantee a wasted cycle.
+        """
+        floor = retention_floor(self._clock.now(), self._retention_days).isoformat()
+        users: set[str] = set()
+        start_key: Mapping[str, object] | None = None
+        while True:
+            request: dict[str, object] = {
+                "ProjectionExpression": "user_id, entry_date",
+            }
+            if start_key is not None:
+                request["ExclusiveStartKey"] = start_key
+            page = self._table.scan(**request)
+            for item in page.get("Items", []):
+                entry_date = str(item["entry_date"])
+                if entry_date == _LEARNED_SORT_KEY or entry_date < floor:
+                    continue
+                users.add(str(item["user_id"]))
+            start_key = page.get("LastEvaluatedKey")
+            if start_key is None:
+                break
+        return tuple(sorted(users))
+
 
 def _is_active(record: object, at: dt.datetime) -> bool:
     """Whether a site is active as of an instant (Requirement 2.8).

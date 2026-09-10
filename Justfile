@@ -37,6 +37,14 @@ typecheck: typecheck-simulator typecheck-ingestion typecheck-advisor
 # Auto-fix lint findings and format every service.
 fmt: fmt-simulator fmt-ingestion fmt-advisor
 
+# Run ONE Exposure_Association derivation cycle and exit (Requirement 32.12).
+# A one-shot process, not a loop: the schedule belongs outside this code (cron, an
+# EventBridge rule, a CronJob), and keeping the derivation in its own invocation is
+# what keeps a whole-history read off the per-request serving path. Idempotent, so a
+# scheduler delivering twice is harmless. Pass user ids to re-derive a subset.
+run-association *users:
+    cd {{ing_dir}} && uv run python -m aqm_ingestion.jobs.entrypoint {{users}}
+
 # --- AI Advisor Agent (Service 3) ----------------------------------------
 
 # The single documented test command for Service 3 (Requirement 26.4).

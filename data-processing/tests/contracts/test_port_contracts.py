@@ -984,3 +984,42 @@ def test_the_erasure_count_excludes_the_learned_threshold_item(
         (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
     )
     assert symptoms.forget_user("user-1") == 1
+
+
+def test_users_with_entries_are_enumerated_sorted(symptoms: SymptomLogStore) -> None:
+    # The set the Requirement 32.12 job iterates. Sorted so a batch has a defined order (§2).
+    for user in ("user-c", "user-a", "user-b"):
+        symptoms.put(_symptom(user_id=user))
+    assert list(symptoms.user_ids_with_entries()) == ["user-a", "user-b", "user-c"]
+
+
+def test_a_user_is_enumerated_once_however_many_entries(
+    symptoms: SymptomLogStore,
+) -> None:
+    for offset in range(3):
+        symptoms.put(_symptom(on=_T0.date() - dt.timedelta(days=offset)))
+    assert list(symptoms.user_ids_with_entries()) == ["user-1"]
+
+
+def test_an_empty_store_enumerates_nobody(symptoms: SymptomLogStore) -> None:
+    assert symptoms.user_ids_with_entries() == ()
+
+
+def test_a_user_with_only_a_learned_threshold_is_not_enumerated(
+    symptoms: SymptomLogStore,
+) -> None:
+    # A user carrying a stale derivation but no surviving entries has nothing to derive FROM, so
+    # handing them to the job would guarantee a wasted cycle. This constrains the DynamoDB
+    # adapter
+    # in particular, where the derivation shares the table with the entries.
+    symptoms.put_learned_thresholds(
+        "user-1",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+    assert symptoms.user_ids_with_entries() == ()
+
+
+def test_an_erased_user_is_no_longer_enumerated(symptoms: SymptomLogStore) -> None:
+    symptoms.put(_symptom())
+    symptoms.forget_user("user-1")
+    assert symptoms.user_ids_with_entries() == ()

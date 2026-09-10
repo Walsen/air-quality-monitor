@@ -116,6 +116,27 @@ because a diary entry whose exposure data has aged out cannot be paired. With th
 that is 90 days, not 365; the resolved value is reported as `associationReachDays` in the startup
 log.
 
+### The association cycle
+
+`just run-association` derives Learned_Thresholds from the symptom diaries and exits. It is a
+**one-shot process, not a loop** — the schedule belongs outside this code (cron, an EventBridge rule,
+a Kubernetes CronJob). That separation is Requirement 32.12: a whole-history read must not sit on the
+per-request serving path, and a thread inside the serving process would compete with request handling
+for the same CPU and connection pool.
+
+It is idempotent, because a scheduler will occasionally deliver twice: the write replaces rather than
+merges, and the derivation is a pure function of stored data.
+
+It derives for users **with diaries**, not every user with a profile — a user with no diary has
+nothing to derive from. Pass identities to re-derive a subset:
+
+```
+just run-association user-123
+```
+
+A per-user failure is isolated and logged; the cycle still exits 0, because a non-zero exit would
+have a scheduler retry the whole cycle to fix one user.
+
 ### Credentials
 
 Never committed, and never read by the configuration loader — it takes a predicate and asks only

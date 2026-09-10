@@ -416,6 +416,22 @@ class SymptomLogStore(Protocol):
         """Total entries held, for the erasure assertions and operational reporting."""
         ...
 
+    def user_ids_with_entries(self) -> Sequence[str]:
+        """Every user who has at least one entry inside the retention window, sorted.
+
+        This is the set the Requirement 32.12 job iterates, and it is deliberately narrower than
+        "every user with a profile". A user with no diary has nothing to derive from, so
+        including
+        them would do work that can only return nothing — and most users will not keep a diary.
+        It
+        also happens to be the only enumeration available: no port can list profiles, and adding
+        one would have exposed a wider set for a narrower need.
+
+        Sorted so a batch run has a defined order (§2), which makes a partially-completed run
+        resumable and its log readable.
+        """
+        ...
+
 
 @runtime_checkable
 class MeteorologyProvider(Protocol):
