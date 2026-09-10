@@ -158,6 +158,7 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     # rather than the CLAIM, and only a guard over all required texts finds that.
     from aqm_advisor.domain.attribution import unavailable_text
     from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
+    from aqm_advisor.domain.degradation import missing_data_note
     from aqm_advisor.domain.reporting import (
         GASEOUS_SAME_DAY_TEXT,
         PARTICULATE_LAG_TEXT,
@@ -171,11 +172,15 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
         CLINICIAN_SUGGESTION_TEXT,
         PARTICULATE_LAG_TEXT,
         GASEOUS_SAME_DAY_TEXT,
-        # Req 7.3's unavailable-value sentence. Added when it was written rather than left for a
-        # later
-        # sweep to discover, since that is the whole point of generalising this guard.
+        # Req 7.3's unavailable-value sentence, added when it was written rather than left for a
+        # later sweep to find — which is the whole point of having generalised this guard.
         unavailable_text("ozone"),
         unavailable_text("PM2.5"),
+        # Req 21.7's missing-data note, for the same reason: a degraded turn must be
+        # publishable,
+        # and a degraded turn is exactly when the service can least afford a withheld response.
+        missing_data_note(("the pollen count",)),
+        missing_data_note(("PM2.5", "tomorrow's outlook")),
         *TIMING_TEMPLATES,
     )
     for text in required:

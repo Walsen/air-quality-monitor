@@ -449,15 +449,37 @@ directory.
     - **Validates: Requirements 25.1, 25.2, 25.3**
 
 - [ ] 11. Degradation and failure handling
-  - [ ] 11.1 Implement the degradation paths
-    - Req 21.8's WARNING is not yet emitted anywhere: `emergency_guidance_drifted` exists and is tested, but
-      the one-warning-per-run log naming the field (and neither text) belongs on this path. The detector
-      without the log leaves A8a's guard unarmed, which is the whole basis of the exception
-    - A `ServingClient` failure yields a degraded response stating conditions are unavailable with no
-      condition value; a `Model_Port` failure yields a response built from retrieved data without prose;
-      the envelope and any escalation are present in every degraded response; partial retrieval advises on
-      what is available and states what is missing
-    - _Requirements: 21.1, 21.2, 21.3, 21.7_
+  - [x] 11.1 Implement the degradation paths
+    - `domain/degradation.py`. Req 21.8's warning is now EMITTED, which was the flagged gap:
+      `emergency_guidance_drifted` existed and was tested, but nothing ever called it, so A8a's narrow
+      exception was bought with a guard that was never armed. A detector nobody invokes is worse than no
+      detector, because the design cites it as the reason the exception is safe
+    - `DriftWatcher` holds three load-bearing properties, each tested. ONCE PER RUN, not per turn — a
+      per-turn warning on a busy process is a flood, and an operator who filters it out has exactly the
+      protection of one with no detector. The FIRST SUCCESSFUL retrieval of the run decides, so a failed
+      retrieval must not consume the comparison or the run records having compared something it never saw
+      and the drift goes unreported for the whole process lifetime. And the FIELD NAME ONLY, never either
+      text. A blank served guidance is an unusable body rather than a comparison, so it neither reports
+      spurious drift nor closes the latch. `has_compared` is observable so the absence of a warning does
+      not have to stand for both "no drift" and "never checked"
+    - The warning is asserted on the FORMATTED log line, not on `getMessage()`. Context arrives as `extra`
+      and the formatter is what reaches stdout, so the first version of that test passed while the field
+      never appeared in a real log at all
+    - `degraded_response` keeps the envelope and any escalation (Reqs 21.3, 21.9) — a degraded turn is
+      exactly when the user most needs the emergency direction, so dropping it under failure inverts the
+      priority. `escalation` still precedes `guidance` in the dumped body; Req 10.2's field order does not
+      relax under failure. `basis` is always None on this path: a basis is provenance for values, and
+      there are no values. Every `ServingFailureKind` is quantified over, so a new kind without a path is
+      a failing test
+    - Req 21.7's partial case advises on what IS available and names what is missing, rather than failing
+      the whole turn. `available_guidance` is the caller's ALREADY-VERIFIED text — this function never
+      generates prose, since passing unverified text here would route around the pipeline's fail-closed rule
+    - DESIGN CORRECTION found by a test: `missing_data_note` first left the digit-free property to the
+      CALLER, and `("PM2.5", ...)` echoed the digits straight through. `describe_subject` was promoted from
+      private in `attribution.py` to shared, so Reqs 7.3 and 21.7 get the same guarantee from one place
+      rather than from a duty somebody must remember
+    - Both new required texts joined task 6.3's sweep as they were written
+    - _Requirements: 21.1, 21.2, 21.3, 21.7, 21.8_
 
   - [ ] 11.2 Implement the boundary error handling
     - Catch the expected exception types at the boundaries with a broad catch only at the entrypoint,
