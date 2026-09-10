@@ -219,11 +219,19 @@ directory.
       dose as concentration times an activity-adjusted breathing rate over a duration without recomputing
       it; include the pollen outlook with the returned categories and state the pollen-pollution synergy
       when both are elevated; say the outlook is unavailable where it matters
-    - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3, 17.4, 17.5_
+    - Req 15.6: the confidence Service 2 returned is the SINGLE authority on measurement weakness. An
+      incomplete nowcast window reaches the user through 15.2, because Service 2 already capped its
+      confidence — so an AST check must prove no code path compares `hours_available` against
+      `window_hours` to gate a disclosure, with a self-check proving the detector can fail
+    - A behavioural test: a partial-window body must produce exactly ONE weakness disclosure, not two.
+      Double-disclosure is the failure a second derivation would cause, and it reads as thoroughness
+    - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3,
+      17.4, 17.5_
 
 - [ ] 8. Basis assembly and clinician deference
   - [ ] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
-    - Read every field; name the threshold and its source including `learned`; name the breakpoint table
+    - Read every field including `nowcast` and `records`; name the threshold and its source including
+      `learned`; name the breakpoint table
       and calibration strategy; available whether or not the user asked; emit no claim requiring a basis
       when none was retrieved
     - _Requirements: 9.1, 9.2, 9.3, 9.5, 9.6_

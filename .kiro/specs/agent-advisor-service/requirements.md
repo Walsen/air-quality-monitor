@@ -550,6 +550,12 @@ judge how much to lean on it.
    as a plain measurement.
 5. THE Service SHALL NOT resolve, average away, or otherwise smooth a disagreement between retrieved
    readings; it reports what was served.
+6. THE Service SHALL treat the confidence Service 2 returned as the single authority on how weak a
+   measurement is, and SHALL NOT derive a second weakness signal by comparing the nowcast window's hours
+   available against its length. Service 2 already caps confidence at `medium` for an incomplete window
+   and at `low` where there were too few hours to compute a nowcast at all, so an incomplete window
+   reaches the user through criterion 2; a second derivation here could disagree with Service 2 about
+   the same measurement, and re-deriving a part of the basis is what Requirement 9.4 forbids.
 
 ### Requirement 16: Inhaled-Dose Explanation
 

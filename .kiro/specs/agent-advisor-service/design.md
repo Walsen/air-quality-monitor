@@ -464,9 +464,17 @@ absent nowcast is an ordinary, complete answer, whereas an unknown one would be 
 This is the same trap as Service 2's correlation returning `None` on zero variance, where "nothing to
 compare" is not "no relationship".
 
-Naming the nowcast does not by itself put it in the Guidance text. Req 9.5 returns the Basis_Summary with
-every response, which is what makes the derivation reviewable by a clinician; whether a partial window
-should also be *spoken* in the guidance belongs to the confidence-disclosure requirement, not here.
+Naming the nowcast does not by itself put it in the Guidance text, and it deliberately must not. An
+incomplete window DOES reach the user, but through the confidence value: Service 2 caps confidence at
+`medium` for an incomplete window and at `low` where there were too few hours to compute a nowcast at all
+(its `NOWCAST_COVERAGE_CAPS`), and Req 15.2 already requires a confidence below the highest value to be
+said in the guidance rather than only in the basis.
+
+So `nowcast` here is provenance for review, not a second trigger for disclosure. Req 15.6 forbids that
+second trigger explicitly: comparing `hours_available` against `window_hours` to decide whether to warn
+would make this service a second authority on how weak a measurement is, able to disagree with Service 2
+about the same reading — and deciding weakness from the hour counts is re-deriving a part of the basis,
+which Req 9.4 forbids. One authority, read not recomputed.
 
 ### Escalation
 

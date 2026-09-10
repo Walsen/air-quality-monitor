@@ -85,6 +85,31 @@ def canned_air_quality(
     number — collapsing them is exactly the confusion Req 9.3a exists to forbid.
     """
     available = window_hours if hours_available is None else hours_available
+    # MIRRORS Service 2's `NOWCAST_COVERAGE_CAPS`, and its FOUR coverage states rather than
+    # three.
+    # Derived here rather than passed in because a caller must NOT be able to script a partial
+    # window
+    # that still reports high confidence: Service 2 never sends that, and a fake able to express
+    # it
+    # would let a test prove behaviour against a response that cannot occur. Req 15.6 makes
+    # confidence
+    # the single weakness authority, so the fake has to honour the coupling.
+    #
+    # nowcast=False -> not_applicable: no window species at all (e.g. NO2). NO cap.
+    # available == 0 -> insufficient: too few hours to compute one. Capped at low.
+    # 0 < available < window -> incomplete: computed from a short window. Capped at medium.
+    #   available == window        -> complete:       no cap.
+    #
+    # not_applicable and insufficient are DIFFERENT and must not be collapsed — that is the very
+    # confusion Req 9.3a forbids, and an absent nowcast is the benign one.
+    if not nowcast:
+        confidence = "high"
+    elif available == 0:
+        confidence = "low"
+    elif available < window_hours:
+        confidence = "medium"
+    else:
+        confidence = "high"
     return {
         "user": user,
         "generatedAt": generated_at,
@@ -104,7 +129,7 @@ def canned_air_quality(
                         "correctedValue": 18.2,
                         "units": "ug.m-3",
                         "qualityFlag": "calibrated",
-                        "confidence": "high",
+                        "confidence": confidence,
                         "subIndex": sub_index,
                         "band": band,
                         "method": "nowcast",
@@ -114,7 +139,7 @@ def canned_air_quality(
                 "overallAqi": sub_index,
                 "band": band,
                 "drivingPollutant": driving_pollutant,
-                "confidence": "high",
+                "confidence": confidence,
             }
         ],
         "personalized": {

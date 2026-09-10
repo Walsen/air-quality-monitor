@@ -217,6 +217,79 @@ def test_an_absent_nowcast_still_matches_service_2s_basis_shape() -> None:
     assert set(basis) == declared, "the key must be present and null, not dropped"
 
 
+def _confidence(**kwargs: object) -> str:
+    sensors = canned_air_quality(**kwargs)["nearestSensors"]  # type: ignore[arg-type]
+    assert isinstance(sensors, list)
+    return str(sensors[0]["confidence"])
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "expected", "coverage"),
+    [
+        ({}, "high", "complete"),
+        ({"hours_available": 12}, "high", "complete"),
+        ({"hours_available": 8}, "medium", "incomplete"),
+        ({"hours_available": 0}, "low", "insufficient"),
+        ({"nowcast": False}, "high", "not_applicable"),
+    ],
+)
+def test_the_fake_mirrors_service_2s_coverage_confidence_caps(
+    kwargs: dict[str, object], expected: str, coverage: str
+) -> None:
+    # Req 15.6 makes the confidence Service 2 returned the single authority on measurement
+    # weakness,
+    # so an incomplete window reaches the user THROUGH it. If the fake let a partial window keep
+    # high
+    # confidence, every test of that disclosure would pass against a response Service 2 never
+    # sends.
+    assert _confidence(**kwargs) == expected, f"{coverage} should cap at {expected}"
+
+
+def test_a_partial_window_can_never_be_scripted_with_the_highest_confidence() -> None:
+    # The property behind the table above, stated so it cannot be satisfied by the four rows
+    # alone.
+    for hours in range(1, 12):
+        assert _confidence(window_hours=12, hours_available=hours) != "high"
+
+
+def test_an_absent_nowcast_is_not_treated_as_a_weak_measurement() -> None:
+    # Req 9.3a: not_applicable and insufficient BOTH lack a usable nowcast, but only one is
+    # weak.
+    # Collapsing them would either invent a warning for NO2 or hide one for a starved PM2.5
+    # window.
+    assert _confidence(nowcast=False) == "high"
+    assert _confidence(hours_available=0) == "low"
+
+
+_SERVICE_2_QUALITY = (
+    pathlib.Path(__file__).resolve().parents[3]
+    / "data-processing"
+    / "src"
+    / "aqm_ingestion"
+    / "domain"
+    / "quality.py"
+)
+
+
+def test_the_mirrored_cap_table_has_not_drifted_from_service_2s() -> None:
+    # The caps above duplicate a fact Service 2 OWNS, so they need a guard: if Service 2 stopped
+    # capping an incomplete window at medium, this fake would keep asserting a coupling that no
+    # longer exists and every confidence-disclosure test would be measuring the fake, not the
+    # system.
+    if not _SERVICE_2_QUALITY.is_file():
+        pytest.skip("the sibling service is not present")
+    source = _SERVICE_2_QUALITY.read_text(encoding="utf-8")
+    for coverage, cap in (
+        ("COMPLETE", "None"),
+        ("INCOMPLETE", "Confidence.MEDIUM"),
+        ("INSUFFICIENT", "Confidence.LOW"),
+    ):
+        assert f"NowCastCoverage.{coverage}: {cap}" in source, (
+            f"Service 2's cap for {coverage} is no longer {cap}; the mirrored table in "
+            "adapters/local.py must be updated to match"
+        )
+
+
 # --- the local guardrail checker ----------------------------------------
 
 @pytest.mark.parametrize(
