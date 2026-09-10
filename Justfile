@@ -8,32 +8,85 @@
 docker := env_var_or_default("DOCKER", "docker")
 
 sim_dir := "sensor-simulator"
+ing_dir := "data-processing"
 
 # List available recipes.
 default:
     @just --list
 
-# Run the sensor-simulator test suite (Hypothesis ci profile, >=100 examples).
-# Excludes the integration marker so the suite passes offline with no
+# --- Whole-monorepo gates -------------------------------------------------
+# These aggregate every service, so one command covers the repository. Each
+# service also has its own recipe below, which is the single documented command
+# for that service.
+
+# Run every service's offline suite (Hypothesis ci profile, >=100 examples).
+# Excludes the integration marker so the suites pass offline with no
 # credentials and no network beyond localhost.
-test:
+test: test-simulator test-ingestion
+
+# Run every service's integration checks (container engine or local broker).
+test-integration: test-integration-simulator test-integration-ingestion
+
+# Lint every service with ruff.
+lint: lint-simulator lint-ingestion
+
+# Static type check every service with mypy.
+typecheck: typecheck-simulator typecheck-ingestion
+
+# Auto-fix lint findings and format every service.
+fmt: fmt-simulator fmt-ingestion
+
+# --- Sensor Simulator (Service 1) ----------------------------------------
+
+test-simulator:
     cd {{sim_dir}} && uv run pytest -m "not integration"
 
-# Run the integration checks that need a container engine or local broker.
-test-integration:
+test-integration-simulator:
     cd {{sim_dir}} && uv run pytest -m integration
 
-# Lint with ruff.
-lint:
+lint-simulator:
     cd {{sim_dir}} && uv run ruff check .
 
-# Auto-fix lint findings and format.
-fmt:
+fmt-simulator:
     cd {{sim_dir}} && uv run ruff check --fix . && uv run ruff format .
 
-# Static type check with mypy.
-typecheck:
+typecheck-simulator:
     cd {{sim_dir}} && uv run mypy
+
+# --- Ingestion & Serving (Service 2) -------------------------------------
+
+# The single documented test command for this service (Requirement 28.4):
+# exits zero only if every test passes.
+test-ingestion:
+    cd {{ing_dir}} && uv run pytest -m "not integration"
+
+# The container-fenced checks, kept free of any cloud dependency (Req 28.6).
+test-integration-ingestion:
+    cd {{ing_dir}} && uv run pytest -m integration
+
+lint-ingestion:
+    cd {{ing_dir}} && uv run ruff check .
+
+fmt-ingestion:
+    cd {{ing_dir}} && uv run ruff check --fix . && uv run ruff format .
+
+typecheck-ingestion:
+    cd {{ing_dir}} && uv run mypy
+
+# Run the serving API locally (Requirement 28.7 local-run).
+run-ingestion:
+    cd {{ing_dir}} && uv run python -m aqm_ingestion.cli
+
+# Start the ingestion local stack: the service, a local MQTT broker, and a
+# local store standing in for DynamoDB and S3 (Requirement 28.8).
+up-ingestion:
+    {{docker}} compose -f {{ing_dir}}/docker-compose.yml up --build
+
+# Tear down the ingestion local stack.
+down-ingestion:
+    {{docker}} compose -f {{ing_dir}}/docker-compose.yml down -v
+
+# --- Simulator run commands ---------------------------------------------
 
 # Run the simulator in real-time mode (REST interface by default).
 # AQM_API_KEY must be supplied at runtime; never commit it.

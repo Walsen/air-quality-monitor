@@ -1,0 +1,96 @@
+[project]
+name = "data-processing"
+version = "0.1.0"
+description = "Ingestion & Serving Service — ingests, calibrates, computes AQI, stores, and serves per-user air-quality views"
+requires-python = "==3.12.*"
+# Every direct dependency is pinned to ONE exact version (Requirement 28.2), with
+# uv.lock committed alongside. Dependencies a later task introduces (the AWS SDK
+# for the DynamoDB and S3 adapters, a JWT library for the Cognito authenticator)
+# are added in the commit that first needs them, so each arrival is reviewable
+# rather than speculative.
+dependencies = [
+    "boto3==1.43.90",
+    "fastapi==0.141.1",
+    "httpx==0.28.1",
+    "paho-mqtt==2.1.0",
+    "pydantic==2.13.5",
+    "pyjwt==2.13.0",
+    "uvicorn[standard]==0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis==6.168.0",
+    "mypy==1.19.1",
+    "pytest==9.1.1",
+    "pyyaml==6.0.3",
+    "ruff==0.15.4",
+    "types-pyyaml==6.0.12.20260906",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aqm_ingestion"
+module-root = "src"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "property: property-based test asserting a named correctness property",
+    # The container-fenced marker (Requirement 28.6): excluded from the offline
+    # suite, run by its own command, and never dependent on cloud credentials.
+    "integration: requires a container engine or local broker (excluded from the offline suite)",
+    "contract: shared port behaviour suite, run against every adapter of a port",
+]
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",      # pycodestyle, pyflakes
+    "I",                 # import sorting
+    "N",                 # naming
+    "UP",                # pyupgrade
+    "B",                 # bugbear
+    "SIM",               # simplify
+    "RUF",               # ruff-specific
+    "ANN",               # missing annotations
+    "D",                 # docstrings
+]
+ignore = [
+    "D203",  # conflicts with D211
+    "D213",  # conflicts with D212
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests document themselves through their names; a docstring per assertion adds noise.
+"tests/**" = ["D103"]
+# Requirement 19.2 PINS the response body's member names, which are camelCase. These fields are
+# a wire contract, not Python naming: renaming them to satisfy N815 would break the documented
+# shape every client depends on, and a per-field alias would put the same names back one layer
+# down while making the model harder to read against the spec.
+"src/aqm_ingestion/serving/models.py" = ["N815"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+
+# boto3 and botocore ship no type information. The cloud adapters are the only modules that
+# import them, and the PORT signatures they satisfy are fully typed — which is what the shared
+# contract suite checks — so the untyped boundary stops at the adapter.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*", "paho", "paho.*"]
+ignore_missing_imports = true
