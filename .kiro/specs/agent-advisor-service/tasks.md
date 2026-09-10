@@ -274,14 +274,14 @@ directory.
       17.4, 17.5_
 
 - [ ] 8. Basis assembly and clinician deference
-  - [ ] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
+  - [x] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
     - Read every field including `nowcast` and `records`; name the threshold and its source including
       `learned`; name the breakpoint table
       and calibration strategy; available whether or not the user asked; emit no claim requiring a basis
       when none was retrieved
     - _Requirements: 9.1, 9.2, 9.3, 9.5, 9.6_
 
-  - [ ] 8.2 Implement clinician deference
+  - [x] 8.2 Implement clinician deference
     - Defer to the user's action plan wherever guidance touches what to do about their condition; direct
       them to the plan for a decision it governs; never ask them to record its contents; suggest
       contacting a clinician on reported worsening without a red flag, without characterising the

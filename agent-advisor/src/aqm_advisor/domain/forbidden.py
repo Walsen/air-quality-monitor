@@ -31,10 +31,29 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
+_MEDICAL_OBJECT = (
+    r"(?:asthma|copd|attack|exacerbation|flare[- ]?up|infection|bronchitis|pneumonia|"
+    r"allergy|allergies|condition|episode|emergency)"
+)
+"""What makes "you have X" a DIAGNOSIS rather than ordinary English.
+
+Required because the first version of these patterns matched a bare `you have`, which fired on
+"Since you have noticed a change over several days" — the required clinician-suggestion text of
+Req 11.4. A pattern keyed on the WORDS rather than the CLAIM makes text this service is obliged
+to emit unpublishable, which is exactly the failure task 6.3's self-consistency guard exists to
+catch, and it caught this one.
+
+The trade is narrower coverage for a diagnosis naming something outside this vocabulary. That is
+the right direction: Req 34.5 keeps a managed guardrail as an independent second check, whereas
+an over-broad pattern has no second chance — it simply blocks the response.
+"""
+
 DIAGNOSIS_PATTERNS: tuple[str, ...] = (
     # Req 8.3: never state or imply the user is, or is not, having a medical event.
-    r"\byou (?:have|are having|are suffering from|are experiencing)\b",
-    r"\byou (?:do not|don't|are not|aren't) (?:have|having)\b",
+    rf"\byou (?:have|are having|are suffering from|are experiencing)\b"
+    rf"[^.?!]{{0,24}}?\b{_MEDICAL_OBJECT}\b",
+    rf"\byou (?:do not|don't|are not|aren't) (?:have|having)\b"
+    rf"[^.?!]{{0,24}}?\b{_MEDICAL_OBJECT}\b",
     r"\bthis is (?:an?|your) (?:asthma attack|attack|exacerbation|flare[- ]?up|infection)\b",
     r"\byou (?:probably|likely|may|might) have\b",
     r"\b(?:it|this) (?:sounds|looks) like (?:an?|your) \w+ (?:attack|exacerbation)\b",
