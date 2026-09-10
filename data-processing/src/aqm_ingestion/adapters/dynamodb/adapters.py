@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from decimal import Decimal
 from typing import Any, cast
 
@@ -37,6 +38,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import (
     CalibratedReading,
@@ -417,6 +419,17 @@ class DynamoDbProfileStore:
         self._table.delete_item(Key={"user_id": user_id})
 
 
+_LEARNED_SORT_KEY = "#learned"
+"""The reserved sort key the Learned_Thresholds are filed under.
+
+The ``#`` prefix is load-bearing, not decoration: ``#`` is 0x23 and ``0`` is 0x30, so this key
+sorts BEFORE every ISO date. A ``between('2026-01-01', '2026-12-31')`` range query therefore
+cannot pick it up, while ``forget_user``'s sort-key-unconstrained query does — which is exactly
+the pair of behaviours wanted. A suffix, or any key starting with a digit, would leak the
+derivation into a diary window query.
+"""
+
+
 class DynamoDbSymptomLogStore:
     """The Symptom_Log in DynamoDB, keyed by identity and calendar date (Requirement 31.1).
 
@@ -497,11 +510,49 @@ class DynamoDbSymptomLogStore:
         entries.sort(key=lambda entry: entry.entry_date)
         return tuple(entries)
 
-    def forget_user(self, user_id: str) -> int:
-        """DELETE every entry for a user and return the count (Requirement 31.9).
+    def learned_thresholds(self, user_id: str) -> Mapping[str, LearnedThreshold]:
+        """Return this user's Learned_Thresholds by species (Requirement 32.12).
 
-        Deletes rather than de-identifying: a Symptom_Entry carries real clinical content, so a
+        Filed under a reserved sort key rather than in a table of its own, so ``forget_user``'s
+        single query sweeps the derivation along with the entries it came from.
+        """
+        response = self._table.get_item(
+            Key={"user_id": user_id, "entry_date": _LEARNED_SORT_KEY}
+        )
+        item = response.get("Item")
+        if item is None:
+            return {}
+        import json
+
+        return {
+            entry["species"]: LearnedThreshold(**entry)
+            for entry in json.loads(str(item["thresholds"]))
+        }
+
+    def put_learned_thresholds(
+        self, user_id: str, thresholds: Sequence[LearnedThreshold]
+    ) -> None:
+        """REPLACE this user's Learned_Thresholds with a fresh derivation."""
+        import json
+
+        self._table.put_item(
+            Item={
+                "user_id": user_id,
+                "entry_date": _LEARNED_SORT_KEY,
+                "thresholds": json.dumps([asdict(t) for t in thresholds]),
+            }
+        )
+
+    def forget_user(self, user_id: str) -> int:
+        """DELETE every entry for a user and return the ENTRY count (Requirement 31.9).
+
+        Deletes rather than de-identifies: a Symptom_Entry carries real clinical content, so a
         de-identified husk of one would still record a course of illness.
+
+        The query is unconstrained on the sort key, so it also picks up the reserved
+        learned-threshold item — the derivation cannot outlive the diary it came from. That item
+        is excluded from the returned COUNT, since Requirement 31.9 reports entries removed
+        and a derived value is not an entry the user recorded.
         """
         response = self._table.query(
             KeyConditionExpression=Key("user_id").eq(user_id),
@@ -512,7 +563,9 @@ class DynamoDbSymptomLogStore:
             self._table.delete_item(
                 Key={"user_id": item["user_id"], "entry_date": item["entry_date"]}
             )
-        return len(items)
+        return sum(
+            1 for item in items if str(item["entry_date"]) != _LEARNED_SORT_KEY
+        )
 
     def count_all(self) -> int:
         """Total entries held. A full scan, so operational reporting only, not a hot path."""

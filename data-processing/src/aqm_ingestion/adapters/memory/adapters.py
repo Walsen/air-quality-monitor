@@ -28,6 +28,7 @@ from dataclasses import replace
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
 from aqm_ingestion.domain.aqi.overall import DEFAULT_SPECIES_PRECEDENCE
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
 from aqm_ingestion.domain.symptoms import (
@@ -422,6 +423,7 @@ class InMemorySymptomLogStore:
             retention_days: Requirement 31.8's retention window.
         """
         self._entries: dict[tuple[str, dt.date], SymptomEntry] = {}
+        self._learned: dict[str, dict[str, LearnedThreshold]] = {}
         self._clock = clock
         self._retention_days = retention_days
 
@@ -465,7 +467,23 @@ class InMemorySymptomLogStore:
         doomed = [key for key in self._entries if key[0] == user_id]
         for key in doomed:
             del self._entries[key]
+        # Derived from the entries, so erased with them (see the port's docstring). Not counted
+        # in the receipt: Requirement 31.9 reports the number of ENTRIES removed, and a derived
+        # value is not an entry the user recorded.
+        self._learned.pop(user_id, None)
         return len(doomed)
+
+    def learned_thresholds(self, user_id: str) -> Mapping[str, LearnedThreshold]:
+        """Return this user's Learned_Thresholds by species (Requirement 32.12)."""
+        return dict(self._learned.get(user_id, {}))
+
+    def put_learned_thresholds(
+        self, user_id: str, thresholds: Sequence[LearnedThreshold]
+    ) -> None:
+        """REPLACE this user's Learned_Thresholds with a fresh derivation."""
+        self._learned[user_id] = {
+            threshold.species: threshold for threshold in thresholds
+        }
 
     def count_all(self) -> int:
         """Total entries held."""

@@ -24,6 +24,7 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
 from aqm_ingestion.domain.profile import UserProfile
 from aqm_ingestion.domain.symptoms import SymptomEntry
@@ -363,6 +364,13 @@ class SymptomLogStore(Protocol):
     Retention is the adapter's responsibility and is applied at QUERY time against the
     injected Clock (Requirement 31.8), mirroring the ReadingsStore — so the exclusion moves
     with the clock and nothing has to run on a timer.
+
+    THE LEARNED THRESHOLDS LIVE HERE RATHER THAN IN A PORT OF THEIR OWN, and the reason is
+    erasure. They are DERIVED from the diary and share its whole lifecycle: recomputed from it,
+    meaningless without it, and — the load-bearing part — erased with it. A separate store would
+    need its own erasure path, which could fall out of step with Requirement 31.9's and leave an
+    inference standing about a user whose underlying data was deleted. One store owning both
+    makes ``forget_user`` a single call that cannot be half-done.
     """
 
     def put(self, entry: SymptomEntry) -> SymptomEntry:
@@ -382,6 +390,26 @@ class SymptomLogStore(Protocol):
 
     def forget_user(self, user_id: str) -> int:
         """Delete every entry for a user and return how many were removed."""
+        ...
+
+    def learned_thresholds(self, user_id: str) -> Mapping[str, LearnedThreshold]:
+        """Return this user's Learned_Thresholds by species, or an empty mapping.
+
+        Requirement 32.12 forbids computing an association on the serving path: the derivation
+        runs on its own schedule and STORES its result for the serving path to read, so this is
+        the handoff point.
+        """
+        ...
+
+    def put_learned_thresholds(
+        self, user_id: str, thresholds: Sequence[LearnedThreshold]
+    ) -> None:
+        """Replace this user's Learned_Thresholds with a fresh derivation.
+
+        REPLACES rather than merges: a re-derivation over a longer diary may legitimately stop
+        supporting a species it previously supported, and merging would leave that stale
+        threshold alerting forever with no data behind it.
+        """
         ...
 
     def count_all(self) -> int:

@@ -71,6 +71,7 @@ from aqm_ingestion.serving.models import (
     basis_out,
 )
 from aqm_ingestion.serving.profiles import ProfileService
+from aqm_ingestion.serving.symptoms import SymptomLogService
 
 DEFAULT_TABLE_ID = "epa-2024-05-06"
 """The Breakpoint_Table a response is built against, resolved from configuration."""
@@ -111,6 +112,7 @@ class ResponseAssembler:
         clock: Clock,
         weightings: ConditionWeightingRegistry | None = None,
         settings: AssemblySettings | None = None,
+        symptoms: SymptomLogService | None = None,
     ) -> None:
         """Hold the stages. Each owns one rule; this object owns only the order."""
         self._profiles = profiles
@@ -120,6 +122,10 @@ class ResponseAssembler:
         self._clock = clock
         self._weightings = weightings or ConditionWeightingRegistry.with_defaults()
         self._settings = settings or AssemblySettings()
+        # Optional so a deployment without the diary serves exactly as it did before: with no
+        # symptom log there are no Learned_Thresholds, and Requirement 22.1's remaining three
+        # tiers apply unchanged.
+        self._symptoms = symptoms
 
     def assemble(self, identity: VerifiedIdentity) -> AssembledResponse:
         """Assemble the response, returning it and whether a crossing was reported.
@@ -159,6 +165,13 @@ class ResponseAssembler:
             profile,
             registry=self._breakpoints,
             table_id=self._settings.table_id,
+            # Requirement 32.7's tier. READ from where the scheduled derivation stored it
+            # (Requirement 32.12) — never computed here, because an association computed on the
+            # serving path would read a whole history on every request and would make the served
+            # threshold depend on when the request arrived.
+            learned=(
+                None if self._symptoms is None else self._symptoms.learned_for(identity)
+            ),
         )
 
         nearest = sensors[0] if sensors else None
