@@ -342,11 +342,25 @@ directory.
       guarantees they run. A verifier that raises records a FAILING verdict
     - _Requirements: 31.5, 34.7_
 
-  - [ ] 10.2 Implement the `TurnPipeline` Template Method
-    - The six steps in the fixed order red-flag check, retrieve, generate, verify, assemble, audit;
-      escalation determined before generation and placed first in the response; the order recorded by
-      tests that observe the sequence of operations through injected ports rather than asserting on the
-      result alone
+  - [x] 10.2 Implement the `TurnPipeline` Template Method
+    - `agent/pipeline.py`. `run` owns the order; the six steps are abstract, so a subclass fills the
+      sequence in and cannot reorder it. Generic in the retrieved payload and the response type rather
+      than typed `Any`, so the steps carry real types
+    - The order is guaranteed TWICE. Behaviourally, the steps record themselves through an injected
+      `StepRecorder` and the tests assert over the sequence, because a response with the right shape can
+      be produced by steps that ran in the wrong order or never ran. Structurally, an AST test reads
+      `run` itself, so it holds for every subclass rather than for the one pipeline a test instantiated
+    - DESIGN CORRECTION found by a test: the first version passed the escalation INTO `generate` and left
+      each subclass to honour it. That is a guarantee every future subclass must remember, so it is not a
+      guarantee. `run` now short-circuits and never calls `generate` on an escalating turn, so the model
+      cannot hedge, cannot re-assess whether the emergency is real (Req 10.5 forbids the service doing
+      that) and cannot fail in a way that loses the emergency direction. An escalating turn's step
+      sequence OMITS generation, and that absence is the evidence
+    - Every turn is verified, escalating ones included. Exempting that path would leave exactly one route
+      to a user that no verifier inspected, and it would be the highest-stakes route; the emergency text
+      passes because task 6.3's sweep already proves the required texts are not rejected
+    - `run` raises BEFORE assembly on a verdict that did not pass, so task 10.1's fail-closed rule is
+      control flow rather than a check somebody has to remember
     - _Requirements: 10.2, 20.4, 34.7_
 
   - [~] 10.3 Implement structured output and stop-reason handling — STOP REASONS DONE
