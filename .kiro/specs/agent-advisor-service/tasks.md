@@ -448,7 +448,7 @@ directory.
     - **Property 10: Turn reproducibility**
     - **Validates: Requirements 25.1, 25.2, 25.3**
 
-- [ ] 11. Degradation and failure handling
+- [x] 11. Degradation and failure handling
   - [x] 11.1 Implement the degradation paths
     - `domain/degradation.py`. Req 21.8's warning is now EMITTED, which was the flagged gap:
       `emergency_guidance_drifted` existed and was tested, but nothing ever called it, so A8a's narrow
@@ -511,15 +511,15 @@ directory.
       be rediscovered
     - _Requirements: 5.4, 21.4, 21.6_
 
-  - [ ]* 11.3 Write property test for degradation completeness
+  - [x]* 11.3 Write property test for degradation completeness
     - **Property 12: Degradation is complete and honest**
     - **Validates: Requirements 21.1, 21.2, 21.4, 7.3**
 
-  - [ ]* 11.4 Write property test that malformed input never yields a server error
+  - [x]* 11.4 Write property test that malformed input never yields a server error
     - **Property 13: Malformed input never yields a server error**
     - **Validates: Requirements 1.4, 1.5, 21.6, 32.5**
 
-  - [ ]* 11.5 Write property test for envelope invariance
+  - [x]* 11.5 Write property test for envelope invariance
     - **Property 7: Envelope invariance**
     - **Validates: Requirements 8.5, 21.3**
 
