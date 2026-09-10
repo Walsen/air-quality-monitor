@@ -281,11 +281,20 @@ def match_red_flags(utterance: str, rules: Sequence[RedFlagRule]) -> tuple[str, 
 def match_request_red_flags(utterance: str,
                             prior_turns: Sequence[PriorTurn],
                             rules: Sequence[RedFlagRule]) -> tuple[str, ...]: ...
+
+# step 1 of the turn (domain/turn.py) — no model, no client, no clock in the signature
+def determine_escalation(*, utterance, prior_turns, rules,
+                        emergency_guidance: str) -> Escalation | None: ...
 ```
 
 Defaults are the research's three: severe breathlessness, a reliever that is not working, blue lips or
 face. Matching is case-insensitive over a normalised utterance, and markers come back in RULE order rather
 than match order, because practices §2 requires a defined iteration order anywhere it reaches output.
+
+`determine_escalation` is step 1 of the turn and carries the same discipline one level up: it takes the
+utterance, the prior turns, the rule set and the emergency TEXT — never an envelope, a client or a model. It
+is what discharges Property 3's model dimension structurally rather than by enumeration, since a model's
+outcome is not merely untested there but unobservable.
 
 `match_red_flags` takes an utterance and a rule set and **nothing else**. That signature is how Req 10.3
 and 10.4 are enforced rather than merely tested: there is no parameter through which a reading, a client, a

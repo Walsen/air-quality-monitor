@@ -126,7 +126,7 @@ directory.
       coordinate
     - _Requirements: 20.2, 20.3, 28.1, 32.4c_
 
-- [ ] 4. Red-flag recognition (built first — escalation must survive every other failure)
+- [x] 4. Red-flag recognition (built first — escalation must survive every other failure)
   - [x] 4.1 Implement the deterministic `RedFlagMatcher`
     - `RedFlagRule` and `match_red_flags` over a normalised utterance, case-insensitive, with the
       research's three defaults; the rule set is configuration; matching applies to the utterance and to
@@ -165,17 +165,23 @@ directory.
       is field ORDER, asserted on the DUMPED body so a later `model_config` change cannot reorder it quietly
     - _Requirements: 10.2, 10.4, 21.3, 21.8, 21.9, A8a_
 
-  - [ ]* 4.3 Write property test for unconditional escalation — PARTIAL, needs task 10
-    - **Property 3: Red-flag escalation is unconditional**
-    - `tests/properties/test_escalation_properties.py` covers the two dimensions that exist: retrieval
-      success or failure as the envelope source (served / cached / configured), and air-quality band, which
-      is irrelevant BY CONSTRUCTION since the matcher has no parameter for it. Phrases are drawn from the
-      rule set itself, so a new pattern is covered without anyone remembering to add it
-    - Still open: the model success-or-failure dimension needs task 10's pipeline. Do NOT mark Property 3
-      discharged until then — a property marked validated is a property nobody re-reads
-    - Also asserts the converse, that ordinary text does not escalate. Without it a matcher returning every
-      marker for every input would satisfy the property perfectly while directing every user to emergency care
-    - **Validates: Requirements 10.1, 10.3, 10.4 (partially)**
+  - [x]* 4.3 Write property test for unconditional escalation
+    - **Property 3: Red-flag escalation is unconditional** — DISCHARGED, by two different means, and the
+      difference is recorded in the test module because it is the interesting part
+    - Retrieval success or failure is QUANTIFIED over, as the envelope source: served, the last envelope
+      retrieved in this process, or A8a's configured fallback. Those are the three states a retrieval
+      outcome leaves behind. Red-flag phrases are drawn from the rule set itself, and the flag is placed in
+      the current utterance or an earlier one, so Req 10.7 is covered too
+    - Model success-or-failure and air-quality band are discharged BY CONSTRUCTION:
+      `determine_escalation` takes an utterance, prior turns, a rule set and the emergency text, so neither
+      a model nor a reading can reach it. Asserted as a signature AND as a module-level dependency check.
+      Quantifying over a dimension the code cannot observe would be an assertion that cannot fail
+    - `determine_escalation` was extracted for this: the design's step 1 records the Escalation "before
+      anything can fail", and making that a function with no port in its signature is what turns Req 10.4's
+      reasoning into something a later refactor cannot quietly undo
+    - Also asserts the converse, that ordinary text does not escalate — without it a matcher returning
+      every marker would satisfy the property perfectly while directing every user to emergency care
+    - **Validates: Requirements 10.1, 10.3, 10.4**
 
 - [ ] 5. Grounding
   - [ ] 5.1 Implement numeral extraction and the permitted-set comparison

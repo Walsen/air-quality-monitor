@@ -21,7 +21,39 @@ from aqm_advisor.domain.models import (
     BasisSummary,
     Escalation,
     GuardrailEnvelope,
+    PriorTurn,
 )
+from aqm_advisor.domain.redflag import RedFlagRule, match_request_red_flags
+
+
+def determine_escalation(
+    *,
+    utterance: str,
+    prior_turns: Sequence[PriorTurn],
+    rules: Sequence[RedFlagRule],
+    emergency_guidance: str,
+) -> Escalation | None:
+    """Step 1 of the turn: decide whether this turn must direct the user to emergency care.
+
+    Returns the `Escalation` when a red flag is recognised, or `None` when the turn should carry
+    on to retrieval and generation. Req 10.2 requires this determination BEFORE any exposure
+    guidance is generated, and the design records it as happening "before anything can fail".
+
+    **This is what makes Property 3's model dimension structural rather than tested.** The step
+    takes an utterance, prior turns, a rule set and the emergency text. There is no parameter
+    through which a model, a Serving_Client or a clock could reach it, so the model's success or
+    failure is not merely untested here — it is unobservable. Req 10.4's reasoning is that a
+    check needing either could not fire when both are unavailable; expressing that as a
+    signature means no later change can quietly reintroduce the dependency.
+
+    `emergency_guidance` arrives as a STRING rather than an envelope so this step cannot be
+    blocked on resolving one. The caller resolves it (served, then cached, then A8a's configured
+    fallback) and there is no resolution path that yields an empty direction.
+    """
+    markers = match_request_red_flags(utterance, prior_turns, rules)
+    if not markers:
+        return None
+    return Escalation(kind="emergency", markers=markers, guidance=emergency_guidance)
 
 
 def escalating_response(
@@ -69,4 +101,4 @@ def escalating_response(
     )
 
 
-__all__ = ["escalating_response"]
+__all__ = ["determine_escalation", "escalating_response"]

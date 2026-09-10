@@ -18,14 +18,16 @@ from __future__ import annotations
 import datetime as dt
 
 import pytest
+from pydantic import SecretStr
 
 from aqm_advisor.domain.envelope import (
     EnvelopeSource,
     emergency_guidance_drifted,
     resolve_envelope,
 )
-from aqm_advisor.domain.models import AdvisoryResponse, GuardrailEnvelope
-from aqm_advisor.domain.turn import escalating_response
+from aqm_advisor.domain.models import AdvisoryResponse, GuardrailEnvelope, PriorTurn
+from aqm_advisor.domain.redflag import DEFAULT_RED_FLAG_RULES
+from aqm_advisor.domain.turn import determine_escalation, escalating_response
 
 _AT = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
 _CONFIGURED = "If you are severely breathless, seek emergency care now."
@@ -255,3 +257,89 @@ def test_a_non_escalating_response_is_unaffected_by_the_ordering() -> None:
         "degraded",
         "answered_at",
     }
+
+
+# --- step 1 of the turn: the determination itself -----------------------
+
+def test_a_red_flag_yields_an_emergency_escalation() -> None:
+    escalation = determine_escalation(
+        utterance="I can't breathe",
+        prior_turns=(),
+        rules=DEFAULT_RED_FLAG_RULES,
+        emergency_guidance=_CONFIGURED,
+    )
+    assert escalation is not None
+    assert escalation.kind == "emergency"
+    assert escalation.markers == ("severe_breathlessness",)
+    assert escalation.guidance == _CONFIGURED
+
+
+def test_an_ordinary_utterance_yields_no_escalation() -> None:
+    # Non-vacuity for every escalation test: a determination that always escalated would direct
+    # every user to emergency care, which costs exactly what missing a red flag costs.
+    assert (
+        determine_escalation(
+            utterance="Is it safe to run this evening?",
+            prior_turns=(),
+            rules=DEFAULT_RED_FLAG_RULES,
+            emergency_guidance=_CONFIGURED,
+        )
+        is None
+    )
+
+
+def test_a_red_flag_in_a_prior_user_utterance_still_escalates() -> None:
+    prior = (
+        PriorTurn(utterance=SecretStr("I can't breathe"), guidance=SecretStr("Seek care.")),
+    )
+    assert (
+        determine_escalation(
+            utterance="what should I do?",
+            prior_turns=prior,
+            rules=DEFAULT_RED_FLAG_RULES,
+            emergency_guidance=_CONFIGURED,
+        )
+        is not None
+    )
+
+
+def test_the_determination_cannot_observe_the_model_or_the_client() -> None:
+    # This is what discharges Property 3's "for every combination of model success or failure".
+    # The step takes an utterance, prior turns, a rule set and the emergency text — there is no
+    # parameter through which a model, a client or a clock could reach it, so the model's
+    # outcome is
+    # not merely untested here, it is unobservable. A signature survives refactors that an
+    # expectation does not.
+    import inspect
+
+    assert set(inspect.signature(determine_escalation).parameters) == {
+        "utterance",
+        "prior_turns",
+        "rules",
+        "emergency_guidance",
+    }
+
+
+def test_the_turn_module_depends_on_no_adapter_port_or_model() -> None:
+    # The other half of the same argument, at module level: even a transitive reference would
+    # mean
+    # the escalation path could be affected by something that can fail.
+    import ast
+    import pathlib
+
+    from aqm_advisor.domain import turn
+
+    tree = ast.parse(pathlib.Path(turn.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+    for forbidden in (
+        "aqm_advisor.ports.protocols",
+        "aqm_advisor.ports.clock",
+        "aqm_advisor.adapters.model.scripted",
+        "strands",
+    ):
+        assert forbidden not in imported, f"the escalation path can reach {forbidden}"
