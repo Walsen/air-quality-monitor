@@ -327,7 +327,7 @@ directory.
       placeholder and never claims a capability the guardrails forbid
     - _Requirements: 31.4_
 
-- [ ] 10. Verification hooks and the turn pipeline
+- [x] 10. Verification hooks and the turn pipeline
   - [x] 10.1 Register the verification hooks
     - `agent/verification.py`. NOTE, established against the installed SDK: `AfterInvocationEvent`
       carries `result` and `resume` but NO `cancel` field, so a Strands hook can OBSERVE a response and
@@ -363,21 +363,35 @@ directory.
       control flow rather than a check somebody has to remember
     - _Requirements: 10.2, 20.4, 34.7_
 
-  - [~] 10.3 Implement structured output and stop-reason handling — STOP REASONS DONE
-    - DONE: `agent/stop_reasons.py` classifies every reason, and `ALL_STOP_REASONS` is DERIVED from the
-      SDK's own `StopReason` literal rather than written out, so an upgrade that adds a thirteenth fails
-      the test. The installed SDK has TWELVE, three of which the spec never anticipated (`cancelled`,
-      `checkpoint`, `interrupt`). `content_filtered` and `guardrail_intervened` are rejections, not
-      failures (Req 6.5a); the three `limit_*` reasons and the provider's `max_tokens` are bounds; an
-      unrecognised reason falls back to model failure rather than success
+  - [x] 10.3 Implement structured output and stop-reason handling
+    - `agent/stop_reasons.py` classifies every reason, with `ALL_STOP_REASONS` DERIVED from the SDK's own
+      `StopReason` literal rather than written out, so an upgrade that adds a thirteenth fails the test.
+      The installed SDK has twelve, three of which the spec never anticipated (`cancelled`, `checkpoint`,
+      `interrupt`). `content_filtered` and `guardrail_intervened` are rejections, not failures (Req 6.5a)
     - FINDING: the SDK has NO stop reason meaning "the model failed" — a failure arrives as an EXCEPTION
-      (`ModelThrottledException`, `EventLoopException`, `StructuredOutputException`), so `MODEL_FAILED`
-      is reachable only by the fallback and the exception path. The reachability test excludes it
-      deliberately and says why
-    - REMAINING: structured output itself. `Agent.structured_output(output_model, prompt)` is confirmed
-      present and `StructuredOutputException` exists; wiring it to a Pydantic response model belongs with
-      the pipeline in 10.2
-    - _Requirements: 6.3b, 6.5a, 31.7_
+      (`ModelThrottledException`, `EventLoopException`, `StructuredOutputException`), so `MODEL_FAILED` is
+      reachable only via the fallback and the exception path. The reachability test excludes it and says why
+    - `agent/generation.py` obtains the structured fields against `ModelGeneration`, a Pydantic model whose
+      FIELD SET is the statement of what the model may author. It carries the guidance alone, because every
+      other `AdvisoryResponse` field has a different authority: `escalation` (Req 10.2, before generation),
+      `basis` (Req 9.4, never derived), `envelope` (Service 2 or A8a), `answered_at` (the Clock),
+      `degraded` (this service's own judgement). The disjointness is asserted against `AdvisoryResponse`
+      itself, so adding a field to either side cannot quietly widen what the model may invent
+    - `extra="forbid"`, so a model that tries to author `escalation` gets an ERROR rather than a silent
+      drop — a silent drop is indistinguishable from the model never having tried
+    - `StructuredOutputException` and a Pydantic `ValidationError` both become a model failure with NO
+      generation. If the output could not be coerced there is no validated text, and returning the raw
+      output "just this once" is the path Req 6.3b closes. Reason strings name a kind and never quote the
+      provider's message, which can contain the prompt or the partial output (Req 21.4)
+    - RECONCILED Req 6.5 with Req 22.2a: truncation is a "failure" in one and a "bound" in the other. Both
+      DISCARD the partial text, which is the part that protects the user, so there is no conflict in
+      behaviour. `BOUND_REACHED` is recorded because the same prompt would truncate again — a retry spends
+      budget to reproduce the failure, where Req 22.2's degraded response is useful. A throttle is
+      `MODEL_FAILED` for the mirror reason: nothing about the prompt caused it, so it IS worth retrying. A
+      test pins that truncation classifies identically whether it arrives as an exception or a stop reason
+    - `KeyboardInterrupt` and `SystemExit` are deliberately not caught; swallowing them would make the
+      process unkillable mid-turn
+    - _Requirements: 6.3b, 6.5, 6.5a, 31.7_
 
   - [x] 10.4 Implement the invocation bounds
     - `agent/bounds.py`. The model ceiling is expressed as Strands' `limits` (Req 22.1a's named mechanism),
