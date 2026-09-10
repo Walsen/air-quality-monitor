@@ -127,20 +127,50 @@ directory.
     - _Requirements: 20.2, 20.3, 28.1, 32.4c_
 
 - [ ] 4. Red-flag recognition (built first — escalation must survive every other failure)
-  - [ ] 4.1 Implement the deterministic `RedFlagMatcher`
+  - [x] 4.1 Implement the deterministic `RedFlagMatcher`
     - `RedFlagRule` and `match_red_flags` over a normalised utterance, case-insensitive, with the
       research's three defaults; the rule set is configuration; matching applies to the utterance and to
       any supplied prior turns; no model call and no network
+    - Normalisation must map the several apostrophe characters onto ASCII: phones and word processors
+      emit U+2019, so "can't" arrives as "can’t" most times a person types it, and a matcher keyed on
+      the ASCII form misses the likeliest spelling of the most important phrase it has
+    - `match_request_red_flags` scans the user's prior UTTERANCES and NOT the agent's prior guidance.
+      Service 2's `emergencyGuidance` contains all three default red flags, so scanning guidance would
+      make every turn after an escalation re-escalate on the agent's own words while looking like caution
     - _Requirements: 10.1, 10.5, 10.7_
 
-  - [ ] 4.2 Write the escalation-asymmetry tests
-    - Assert escalation fires for each configured rule; assert it fires when the air quality is good;
-      assert it fires when the `ServingClient` raises; assert the matcher never diagnoses a cause; pin
+  - [x] 4.2 Write the escalation-asymmetry tests (matcher level)
+    - Assert escalation fires for each configured rule; assert the matcher never diagnoses a cause; pin
       the deliberate bias toward escalating with a test naming the asymmetry in its docstring
+    - Req 10.3 and 10.4 are asserted STRUCTURALLY at this level: `match_red_flags` takes an utterance and
+      a rule set and nothing else, so it cannot consult an air-quality reading or a client. A signature
+      cannot be bypassed by a later refactor the way a behavioural expectation can
+    - Keep a test feeding Service 2's own `emergencyGuidance` wording back through the matcher. It found
+      a real false negative: the clinical form uses a compound subject ("your lips or face look blue")
+      matching neither "lips look blue" nor "face looks blue"
     - _Requirements: 10.3, 10.4, 10.5_
 
-  - [ ]* 4.3 Write property test for unconditional escalation
+  - [ ] 4.4 Assert escalation survives a failed retrieval, end to end — **BLOCKED**
+    - Blocked on the degraded-envelope decision below, not merely unstarted. Assert that an escalating
+      turn returns its Escalation and the Guardrail_Envelope when the `ServingClient` raises, and that the
+      emergency direction is placed first (Req 10.2)
+    - **THE OPEN DECISION.** Req 10.1 sources the escalation text from the `emergencyGuidance` Service 2
+      returned; Req 10.4 requires escalating even when the Serving_Client is unavailable; Req 21.3
+      requires the envelope even in a degraded response; and assumption A8 forbids a second copy of those
+      strings in this service because the two could drift invisibly. When Service 2 is unreachable there
+      is therefore NO text to escalate with, on the highest-stakes path the service has. A8's reasoning
+      holds for the disclaimer, where drift is a compliance nit; for the emergency direction the tradeoff
+      inverts, because having no wording at the one moment it matters is worse than drifted wording.
+      Options: cache the last-seen envelope; except `emergencyGuidance` from A8 and configure a fallback;
+      or escalate with a form of words this service owns. Resolve before task 7 assembles the response
+    - `GuardrailEnvelope` currently has no default and no local composition, so this path cannot be built
+      until the decision is made — deliberately, so the gap fails loudly rather than being papered over
+    - _Requirements: 10.2, 10.4, 21.3, A8_
+
+  - [ ]* 4.3 Write property test for unconditional escalation — needs 4.4
     - **Property 3: Red-flag escalation is unconditional**
+    - Requires driving retrieval success/failure and model success/failure through the pipeline, so it
+      cannot be written before 4.4's decision and task 7's assembly exist
     - **Validates: Requirements 10.1, 10.3, 10.4**
 
 - [ ] 5. Grounding

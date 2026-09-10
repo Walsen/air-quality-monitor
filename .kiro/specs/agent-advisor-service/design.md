@@ -274,11 +274,37 @@ class RedFlagRule:
     marker: str          # e.g. "severe_breathlessness"
     patterns: tuple[str, ...]
 
+def normalise(text: str) -> str: ...
 def match_red_flags(utterance: str, rules: Sequence[RedFlagRule]) -> tuple[str, ...]: ...
+def match_request_red_flags(utterance: str,
+                            prior_turns: Sequence[PriorTurn],
+                            rules: Sequence[RedFlagRule]) -> tuple[str, ...]: ...
 ```
 
 Defaults are the research's three: severe breathlessness, a reliever that is not working, blue lips or
-face. Matching is case-insensitive over a normalised utterance.
+face. Matching is case-insensitive over a normalised utterance, and markers come back in RULE order rather
+than match order, because practices §2 requires a defined iteration order anywhere it reaches output.
+
+`match_red_flags` takes an utterance and a rule set and **nothing else**. That signature is how Req 10.3
+and 10.4 are enforced rather than merely tested: there is no parameter through which a reading, a client, a
+model or a config object could reach it, so escalation cannot be made conditional on one by a later change
+that forgets why. A signature cannot be bypassed the way a behavioural expectation can.
+
+**Normalisation maps the several apostrophe characters onto ASCII.** Phones and word processors emit U+2019,
+so "can't" reaches this service as "can’t" most times a person types it — and a matcher keyed on the
+ASCII form would miss the likeliest spelling of the most important phrase it has.
+
+**Prior USER utterances are scanned; the agent's prior guidance is not** (Req 10.7). Service 2's
+`emergencyGuidance` contains all three default red flags — "severely breathless", "reliever inhaler is not
+helping", "lips or face look blue" — so scanning guidance would make every turn after an escalation
+re-escalate on the agent's own words, indefinitely, while looking like correct caution. A red flag is
+something the USER described, which is also the only reading consistent with Req 10.5's refusal to diagnose.
+
+The patterns are PHRASES rather than keywords, which is what keeps the permissive direction out of ordinary
+conversation: "breathe" and "blue" occur in benign sentences constantly, while "can't breathe" and "lips are
+blue" essentially do not. The `blue_lips_or_face` set carries deliberate fragments ("face look blue") because
+clinical guidance words the symptom with a compound subject — "your lips or face look blue" — which matches
+neither "lips look blue" nor "face looks blue".
 
 **It errs toward escalating, deliberately.** A false positive costs an unnecessary sentence directing
 someone to emergency care; a false negative could cost a life. That asymmetry is not symmetric, so the
