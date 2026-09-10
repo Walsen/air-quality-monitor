@@ -92,9 +92,9 @@ or override.
   announcement of 2025-10-13.
 
 
-- **A4 — The end user's own Cognito JWT reaches Service 2, by forwarding rather than by brokering, and
-  this is a deliberate deviation from the AWS-endorsed pattern.** Research on 2026-09-10 verified three
-  things that together settle it. First, AgentCore Runtime accepts an end-user Cognito JWT **directly**
+- **A4 — The end user's own Cognito JWT reaches Service 2 by forwarding, and AWS documents this as
+  sufficient for a single-tenant agent.** Research on 2026-09-10 verified three things about the
+  mechanism. First, AgentCore Runtime accepts an end-user Cognito JWT **directly**
   at its own front door: a `customJWTAuthorizer` configured with the pool's `discoveryUrl`,
   `allowedClients` and `allowedAudience` validates the token before this service's code runs, and a
   missing token is refused with `401`. Second, AgentCore Identity's outbound model is a token **BROKER**,
@@ -106,12 +106,21 @@ or override.
   `Authorization` header reachable in agent code; forwarding it from there is implementable but
   unendorsed.
 
-  This spec chooses forwarding anyway, because the alternative is worse: a brokered token is a *different*
-  credential, and Service 2's authenticator — already implemented, already in review — verifies a Cognito
-  JWT against a specific issuer and audience. Adopting the endorsed pattern would mean changing a shipped
-  service's authentication to accept a second token shape, which trades a documented mechanism for a
-  larger blast radius. Confirm this trade; if the endorsed pattern is preferred, Service 2's Requirement
-  18 is what changes, and it should change deliberately rather than as a side effect.
+  **Corrected 2026-09-10 (later the same day), and the correction is favourable.** AWS's own guidance on
+  on-behalf-of token exchange states: "The OBO pattern is essential whenever an agent fronts multiple
+  downstream services or tenants and the inbound token's audience differs from any single downstream API.
+  **For a single-tenant agent where the inbound audience already matches the downstream service, direct
+  token forwarding can be sufficient.**" (*Implement on-behalf-of token exchange for multi-tenant agents
+  with Amazon Bedrock AgentCore Gateway*, AWS Machine Learning Blog, 13 July 2026.)
+
+  This service is exactly that case: ONE Cognito pool, ONE downstream API. So forwarding is not a
+  deviation to be justified — it is the documented sufficient choice, and the earlier framing of it as
+  unendorsed was wrong. The condition attached to it is a real one and becomes a requirement: the audience
+  AgentCore Runtime's `customJWTAuthorizer` accepts and the audience Service 2's authorizer accepts MUST
+  be the same, or forwarding stops being sufficient. That is asserted in the deployment-contract tests.
+
+  The consequence for Service 2 is that its Requirement 18 does NOT change. What would have changed it —
+  adopting a brokered token of a different shape — is no longer motivated.
 
 - **A4a — Service 3 needs no JWT verifier of its own.** A consequence of the above worth stating because
   it removes a component the first draft implied: AgentCore validates the inbound token before this
@@ -146,6 +155,22 @@ or override.
 - **A8 — Guardrail texts come from Service 2's response**, not from a second copy here. Service 2
   already returns `advisoryScope`, `emergencyGuidance` and `disclaimer` on every body. Duplicating
   those strings in this service would let the two drift, and the drift would be invisible.
+
+  **A8a — one narrow exception, for `emergencyGuidance` only, because A8's own reason is addressable.**
+  A8's objection is not duplication as such; it is that the drift would be INVISIBLE. Requirement 10.4
+  requires an Escalation even when the Serving_Client is unavailable, and Requirement 21.3 requires the
+  envelope in a degraded response — so on the highest-stakes path the service has, A8 as written leaves no
+  text to escalate with at all. Nothing is worse than drifted wording at the moment somebody is describing
+  a severe attack.
+
+  So this service MAY hold a configured `emergencyGuidance` fallback, and the drift is made VISIBLE rather
+  than tolerated: on the first successful retrieval of each run the configured text is compared against
+  what Service 2 returned and a mismatch is logged as a warning (Requirement 21.8). That satisfies A8's
+  actual concern instead of overriding it.
+
+  The exception is `emergencyGuidance` ALONE. `advisoryScope` and `disclaimer` remain strictly Service 2's,
+  with no local copy and no fallback, because drift in compliance boilerplate is a nit while absence of an
+  emergency direction is not — the asymmetry that justifies the exception does not extend to them.
 - **A9 — Pinned versions:** `strands-agents==1.55.1` (released 2026-09-09, Apache-2.0, authored by AWS,
   classifiers list Python 3.12), pinned exactly as engineering practice §0 and the dev-environment
   steering require. The `otel` extra is taken for tracing. `strands-agents-tools` is **not** taken: this
@@ -199,6 +224,40 @@ or override.
   its own retention and its own erasure. Statelessness (A6) is the mechanism; not creating a second,
   ungoverned home for health data is the reason.
 
+- **A13 — AgentCore Gateway is evaluated and NOT adopted, and the reason is a chain rather than a
+  preference.** Gateway turns an existing REST API into MCP tools from an OpenAPI specification or a
+  Smithy model, or fronts an API Gateway target directly, adding inbound auth and observability. Service
+  2's serving API is an API Gateway HTTP API with an OpenAPI shape, so it is a plausible target and the
+  default answer under "prefer AgentCore where one fits" would be yes. Three findings, verified
+  2026-09-10, say no here.
+
+  First, **it would break the credential model A4 just validated.** AWS's OBO guidance states that direct
+  token forwarding "is rarely true in multi-tenant systems and **never true when the agent fronts a tool
+  gateway**", because the inbound token's audience becomes the Gateway's rather than the downstream API's.
+  Adopting Gateway therefore forces RFC 8693 on-behalf-of token exchange — which is a correct pattern, but
+  one this service does not otherwise need.
+
+  Second, **the exchange needs an authorization server whose support for it is unconfirmed for Cognito.**
+  AWS's own reference implementation uses Okta, and the same post cautions: "Amazon Cognito user pools can
+  serve as the provider IdP that authenticates the inbound agent call. **Confirm the current grant-type
+  support against the AgentCore Identity documentation if you plan to use Cognito for the consumer-side
+  OBO role.**" This monorepo is standardised on Cognito. So adopting Gateway means either depending on an
+  unconfirmed Cognito capability on the highest-stakes path, or introducing a second identity provider for
+  a project that needs one IdP — a larger change than the tool layer it would replace.
+
+  Third, **it moves the tool surface off the machine and out of the offline suite.** Requirement 32.2
+  keeps every AgentCore dependency at the deployment boundary so no advisory component imports an
+  AgentCore type and the offline suite is unaffected by the deploy target; Requirement 26 requires that
+  suite to pass with no credentials and no network beyond localhost. Gateway-sourced tools are defined in
+  AWS, so their shapes could not be enumerated or exercised offline without stubbing the very thing under
+  test. The five tools as Python functions over an injected `ServingClient` port are what make the offline
+  suite possible.
+
+  Recorded because "we evaluated it" is only useful if the evaluation is written down. If Cognito's
+  token-exchange support is later confirmed AND a second downstream service appears, the first two
+  objections fall and this should be revisited; the third would remain and would need Requirement 32.2
+  amended deliberately.
+
 ## Glossary
 
 Terms are capitalized with underscores where a requirement depends on their exact meaning.
@@ -213,7 +272,8 @@ Terms are capitalized with underscores where a requirement depends on their exac
 - **Air_Quality_Snapshot** — the body Service 2 returns from `/v1/air-quality/me`, unmodified.
 - **Basis_Summary** — the retrieved provenance the agent shows alongside its guidance: driving
   pollutant, the sub-index and band that drove it, the threshold that was crossed if any, the
-  confidence, and the breakpoint table and calibration strategy Service 2 named in `basis`.
+  confidence, and the breakpoint table, calibration strategy, nowcast window and record identifiers
+  Service 2 named in `basis`.
 - **Guardrail_Envelope** — the `advisoryScope`, `emergencyGuidance` and `disclaimer` strings Service 2
   returns.
 - **Escalation** — a determination that the turn must direct the user to emergency services or to their
@@ -365,7 +425,7 @@ whole advisory path is testable without a Bedrock account and so the model is sw
    expiry as a model failure under Requirement 21.
 5. THE Service SHALL request a configured maximum output length and SHALL treat a truncated generation
    as a failure rather than emitting partial Guidance.
-5a. THE Service SHALL treat the Strands stop reasons `content_filtered` and `guardrail_intervention` as
+5a. THE Service SHALL treat the Strands stop reasons `content_filtered` and `guardrail_intervened` as
    guardrail rejections under Requirement 8 rather than as generation failures, because the model
    declining to produce text is the guardrail working and not the service breaking.
 6. THE Service SHALL resolve the model credential only from the environment or a runtime-supplied path,
@@ -426,8 +486,11 @@ recommendation is independently reviewable rather than a black box.
    its distance, and the reading's confidence.
 2. WHERE a threshold was crossed, THE Service SHALL name the threshold value and its source as Service 2
    reported them in `personalized.thresholdSource`.
-3. THE Service SHALL name the breakpoint table and the calibration strategy from the retrieved `basis`,
-   so the derivation of the index is traceable.
+3. THE Service SHALL name the breakpoint table, the calibration strategy, and the nowcast window — its
+   length, the hours actually available within it, and the weighting applied — from the retrieved
+   `basis`, so the derivation of the index is traceable.
+3a. WHERE the retrieved `basis` reports no nowcast, THE Service SHALL treat that as meaning the index was
+   not nowcast-derived, and SHALL NOT present it as a nowcast whose window is unknown.
 4. THE Service SHALL read the Basis_Summary from the retrieved response and SHALL NOT recompute or
    re-derive any part of it.
 5. THE Service SHALL make the Basis_Summary available whether or not the user asked for it.
@@ -546,6 +609,12 @@ judge how much to lean on it.
    as a plain measurement.
 5. THE Service SHALL NOT resolve, average away, or otherwise smooth a disagreement between retrieved
    readings; it reports what was served.
+6. THE Service SHALL treat the confidence Service 2 returned as the single authority on how weak a
+   measurement is, and SHALL NOT derive a second weakness signal by comparing the nowcast window's hours
+   available against its length. Service 2 already caps confidence at `medium` for an incomplete window
+   and at `low` where there were too few hours to compute a nowcast at all, so an incomplete window
+   reaches the user through criterion 2; a second derivation here could disagree with Service 2 about
+   the same measurement, and re-deriving a part of the basis is what Requirement 9.4 forbids.
 
 ### Requirement 16: Inhaled-Dose Explanation
 
@@ -663,6 +732,15 @@ it cannot see.
    is reported as such, naming the offending field.
 7. WHERE only part of the retrieved data is available, THE Service SHALL advise on what it has and state
    what is missing, rather than failing the whole turn.
+
+8. THE Service SHALL resolve the Guardrail_Envelope in this order and SHALL record which source supplied
+   it: the envelope Service 2 returned this turn; else the last envelope successfully retrieved in this
+   process; else, for `emergencyGuidance` only, the configured fallback of assumption A8a. THE Service
+   SHALL compare the configured fallback against the first successfully retrieved `emergencyGuidance` of
+   each run and SHALL log one warning naming the field, but never either text, WHERE they differ.
+9. THE Service SHALL NOT substitute a local `advisoryScope` or `disclaimer`, and WHERE no envelope can be
+   resolved for those, THE Service SHALL omit them rather than invent them. An escalation SHALL still be
+   returned, because Requirement 10.4 does not depend on the envelope being complete.
 
 ### Requirement 22: Invocation Bounds
 
@@ -990,6 +1068,13 @@ isolation, scaling and long-running invocations are the platform's problem rathe
     ordinary Advisory_Turn. The Runtime permits 8 hours on a microVM and up to 14 days on an Instance; a
     conversational turn that took minutes would be a defect rather than a feature, and the long window
     serves the scheduled work of Requirement 33, not the conversation.
+
+14. THE Service SHALL configure the audience its inbound `customJWTAuthorizer` accepts to be the SAME
+    audience Service 2's authorizer accepts, and SHALL assert that agreement in the offline
+    deployment-contract tests. Per assumption A4, direct forwarding of the end user's token is sufficient
+    only WHERE the inbound audience already matches the downstream service; if the two configurations
+    drift apart, forwarding silently stops being the documented pattern and every retrieval fails
+    authorization at Service 2 rather than here, which is the hardest place to attribute it.
 
 ### Requirement 33: Asynchronous Association Job
 

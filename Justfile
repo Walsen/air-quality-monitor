@@ -26,6 +26,12 @@ default:
 test: test-simulator test-ingestion test-advisor
 
 # Run every service's integration checks (container engine or local broker).
+# NOTE: this aggregate cannot pass today. `test-integration-advisor` selects zero tests, and
+# pytest exits 5 on an empty selection — the advisor's fenced checks arrive with tasks 17.4 and
+# 19.3 (live model, live guardrail, deployment contract). Until then run the two legs that exist:
+#   just test-integration-simulator
+#   just test-integration-ingestion
+# CI calls those two directly for the same reason.
 test-integration: test-integration-simulator test-integration-ingestion test-integration-advisor
 
 # Lint every service with ruff.

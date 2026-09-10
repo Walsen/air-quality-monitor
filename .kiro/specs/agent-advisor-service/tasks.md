@@ -34,8 +34,8 @@ directory.
 
 ## Tasks
 
-- [ ] 1. Project scaffolding and observability foundation
-  - [ ] 1.1 Create the `agent-advisor/` project skeleton and pinned manifest
+- [x] 1. Project scaffolding and observability foundation
+  - [x] 1.1 Create the `agent-advisor/` project skeleton and pinned manifest
     - Create the `src/aqm_advisor/` package tree (`domain/`, `ports/`, `agent/`, `adapters/model/`,
       `adapters/serving/`, `adapters/guardrail/`, `adapters/audit/`, `agentcore/`, `config/`,
       `observability/`) with a package docstring in every `__init__.py` recording its layering rule, plus
@@ -46,88 +46,141 @@ directory.
       floor and a `nightly` profile at 1000
     - _Requirements: 26.1, 26.2, 26.3, 26.4, 26.6, 26.9, A1, A2, A9_
 
-  - [ ] 1.2 Implement the JSON logger with central redaction
+  - [x] 1.2 Implement the JSON logger with central redaction
     - Single-line JSON to stdout, never `print`; redaction configured once in the formatter covering the
       credential, condition, sensitivity, personal threshold, coordinate, medication name and utterance
       keys; a handled-error helper carrying exception type and stack as a string so redaction still
       applies to it; assert the pseudonymous identity remains loggable
     - _Requirements: 19.2, 19.3, 19.4, 19.5, 24.1, 24.2, 24.3_
 
-  - [ ] 1.3 Implement the metrics registry and OpenTelemetry wiring
+  - [x] 1.3 Implement the metrics registry and OpenTelemetry wiring
     - Counters for turns answered, turns degraded, guardrail rejections by category, escalations
       returned, Serving_Client failures by kind, Model_Port failures by kind, model invocations and token
       usage; no metric label may carry a condition, coordinate or utterance substring; OTel traces and
       metrics through the Strands `otel` extra with no collector configured by this service
     - _Requirements: 22.5, 24.4, 24.5, 32.10, 32.11_
 
-- [ ] 2. Boundaries: Clock, ports, and local fakes
-  - [ ] 2.1 Implement the Clock port and its implementations
+- [x] 2. Boundaries: Clock, ports, and local fakes
+  - [x] 2.1 Implement the Clock port and its implementations
     - `Clock` protocol, `SystemClock` at the process edge only, `FixedClock` for tests; instants
       normalised to UTC and a naive instant refused
     - _Requirements: 1.3, 25.2, 25.5_
 
-  - [ ] 2.2 Define the four port protocols
+  - [x] 2.2 Define the four port protocols
     - `ServingClient`, `GuardrailChecker`, `AdviceAuditStore`, `AssociationTrigger`, transcribed from the
       design's signature block; no Bedrock, AgentCore or httpx type in any signature, asserted by a test
       that renders each signature and scans for SDK imports
     - _Requirements: 2.1, 3.1, 4.1, 20.1, 33.3, 34.2_
 
-  - [ ] 2.3 Implement the scripted `Model` subclass
+  - [x] 2.3 Implement the scripted `Model` subclass
     - A Strands `Model` subclass implementing ALL FOUR of the ABC's abstract methods — `stream`,
       `structured_output`, `get_config`, `update_config` — because a subclass missing any of them
       cannot be instantiated at all; `stream` yields a scripted sequence of stream events and
       performs no network call; supports scripting a tool-use request, a text generation, a
-      truncation, a `guardrail_intervention` stop reason and a raised failure, so every branch of
+      truncation, a `guardrail_intervened` stop reason and a raised failure, so every branch of
       the pipeline is drivable offline; `structured_output` is scripted too, since Req 6.3b routes
       the response's structured fields through it and it is part of the abstract surface
     - _Requirements: 6.2, 6.3b, 6.5a, 35.1_
 
-  - [ ] 2.4 Implement the local fakes for the other three ports
+  - [x] 2.4 Implement the local fakes for the other three ports
     - Scripted `ServingClient` returning canned Service 2 bodies built from that service's real response
       shape; local `GuardrailChecker` applying the pattern set with no network; in-memory
       `AdviceAuditStore` with a read accessor for tests; recording `AssociationTrigger`
     - _Requirements: 26.5, 34.5_
 
-  - [ ] 2.5 Write the architecture enforcement checks
+  - [x] 2.5 Write the architecture enforcement checks
     - AST checks over real source: no `domain/` import of `adapters/` or `agentcore/`; no wall-clock read
       or `random` import in `domain/`; no whole-config parameter in a domain function; plus self-checks
       proving each detector can actually fail, so no rule can pass vacuously
     - _Requirements: 25.2, 25.3, 32.2_
 
-- [ ] 3. Domain models
-  - [ ] 3.1 Implement the turn contract models
+- [x] 3. Domain models
+  - [x] 3.1 Implement the turn contract models
     - `AdvisoryRequest` with the length bounds and `credential` as a `SecretStr` excluded from
       serialisation; `AdvisoryResponse` with the exact field set from the design; `PriorTurn`;
       assert rendering the request exposes no credential in `repr`, `str` or any f-string form
     - _Requirements: 1.1, 1.2, 1.4, 1.5, 1.6, 5.1, 5.6_
 
-  - [ ] 3.2 Implement the basis, envelope and escalation models
-    - `SpeciesBasis`, `BasisSummary`, `GuardrailEnvelope`, `Escalation`; every field populated by copying a
-      retrieved value, with no code path that computes one
-    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
+  - [x] 3.2 Implement the basis, envelope and escalation models
+    - `SpeciesBasis`, `RecordReference`, `NowcastBasis`, `BasisSummary`, `GuardrailEnvelope`,
+      `Escalation`; every field populated by copying a retrieved value, with no code path that computes one
+    - `BasisSummary.nowcast` carries Service 2's `basis.nowcast` (window length, hours available, weight
+      factor), so Req 9.3's traceable derivation accounts for the weighting and not only the breakpoint
+      table; a test must show a partial window (hours available < window length) survives into the summary
+      unchanged rather than being normalised or dropped
+    - A test must pin that `nowcast is None` means NOT nowcast-derived and is a complete answer, not a gap
+      (Req 9.3a) — assert the response is not marked degraded and no disclosure is added
+    - `BasisSummary.records` carries Service 2's `basis.records`, so Req 20.2's "the identifiers of the
+      retrieved records the Basis_Summary named" has something to name
+    - `RecordReference.identifier()` composes site code, species, instant AND duration; a test must show
+      two Readings from the SAME sensor differing only in species, and two differing only in instant, get
+      DIFFERENT identifiers — a bare site code would collapse both and silently under-report provenance
+    - Add `domain/instants.py` with this service's OWN `iso_z` (whole-second UTC, `Z` suffix) and a
+      round-trip test; do not import Service 2's, and let the architecture check prove no such import
+    - _Requirements: 9.1, 9.2, 9.3, 9.3a, 9.4, 9.5, 20.2_
 
-  - [ ] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
+  - [x] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
     - `RetrievedValues` with the ordered `tool_calls` trajectory; `SymptomEntryDraft` with `confirmed`
       defaulting to False; `AdviceRecord` with the pinned field set, an `idempotency_key`, and a test
       asserting there is no field able to hold an utterance, guidance text, condition, threshold or
       coordinate
     - _Requirements: 20.2, 20.3, 28.1, 32.4c_
 
-- [ ] 4. Red-flag recognition (built first — escalation must survive every other failure)
-  - [ ] 4.1 Implement the deterministic `RedFlagMatcher`
+- [x] 4. Red-flag recognition (built first — escalation must survive every other failure)
+  - [x] 4.1 Implement the deterministic `RedFlagMatcher`
     - `RedFlagRule` and `match_red_flags` over a normalised utterance, case-insensitive, with the
       research's three defaults; the rule set is configuration; matching applies to the utterance and to
       any supplied prior turns; no model call and no network
+    - Normalisation must map the several apostrophe characters onto ASCII: phones and word processors
+      emit U+2019, so "can't" arrives as "can’t" most times a person types it, and a matcher keyed on
+      the ASCII form misses the likeliest spelling of the most important phrase it has
+    - `match_request_red_flags` scans the user's prior UTTERANCES and NOT the agent's prior guidance.
+      Service 2's `emergencyGuidance` contains all three default red flags, so scanning guidance would
+      make every turn after an escalation re-escalate on the agent's own words while looking like caution
     - _Requirements: 10.1, 10.5, 10.7_
 
-  - [ ] 4.2 Write the escalation-asymmetry tests
-    - Assert escalation fires for each configured rule; assert it fires when the air quality is good;
-      assert it fires when the `ServingClient` raises; assert the matcher never diagnoses a cause; pin
+  - [x] 4.2 Write the escalation-asymmetry tests (matcher level)
+    - Assert escalation fires for each configured rule; assert the matcher never diagnoses a cause; pin
       the deliberate bias toward escalating with a test naming the asymmetry in its docstring
+    - Req 10.3 and 10.4 are asserted STRUCTURALLY at this level: `match_red_flags` takes an utterance and
+      a rule set and nothing else, so it cannot consult an air-quality reading or a client. A signature
+      cannot be bypassed by a later refactor the way a behavioural expectation can
+    - Keep a test feeding Service 2's own `emergencyGuidance` wording back through the matcher. It found
+      a real false negative: the clinical form uses a compound subject ("your lips or face look blue")
+      matching neither "lips look blue" nor "face looks blue"
     - _Requirements: 10.3, 10.4, 10.5_
 
-  - [ ]* 4.3 Write property test for unconditional escalation
-    - **Property 3: Red-flag escalation is unconditional**
+  - [x] 4.4 Assert escalation survives a failed retrieval, end to end
+    - RESOLVED by assumption A8a and Req 21.8/21.9. A8's objection was that a second copy of the guardrail
+      texts would drift INVISIBLY, not duplication as such — so the exception is bought with a detector
+      (`emergency_guidance_drifted`) rather than by overriding the reason
+    - `domain/envelope.py` resolves served -> cached -> configured fallback and records the source;
+      `domain/turn.py` assembles the escalating response. Both are pure and parameterised, so escalation
+      cannot be made conditional on a client, a model or a clock
+    - The exception covers `emergencyGuidance` ALONE: `resolve_envelope` takes ONE configured string, so no
+      local `advisoryScope` or `disclaimer` can be introduced without changing that signature and the test
+      that pins it. Those two are omitted rather than invented (Req 21.9)
+    - `escalation` now precedes `guidance` in `AdvisoryResponse`. Req 10.2 places the emergency direction
+      first and Property 4 asserts it appears before any exposure guidance; with a structured response that
+      is field ORDER, asserted on the DUMPED body so a later `model_config` change cannot reorder it quietly
+    - _Requirements: 10.2, 10.4, 21.3, 21.8, 21.9, A8a_
+
+  - [x]* 4.3 Write property test for unconditional escalation
+    - **Property 3: Red-flag escalation is unconditional** — DISCHARGED, by two different means, and the
+      difference is recorded in the test module because it is the interesting part
+    - Retrieval success or failure is QUANTIFIED over, as the envelope source: served, the last envelope
+      retrieved in this process, or A8a's configured fallback. Those are the three states a retrieval
+      outcome leaves behind. Red-flag phrases are drawn from the rule set itself, and the flag is placed in
+      the current utterance or an earlier one, so Req 10.7 is covered too
+    - Model success-or-failure and air-quality band are discharged BY CONSTRUCTION:
+      `determine_escalation` takes an utterance, prior turns, a rule set and the emergency text, so neither
+      a model nor a reading can reach it. Asserted as a signature AND as a module-level dependency check.
+      Quantifying over a dimension the code cannot observe would be an assertion that cannot fail
+    - `determine_escalation` was extracted for this: the design's step 1 records the Escalation "before
+      anything can fail", and making that a function with no port in its signature is what turns Req 10.4's
+      reasoning into something a later refactor cannot quietly undo
+    - Also asserts the converse, that ordinary text does not escalate — without it a matcher returning
+      every marker would satisfy the property perfectly while directing every user to emergency care
     - **Validates: Requirements 10.1, 10.3, 10.4**
 
 - [ ] 5. Grounding
@@ -206,11 +259,19 @@ directory.
       dose as concentration times an activity-adjusted breathing rate over a duration without recomputing
       it; include the pollen outlook with the returned categories and state the pollen-pollution synergy
       when both are elevated; say the outlook is unavailable where it matters
-    - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3, 17.4, 17.5_
+    - Req 15.6: the confidence Service 2 returned is the SINGLE authority on measurement weakness. An
+      incomplete nowcast window reaches the user through 15.2, because Service 2 already capped its
+      confidence — so an AST check must prove no code path compares `hours_available` against
+      `window_hours` to gate a disclosure, with a self-check proving the detector can fail
+    - A behavioural test: a partial-window body must produce exactly ONE weakness disclosure, not two.
+      Double-disclosure is the failure a second derivation would cause, and it reads as thoroughness
+    - _Requirements: 15.1, 15.2, 15.3, 15.4, 15.5, 15.6, 16.1, 16.2, 16.3, 16.4, 17.1, 17.2, 17.3,
+      17.4, 17.5_
 
 - [ ] 8. Basis assembly and clinician deference
   - [ ] 8.1 Implement `BasisSummary` assembly from a retrieved snapshot
-    - Read every field; name the threshold and its source including `learned`; name the breakpoint table
+    - Read every field including `nowcast` and `records`; name the threshold and its source including
+      `learned`; name the breakpoint table
       and calibration strategy; available whether or not the user asked; emit no claim requiring a basis
       when none was retrieved
     - _Requirements: 9.1, 9.2, 9.3, 9.5, 9.6_
@@ -270,7 +331,7 @@ directory.
   - [ ] 10.3 Implement structured output and stop-reason handling
     - Obtain the response's structured fields through Strands structured output against a Pydantic model;
       treat `StructuredOutputException` as a model failure; treat `content_filtered` and
-      `guardrail_intervention` as guardrail rejections rather than failures; handle every stop reason the
+      `guardrail_intervened` as guardrail rejections rather than failures; handle every stop reason the
       SDK can return, with a test that fails if one is unhandled
     - _Requirements: 6.3b, 6.5a, 31.7_
 
@@ -294,6 +355,9 @@ directory.
 
 - [ ] 11. Degradation and failure handling
   - [ ] 11.1 Implement the degradation paths
+    - Req 21.8's WARNING is not yet emitted anywhere: `emergency_guidance_drifted` exists and is tested, but
+      the one-warning-per-run log naming the field (and neither text) belongs on this path. The detector
+      without the log leaves A8a's guard unarmed, which is the whole basis of the exception
     - A `ServingClient` failure yields a degraded response stating conditions are unavailable with no
       condition value; a `Model_Port` failure yields a response built from retrieved data without prose;
       the envelope and any escalation are present in every degraded response; partial retrieval advises on
@@ -460,7 +524,11 @@ directory.
     - Drive `POST /invocations` and `GET /ping` against the locally served application with no AWS; assert
       the health response shape; assert `/ping` stays responsive and reports `HealthyBusy` for the whole
       time a turn is in flight
-    - _Requirements: 26.5a, 32.4b_
+    - Req 32.14: assert the inbound authorizer's configured audience equals the audience configured for
+      Service 2. A4's direct forwarding is documented as sufficient only WHERE those match, so this is the
+      test that keeps the assumption true rather than merely asserted. Drift here fails at Service 2, not
+      here, which is the hardest place to attribute it
+    - _Requirements: 26.5a, 32.4b, 32.14_
 
   - [ ]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**

@@ -169,7 +169,7 @@ so a future early return cannot skip them (Req 31.5).
 | Forbidden claims | yes | diagnosis, dosing, medication instruction | reject, one repair, then degrade |
 | Medication closure | yes | a drug not in the user's stored list | reject |
 | `ApplyGuardrail` OUTPUT | no | phrasings no pattern anticipated | reject |
-| Strands `guardrail_intervention` / `content_filtered` stop reasons | yes (scripted) | the model declining | treat as rejection, not failure |
+| Strands `guardrail_intervened` / `content_filtered` stop reasons | yes (scripted) | the model declining | treat as rejection, not failure |
 
 **Fails closed.** When the managed check is unavailable, any generation the local checks cannot clear is
 not returned (Req 34.6). An unverifiable health-adjacent generation is worse than none.
@@ -187,7 +187,11 @@ agent-advisor/
 │   │   ├── grounding.py            # numeral extraction + permitted-set comparison
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
-│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary, Escalation
+│   │   ├── envelope.py             # Req 21.8 resolution order + the A8a drift detector
+│   │   ├── turn.py                 # escalating_response — the assembly that must always work
+│   │   ├── instants.py             # iso_z — this service's own copy, no cross-service import
+│   │   ├── models.py               # AdvisoryRequest/Response, BasisSummary + RecordReference/Nowcast
+│   │   └── records.py              # RetrievedValues, SymptomEntryDraft, AdviceRecord
 │   ├── ports/
 │   │   ├── clock.py                # Clock protocol + Fixed/System
 │   │   └── protocols.py            # ServingClient, GuardrailChecker, AdviceAuditStore,
@@ -206,6 +210,9 @@ agent-advisor/
 │   │   └── app.py                  # @app.entrypoint, @app.ping, async task tracking
 │   ├── config/loader.py            # fail-fast, one message per invalid value
 │   └── observability/              # OTel + JSON logging with central redaction
+│       ├── logging.py             # single-line JSON, redaction configured once in the formatter
+│       ├── metrics.py             # AdvisorMetrics counters; label values allowlisted (Req 24.5)
+│       └── correlation.py         # runtimeSessionId (>=33 chars) + OTel baggage scope (Req 32.11)
 └── tests/{unit,properties,contracts,integration}/
 ```
 
@@ -269,11 +276,46 @@ class RedFlagRule:
     marker: str          # e.g. "severe_breathlessness"
     patterns: tuple[str, ...]
 
+def normalise(text: str) -> str: ...
 def match_red_flags(utterance: str, rules: Sequence[RedFlagRule]) -> tuple[str, ...]: ...
+def match_request_red_flags(utterance: str,
+                            prior_turns: Sequence[PriorTurn],
+                            rules: Sequence[RedFlagRule]) -> tuple[str, ...]: ...
+
+# step 1 of the turn (domain/turn.py) — no model, no client, no clock in the signature
+def determine_escalation(*, utterance, prior_turns, rules,
+                        emergency_guidance: str) -> Escalation | None: ...
 ```
 
 Defaults are the research's three: severe breathlessness, a reliever that is not working, blue lips or
-face. Matching is case-insensitive over a normalised utterance.
+face. Matching is case-insensitive over a normalised utterance, and markers come back in RULE order rather
+than match order, because practices §2 requires a defined iteration order anywhere it reaches output.
+
+`determine_escalation` is step 1 of the turn and carries the same discipline one level up: it takes the
+utterance, the prior turns, the rule set and the emergency TEXT — never an envelope, a client or a model. It
+is what discharges Property 3's model dimension structurally rather than by enumeration, since a model's
+outcome is not merely untested there but unobservable.
+
+`match_red_flags` takes an utterance and a rule set and **nothing else**. That signature is how Req 10.3
+and 10.4 are enforced rather than merely tested: there is no parameter through which a reading, a client, a
+model or a config object could reach it, so escalation cannot be made conditional on one by a later change
+that forgets why. A signature cannot be bypassed the way a behavioural expectation can.
+
+**Normalisation maps the several apostrophe characters onto ASCII.** Phones and word processors emit U+2019,
+so "can't" reaches this service as "can’t" most times a person types it — and a matcher keyed on the
+ASCII form would miss the likeliest spelling of the most important phrase it has.
+
+**Prior USER utterances are scanned; the agent's prior guidance is not** (Req 10.7). Service 2's
+`emergencyGuidance` contains all three default red flags — "severely breathless", "reliever inhaler is not
+helping", "lips or face look blue" — so scanning guidance would make every turn after an escalation
+re-escalate on the agent's own words, indefinitely, while looking like correct caution. A red flag is
+something the USER described, which is also the only reading consistent with Req 10.5's refusal to diagnose.
+
+The patterns are PHRASES rather than keywords, which is what keeps the permissive direction out of ordinary
+conversation: "breathe" and "blue" occur in benign sentences constantly, while "can't breathe" and "lips are
+blue" essentially do not. The `blue_lips_or_face` set carries deliberate fragments ("face look blue") because
+clinical guidance words the symptom with a compound subject — "your lips or face look blue" — which matches
+neither "lips look blue" nor "face looks blue".
 
 **It errs toward escalating, deliberately.** A false positive costs an unnecessary sentence directing
 someone to emergency care; a false negative could cost a life. That asymmetry is not symmetric, so the
@@ -368,24 +410,74 @@ bracketed by `add_async_task` / `complete_async_task`, which also manage the pin
 ### Turn contract
 
 ```python
-class AdvisoryRequest(BaseModel):
-    utterance: str = Field(min_length=1, max_length=4000)
-    credential: SecretStr                    # opaque; excluded from every dump
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+class PriorTurn(_StrictModel):
+    utterance: SecretStr                     # the user's own words
+    guidance: SecretStr                      # what was said back
+
+class AdvisoryRequest(_StrictModel):
+    utterance: str                           # non-blank; length checked against CONFIG, not here
+    credential: Annotated[SecretStr, Field(exclude=True)]
     prior_turns: tuple[PriorTurn, ...] = ()
     locale: str | None = None
 
-class AdvisoryResponse(BaseModel):
+    @field_validator("utterance")
+    @classmethod
+    def _reject_blank(cls, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise BlankUtteranceError
+        return trimmed
+
+class AdvisoryResponse(_StrictModel):
+    escalation: Escalation | None            # FIRST — Req 10.2, see below
     guidance: str | None                     # None in a degraded response
     basis: BasisSummary | None
     envelope: GuardrailEnvelope              # always present
-    escalation: Escalation | None
     degraded: bool = False
-    answered_at: datetime
+    answered_at: datetime                    # aware; refuses a naive value
 ```
 
 `credential` is a `SecretStr` so an accidental interpolation renders as a placeholder rather than the
 token, and it is excluded from serialisation — the same structural approach Service 2 took to making its
-`UserProfile` refuse to render itself.
+`UserProfile` refuse to render itself. Excluded rather than masked: a masked placeholder in a dump still
+advertises that a credential was there and invites a caller to go looking for the real one.
+
+**`utterance` carries no `max_length`, deliberately.** Req 1.5 makes the maximum CONFIGURED with a default
+of 4000, and a constraint pinned at class-definition time would be a SECOND authority that a configured
+value could disagree with. That is the fault Req 15.6 forbids for measurement weakness, and the one that
+made Service 2's profile limits "configured" in name only until they were actually wired. Length is checked
+once, by `validate_utterance_length(utterance, max_length=...)`, at the edge before the Model_Port is
+invoked — which is where Req 1.5 requires it, since a check after the model call has already paid for the
+thing it was meant to prevent.
+
+A `min_length=1` constraint would also not have satisfied Req 1.4, which names a whitespace-only utterance
+explicitly: `"   "` passes a length constraint. The validator trims and refuses a blank, and stores the
+trimmed value so the stored text and the length-checked text are the same one — two differing lengths for
+one request would make the configured limit ambiguous at the boundary.
+
+`UtteranceTooLongError` names the field and the limit and never the text. Rejection messages are logged, so
+an error that quoted the offending utterance would carry the user's words into a log Req 19.2 keeps them
+out of. Service 2 shipped this defect once already, in a message that named the remaining hours and thereby
+disclosed the start time it was withholding.
+
+**`PriorTurn` holds both fields as `SecretStr`.** It carries no credential, but it carries the user's own
+words and the guidance given back — the exact material Req 19.2 keeps out of logs. Making them refuse to
+render means a debug log of the whole request cannot leak the conversation, whatever the call site does.
+The prose stays reachable through `get_secret_value()` for the prompt that legitimately needs it.
+
+Both models forbid unknown fields and are frozen, so Req 1.1 and 1.2's "exactly these fields" holds at
+construction as well as under inspection: a typo becomes a refusal rather than a silently ignored value.
+
+**`escalation` is declared before `guidance` deliberately.** Req 10.2 places the emergency direction first in
+the response and Property 4 asserts the emergency guidance appears before any exposure guidance — with a
+structured response that is field ORDER, so a consumer rendering top to bottom meets the emergency direction
+before the advice and no renderer has to remember to. Req 1.2's enumeration is a field SET ("carrying exactly
+these fields"), not a serialisation contract, so ordering this way satisfies 10.2 without violating 1.2. A
+test asserts the order in the DUMPED body, not only on the class, so a future `model_config` change cannot
+reorder the safety-critical field silently.
 
 ### Basis and envelope (read, never recomputed)
 
@@ -395,6 +487,23 @@ class SpeciesBasis(BaseModel):
     sub_index: int | None
     band: str | None
     confidence: str
+
+class RecordReference(BaseModel):
+    """One retrieved Reading the claim rests on, as Service 2 names it in `basis.records`."""
+    site_code: str
+    species: str
+    date_time: datetime
+    duration: str
+
+    def identifier(self) -> str:
+        """The stable composite identifier an Advice_Record stores (Req 20.2)."""
+        return f"{self.site_code}:{self.species}:{iso_z(self.date_time)}:{self.duration}"
+
+class NowcastBasis(BaseModel):
+    """The nowcast weighting behind the sub-index, as Service 2 names it in `basis.nowcast`."""
+    window_hours: int
+    hours_available: int
+    weight_factor: float
 
 class BasisSummary(BaseModel):
     driving_pollutant: str | None
@@ -406,14 +515,93 @@ class BasisSummary(BaseModel):
     threshold_source: str | None             # includes "learned" (Service 2 Req 32.7)
     breakpoint_table: str | None
     calibration_strategies: Mapping[str, str]
+    nowcast: NowcastBasis | None             # None = not nowcast-derived, NOT unknown (Req 9.3a)
+    records: tuple[RecordReference, ...]     # Service 2's `basis.records`
 
-class GuardrailEnvelope(BaseModel):
-    advisory_scope: str
-    emergency_guidance: str
-    disclaimer: str
+    def record_identifiers(self) -> tuple[str, ...]: ...   # what an Advice_Record stores
+    @property
+    def nowcast_window_is_complete(self) -> bool | None: ...  # None = not nowcast-derived
+
+class GuardrailEnvelope(_StrictModel):
+    emergency_guidance: str                  # REQUIRED — Req 10.4 needs something to escalate with
+    advisory_scope: str | None = None        # omitted, never invented (Req 21.9)
+    disclaimer: str | None = None
+
+class EnvelopeSource(StrEnum):
+    SERVED = "served"; CACHED = "cached"; CONFIGURED = "configured"
+
+def resolve_envelope(*, served, cached, configured_emergency_guidance) -> ResolvedEnvelope: ...
+def emergency_guidance_drifted(*, served: str, configured: str) -> bool: ...
 ```
 
 Every field is copied from the retrieved response. There is no code path that computes one (Req 9.4).
+
+**The envelope's asymmetry, and the assumption that permits it.** Four clauses collide when somebody
+describes a red flag while Service 2 is unreachable: Req 10.1 sources the emergency text from Service 2,
+Req 10.4 requires escalating anyway, Req 21.3 requires the envelope anyway, and A8 forbade a local copy.
+A8's stated objection is not duplication but that the drift would be **invisible** — so A8a buys the
+exception with a detector rather than overriding the reason. `emergency_guidance_drifted` compares the
+configured fallback against the first text actually retrieved in a run, and Req 21.8 logs one warning naming
+the field and neither text.
+
+The exception is `emergencyGuidance` ALONE. `resolve_envelope` takes ONE configured string, so there is no
+parameter through which a local `advisoryScope` or `disclaimer` could be introduced — A8a cannot widen by
+accident, only by someone changing that signature and the test pinning it. Those two are omitted rather than
+invented (Req 21.9), because a locally-authored disclaimer would be this service making a compliance
+statement that is Service 2's to word, while an absent emergency direction fails a person in trouble.
+
+Resolution order is served, then the last envelope retrieved in this process, then the configured fallback.
+A stale cache never shadows a live answer; the fallback is reached only on a cold start, which is the first
+turn of a run and therefore exactly the turn that cannot be left without an emergency direction. The source
+is recorded because escalations answered from `CONFIGURED` mean retrieval has been failing since the process
+started — a different and more serious signal than one degraded turn.
+
+`records` is here because **Req 20.2 requires the Advice_Record to store "the identifiers of the
+retrieved records the Basis_Summary named"** — and without this field the Basis_Summary names none, so
+that clause referred to something the design never gave it. The audit trail would have had to invent its
+own provenance or store nothing, and "nothing" is the failure that passes quietly.
+
+`identifier()` is a method rather than a call-site f-string because a bare `site_code` would collapse two
+genuinely different records: the same sensor reports several species, and the same sensor and species
+report at successive instants. All four parts are needed to tell one Reading from another, and none of
+them is health-adjacent — a site code, a pollutant name and a timestamp are public sensor facts, so
+storing the composite does not breach Req 20.3's ban on health-adjacent content.
+
+`iso_z` is **this service's own** helper in `domain/instants.py`, not Service 2's function of the same
+name. The engineering practices forbid importing across service directories until a shared contract
+package is specced, so each service keeps its own copy covered by its own round-trip test — the same rule
+that already governs the record contract. The name is deliberately identical because the wire form it
+must produce is: a whole-second UTC instant with a `Z` suffix.
+
+`nowcast` is here because the nowcast weighting is part of how the sub-index was derived: the same
+readings under a different window length, a different count of hours actually available, or a different
+weight factor produce a different sub-index. Req 9.3 requires the derivation to be traceable, so a summary
+that named the breakpoint table and calibration strategy but not the weighting left a step of that
+derivation unaccounted for.
+
+`nowcast is None` means **the index was not nowcast-derived** — not that the window is unknown (Req 9.3a).
+That distinction has to be written down because the two readings of `None` lead to opposite behaviour: an
+absent nowcast is an ordinary, complete answer, whereas an unknown one would be a gap worth disclosing.
+This is the same trap as Service 2's correlation returning `None` on zero variance, where "nothing to
+compare" is not "no relationship".
+
+`nowcast_window_is_complete` is therefore THREE-valued rather than a boolean. Returning `True` for an
+absent nowcast would claim a completeness that was never measured; returning `False` would invent a
+weakness that does not exist. `record_identifiers()` lives on the basis because Req 20.2 names "the
+retrieved records the Basis_Summary named" — deriving them anywhere else would let the audit trail claim
+provenance the response never cited.
+
+Naming the nowcast does not by itself put it in the Guidance text, and it deliberately must not. An
+incomplete window DOES reach the user, but through the confidence value: Service 2 caps confidence at
+`medium` for an incomplete window and at `low` where there were too few hours to compute a nowcast at all
+(its `NOWCAST_COVERAGE_CAPS`), and Req 15.2 already requires a confidence below the highest value to be
+said in the guidance rather than only in the basis.
+
+So `nowcast` here is provenance for review, not a second trigger for disclosure. Req 15.6 forbids that
+second trigger explicitly: comparing `hours_available` against `window_hours` to decide whether to warn
+would make this service a second authority on how weak a measurement is, able to disagree with Service 2
+about the same reading — and deciding weakness from the hour counts is re-deriving a part of the basis,
+which Req 9.4 forbids. One authority, read not recomputed.
 
 ### Escalation
 
@@ -428,6 +616,10 @@ class Escalation(BaseModel):
 
 ```python
 @dataclass(frozen=True, slots=True)
+class ToolCall:
+    name: str
+
+@dataclass(frozen=True, slots=True)
 class RetrievedValues:
     numerals: frozenset[str]
     medications: frozenset[str]
@@ -435,7 +627,18 @@ class RetrievedValues:
     tool_calls: tuple[ToolCall, ...]         # ordered — the trajectory
 ```
 
-`tool_calls` is ordered because Req 35.4 asserts *which* tools were called and in what order.
+A frozen slotted dataclass rather than a Pydantic model, unlike everything else in this section: these are
+assembled INTERNALLY from an already-validated response, so they never cross a trust boundary and there is
+nothing for a validator to check. `slots=True` also turns an attribute typo into an `AttributeError`
+instead of a silently-added field.
+
+The value collections are `frozenset` because grounding asks a MEMBERSHIP question — was this numeral
+served? — so a set makes the order of retrieved values irrelevant to the answer and grounding cannot come
+to depend on it.
+
+`tool_calls` is ordered because Req 35.4 asserts *which* tools were called and in what order. It is a
+sequence of events rather than a set of names: collapsing a repeated call would hide a retry loop, which is
+exactly what a trajectory assertion exists to reveal.
 
 ### Symptom entry draft
 
@@ -447,11 +650,19 @@ class SymptomEntryDraft(BaseModel):
     reliever_used: bool
     note: str | None = Field(default=None, max_length=280)
     confirmed: bool = False
+
+    def confirm(self) -> Self: ...           # returns a confirmed COPY
+    def correct(self, **fields) -> Self: ... # returns an UNCONFIRMED copy
 ```
 
 `confirmed` defaults to **False** and a write is refused unless it is True (Req 28.3). The draft is
 restated to the user and corrected by them before it becomes a write, because inferring a severity from
 prose is a judgement about their health and they are the authority on it.
+
+Both transitions return a NEW draft rather than mutating the one the user reviewed. `correct()` returns an
+**unconfirmed** draft on purpose: the user saying the agent misread them is not the same as the user
+agreeing to whatever it substituted, so a correction goes back for confirmation rather than straight to a
+write.
 
 ### Advice record (audit)
 
@@ -463,7 +674,7 @@ class AdviceRecord(BaseModel):
     escalated: bool
     threshold_crossed: bool
     driving_pollutant: str | None
-    record_references: tuple[str, ...]
+    record_references: tuple[str, ...]       # RecordReference.identifier() per record
     guardrail_rejected: bool
     rejection_category: str | None
     idempotency_key: str
@@ -473,6 +684,25 @@ There is **nowhere** to put an utterance, the guidance text, a condition, a thre
 coordinate (Req 20.3) — the same structural minimisation Service 2 applied to its own audit trail, which
 is what keeps erasure to removing an identity. `idempotency_key` exists because a re-invoked entrypoint
 delivers the same turn twice (Req 32.4c).
+
+`record_references` holds `RecordReference.identifier()` for each record the Basis_Summary named, one
+composite string per Reading — flat, because an audit row is queried by identity and date, not joined.
+It is populated from `BasisSummary.record_identifiers()` and from nothing else: deriving it anywhere but
+from the basis the response actually cited would let the trail claim provenance the guidance never had.
+
+`threshold_crossed` is a `bool` so the TYPE refuses the value: Req 20.2 records THAT a threshold was
+crossed, and Req 20.3 forbids recording the threshold itself, which is a personal health parameter.
+
+```python
+def advice_idempotency_key(*, user_id: str, turn_at: datetime, route: str) -> str: ...
+```
+
+The key is a SHA-256 digest of the user identity, the instant normalised through `iso_z`, and the route.
+Derived from the turn's own identity rather than from a random value or the current time, either of which
+would make every delivery look new and defeat the deduplication Req 32.4c exists for. Normalising the
+instant first means the same instant expressed in another offset yields the same key, so a retry cannot be
+recorded twice. A digest rather than a concatenation because the key is stored and may be logged, and one
+embedding the raw identity would put it somewhere Req 5.3 does not sanction.
 
 ## Correctness Properties
 
@@ -635,7 +865,7 @@ Practice §5, and the container's own constraint.
 | Serving_Client 400 on a history window | Report the period is unavailable and the permitted bound; no silent re-request |
 | Model_Port failure, timeout, or truncation | Degraded response built from retrieved data; one warning |
 | `StructuredOutputException` | Treated as a model failure, not an unvalidated response |
-| `guardrail_intervention` / `content_filtered` stop reason | A guardrail rejection, not a failure |
+| `guardrail_intervened` / `content_filtered` stop reason | A guardrail rejection, not a failure |
 | Grounding / forbidden / closure rejection | One repair attempt, then degrade; warning names the category, never the rejected text |
 | `ApplyGuardrail` unavailable | Fail closed: any generation the local checks cannot clear is not returned |
 | Audit write failure | Logged; the response is still returned |
