@@ -293,27 +293,36 @@ directory.
     - **Validates: Requirements 2.2, 2.3, 9.4, 12.1, 16.2**
 
 - [ ] 9. Strands tools and the system prompt
-  - [ ] 9.1 Implement the five retrieval tools over `ServingClient`
+  - [x] 9.1 Implement the five retrieval tools over `ServingClient`
     - `air_quality`, `history`, `profile_get`, `profile_put`, `symptom_entry_put` as `@tool` functions
       whose docstrings are the model-facing descriptions; each records its result into the
       `RetrievedValues` accumulator with an ordered `ToolCall` entry; the credential is forwarded and
       never interpolated into a prompt; at most one air-quality retrieval per turn
     - _Requirements: 2.1, 2.6, 3.1, 4.1, 5.1, 6.3, 6.3a_
 
-  - [ ] 9.2 Implement history window derivation
-    - Derive the window from the utterance and the injected Clock; never request a span beyond Service 2's
-      maximum; on rejection report the period unavailable and the permitted bound with no silent
-      re-request; never present a computed summary as a measurement, and name the reading count
+  - [ ] 9.2 Implement history window derivation — PARTIALLY DONE in 9.1
+    - DONE: the `history` tool derives its window from the injected Clock (Req 3.2, 25.2), refuses a span
+      beyond Service 2's maximum before calling it, and names the permitted bound in the refusal with no
+      silent re-request (Req 3.3). A drift guard pins the bound against Service 2's own constant, which is
+      configurable there
+    - REMAINING: Req 3.4 — never present a computed trend, average or exceedance count as a measurement,
+      describe a summary AS a summary, and name the reading count. Needs a history-reading module beside
+      `domain/reporting.py`, and the no-arithmetic AST check should extend to cover it
     - _Requirements: 3.2, 3.3, 3.4_
 
-  - [ ] 9.3 Implement the snapshot-reading rules
+  - [ ] 9.3 Implement the snapshot-reading rules — PARTLY COVERED ALREADY
+    - Already covered: the body is treated as authoritative and nothing is modified (`domain/basis.py`,
+      asserted by AST checks for no sorting and no arithmetic); the driving pollutant, sub-index, band and
+      confidence are READ rather than derived; `usedDefaultProfile` is carried on `ConditionView`
+    - REMAINING: Req 2.5 — a site with an EMPTY measurement set must be described as having no current
+      reading rather than omitted, so a location the user asked about does not silently vanish
     - Treat the retrieved body as authoritative and modify nothing; read the driving pollutant, sub-index,
       band and confidence from the returned entries rather than deriving them; state when the default
       profile was used; describe a site with an empty measurement set as having no current reading rather
       than omitting it
     - _Requirements: 2.2, 2.3, 2.4, 2.5_
 
-  - [ ] 9.4 Load the system prompt as configuration
+  - [x] 9.4 Load the system prompt as configuration
     - Prompt content supplied as configuration rather than a literal embedded in a function, so its text
       is reviewable, diffable and testable as data; assert the prompt never contains a credential
       placeholder and never claims a capability the guardrails forbid
