@@ -102,9 +102,16 @@ directory.
     - _Requirements: 1.1, 1.2, 1.4, 1.5, 1.6, 5.1, 5.6_
 
   - [ ] 3.2 Implement the basis, envelope and escalation models
-    - `SpeciesBasis`, `BasisSummary`, `GuardrailEnvelope`, `Escalation`; every field populated by copying a
-      retrieved value, with no code path that computes one
-    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5_
+    - `SpeciesBasis`, `RecordReference`, `BasisSummary`, `GuardrailEnvelope`, `Escalation`; every field
+      populated by copying a retrieved value, with no code path that computes one
+    - `BasisSummary.records` carries Service 2's `basis.records`, so Req 20.2's "the identifiers of the
+      retrieved records the Basis_Summary named" has something to name
+    - `RecordReference.identifier()` composes site code, species, instant AND duration; a test must show
+      two Readings from the SAME sensor differing only in species, and two differing only in instant, get
+      DIFFERENT identifiers — a bare site code would collapse both and silently under-report provenance
+    - Add `domain/instants.py` with this service's OWN `iso_z` (whole-second UTC, `Z` suffix) and a
+      round-trip test; do not import Service 2's, and let the architecture check prove no such import
+    - _Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 20.2_
 
   - [ ] 3.3 Implement `RetrievedValues`, `SymptomEntryDraft` and `AdviceRecord`
     - `RetrievedValues` with the ordered `tool_calls` trajectory; `SymptomEntryDraft` with `confirmed`

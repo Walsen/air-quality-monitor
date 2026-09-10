@@ -187,7 +187,8 @@ agent-advisor/
 │   │   ├── grounding.py            # numeral extraction + permitted-set comparison
 │   │   ├── forbidden.py            # Forbidden_Claim patterns + medication closure
 │   │   ├── actions.py              # condition → exposure-reduction action registry
-│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary, Escalation
+│   │   ├── instants.py             # iso_z — this service's own copy, no cross-service import
+│   │   └── models.py               # AdvisoryRequest/Response, BasisSummary, RecordReference, Escalation
 │   ├── ports/
 │   │   ├── clock.py                # Clock protocol + Fixed/System
 │   │   └── protocols.py            # ServingClient, GuardrailChecker, AdviceAuditStore,
@@ -396,6 +397,17 @@ class SpeciesBasis(BaseModel):
     band: str | None
     confidence: str
 
+class RecordReference(BaseModel):
+    """One retrieved Reading the claim rests on, as Service 2 names it in `basis.records`."""
+    site_code: str
+    species: str
+    date_time: datetime
+    duration: str
+
+    def identifier(self) -> str:
+        """The stable composite identifier an Advice_Record stores (Req 20.2)."""
+        return f"{self.site_code}:{self.species}:{iso_z(self.date_time)}:{self.duration}"
+
 class BasisSummary(BaseModel):
     driving_pollutant: str | None
     site_code: str
@@ -406,6 +418,7 @@ class BasisSummary(BaseModel):
     threshold_source: str | None             # includes "learned" (Service 2 Req 32.7)
     breakpoint_table: str | None
     calibration_strategies: Mapping[str, str]
+    records: tuple[RecordReference, ...]     # Service 2's `basis.records`
 
 class GuardrailEnvelope(BaseModel):
     advisory_scope: str
@@ -414,6 +427,23 @@ class GuardrailEnvelope(BaseModel):
 ```
 
 Every field is copied from the retrieved response. There is no code path that computes one (Req 9.4).
+
+`records` is here because **Req 20.2 requires the Advice_Record to store "the identifiers of the
+retrieved records the Basis_Summary named"** — and without this field the Basis_Summary names none, so
+that clause referred to something the design never gave it. The audit trail would have had to invent its
+own provenance or store nothing, and "nothing" is the failure that passes quietly.
+
+`identifier()` is a method rather than a call-site f-string because a bare `site_code` would collapse two
+genuinely different records: the same sensor reports several species, and the same sensor and species
+report at successive instants. All four parts are needed to tell one Reading from another, and none of
+them is health-adjacent — a site code, a pollutant name and a timestamp are public sensor facts, so
+storing the composite does not breach Req 20.3's ban on health-adjacent content.
+
+`iso_z` is **this service's own** helper in `domain/instants.py`, not Service 2's function of the same
+name. The engineering practices forbid importing across service directories until a shared contract
+package is specced, so each service keeps its own copy covered by its own round-trip test — the same rule
+that already governs the record contract. The name is deliberately identical because the wire form it
+must produce is: a whole-second UTC instant with a `Z` suffix.
 
 ### Escalation
 
@@ -463,7 +493,7 @@ class AdviceRecord(BaseModel):
     escalated: bool
     threshold_crossed: bool
     driving_pollutant: str | None
-    record_references: tuple[str, ...]
+    record_references: tuple[str, ...]       # RecordReference.identifier() per record
     guardrail_rejected: bool
     rejection_category: str | None
     idempotency_key: str
@@ -473,6 +503,11 @@ There is **nowhere** to put an utterance, the guidance text, a condition, a thre
 coordinate (Req 20.3) — the same structural minimisation Service 2 applied to its own audit trail, which
 is what keeps erasure to removing an identity. `idempotency_key` exists because a re-invoked entrypoint
 delivers the same turn twice (Req 32.4c).
+
+`record_references` holds `RecordReference.identifier()` for each record the Basis_Summary named, one
+composite string per Reading — flat, because an audit row is queried by identity and date, not joined.
+It is populated from `BasisSummary.records` and from nothing else: deriving it anywhere but from the
+basis the response actually cited would let the trail claim provenance the guidance never had.
 
 ## Correctness Properties
 
