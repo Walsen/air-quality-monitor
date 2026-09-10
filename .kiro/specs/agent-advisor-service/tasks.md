@@ -34,8 +34,8 @@ directory.
 
 ## Tasks
 
-- [ ] 1. Project scaffolding and observability foundation
-  - [ ] 1.1 Create the `agent-advisor/` project skeleton and pinned manifest
+- [x] 1. Project scaffolding and observability foundation
+  - [x] 1.1 Create the `agent-advisor/` project skeleton and pinned manifest
     - Create the `src/aqm_advisor/` package tree (`domain/`, `ports/`, `agent/`, `adapters/model/`,
       `adapters/serving/`, `adapters/guardrail/`, `adapters/audit/`, `agentcore/`, `config/`,
       `observability/`) with a package docstring in every `__init__.py` recording its layering rule, plus
@@ -53,14 +53,14 @@ directory.
       applies to it; assert the pseudonymous identity remains loggable
     - _Requirements: 19.2, 19.3, 19.4, 19.5, 24.1, 24.2, 24.3_
 
-  - [ ] 1.3 Implement the metrics registry and OpenTelemetry wiring
+  - [x] 1.3 Implement the metrics registry and OpenTelemetry wiring
     - Counters for turns answered, turns degraded, guardrail rejections by category, escalations
       returned, Serving_Client failures by kind, Model_Port failures by kind, model invocations and token
       usage; no metric label may carry a condition, coordinate or utterance substring; OTel traces and
       metrics through the Strands `otel` extra with no collector configured by this service
     - _Requirements: 22.5, 24.4, 24.5, 32.10, 32.11_
 
-- [ ] 2. Boundaries: Clock, ports, and local fakes
+- [x] 2. Boundaries: Clock, ports, and local fakes
   - [x] 2.1 Implement the Clock port and its implementations
     - `Clock` protocol, `SystemClock` at the process edge only, `FixedClock` for tests; instants
       normalised to UTC and a naive instant refused

@@ -208,6 +208,9 @@ agent-advisor/
 │   │   └── app.py                  # @app.entrypoint, @app.ping, async task tracking
 │   ├── config/loader.py            # fail-fast, one message per invalid value
 │   └── observability/              # OTel + JSON logging with central redaction
+│       ├── logging.py             # single-line JSON, redaction configured once in the formatter
+│       ├── metrics.py             # AdvisorMetrics counters; label values allowlisted (Req 24.5)
+│       └── correlation.py         # runtimeSessionId (>=33 chars) + OTel baggage scope (Req 32.11)
 └── tests/{unit,properties,contracts,integration}/
 ```
 
