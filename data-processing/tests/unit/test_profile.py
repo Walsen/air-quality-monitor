@@ -80,6 +80,11 @@ def test_the_field_set_is_exactly_the_documented_one() -> None:
         "locations",
         "activity_level",
         "activity_duration_hours",
+        # Requirement 17.2 as amended by Requirement 30: a structured medication list and a
+        # routine schedule are inside the allowlist. The prohibition below is unchanged — what
+        # is permitted is a NAME and a ROLE, never a dose, and never a free-text clinical field.
+        "medications",
+        "routines",
         "consent",
         "created_at",
         "updated_at",

@@ -109,6 +109,10 @@ def _create_tables_and_bucket() -> None:
         "aqm-readings": [("pk", "HASH"), ("sk", "RANGE")],
         "aqm-registry": [("site_code", "HASH")],
         "aqm-profiles": [("user_id", "HASH")],
+        # Requirement 31's diary. The composite key is what implements 31.7 — one entry per user
+        # per calendar date — and it is also what lets forget_user sweep the reserved
+        # learned-threshold item along with the entries it was derived from.
+        "aqm-symptoms": [("user_id", "HASH"), ("entry_date", "RANGE")],
     }
     for name, schema in tables.items():
         try:
@@ -155,21 +159,32 @@ def test_the_shared_contract_suite_runs_its_cloud_half_against_the_emulator() ->
     had nothing to do with the adapters. Reading the ids from the tables means renaming a
     parameter
     cannot silently empty this selection.
+
+    THE TABLES ARE NOW DISCOVERED RATHER THAN LISTED, which closes a second hole in the same
+    idea. The list used to be four names written out here, so adding a fifth parameter table —
+    the SymptomLogStore's — left its cloud adapter uncovered by this check while every run still
+    looked green. Deriving the tables by introspection means a table added later is swept in by
+    default, the same "covered by default" shape the profile leak sweep and Property 39's
+    provenance set use.
     """
     _require_localstack()
     _create_tables_and_bucket()
 
     from tests.contracts import test_port_contracts as suite
 
+    adapter_tables = [
+        value
+        for name, value in vars(suite).items()
+        if name.endswith("_ADAPTERS") and isinstance(value, tuple)
+    ]
+    assert len(adapter_tables) >= 5, (
+        f"expected every *_ADAPTERS parameter table to be discovered, found "
+        f"{len(adapter_tables)}"
+    )
     cloud_ids = sorted(
         {
             name
-            for table in (
-                suite._READINGS_ADAPTERS,
-                suite._REGISTRY_ADAPTERS,
-                suite._PROFILE_ADAPTERS,
-                suite._ARCHIVE_ADAPTERS,
-            )
+            for table in adapter_tables
             for name, _factory in table
             if name != "memory"
         }
@@ -229,6 +244,60 @@ def test_a_reading_survives_a_round_trip_through_the_real_store() -> None:
     store.put(reading)
 
     assert store.get(reading.key) == reading
+
+
+def test_the_symptom_log_key_layout_matches_the_adapter_and_fences_the_derivation() -> None:
+    """Requirement 31.7's composite key, and the reserved sort key, against a real table.
+
+    Distinct from the contract suite's assertions for the same reason the readings round trip
+    is: the suite takes the schema as GIVEN, so it cannot see a mismatch between the table
+    definition in this file and the keys the adapter writes.
+
+    That matters more here than anywhere else, because the Learned_Thresholds share this table
+    under the reserved sort key ``#learned``. The claim is that ``#`` (0x23) sorts before every
+    ISO date (``0`` is 0x30), so a date-range query cannot reach the derivation while
+    ``forget_user``'s sort-key-unconstrained query can. That is an assertion about how a REAL
+    DynamoDB range query orders keys, and only a real table can settle it.
+    """
+    _require_localstack()
+    _create_tables_and_bucket()
+
+    from aqm_ingestion.adapters.dynamodb import DynamoDbSymptomLogStore
+    from aqm_ingestion.domain.association import LearnedThreshold
+    from aqm_ingestion.domain.symptoms import build_symptom_entry
+    from aqm_ingestion.ports.clock import FixedClock
+
+    store = DynamoDbSymptomLogStore(
+        table_name="aqm-symptoms", clock=FixedClock(_T0), endpoint_url=_ENDPOINT
+    )
+    store.forget_user("integ-user")
+
+    on = _T0.date()
+    entry = build_symptom_entry(
+        {
+            "user_id": "integ-user",
+            "entry_date": on,
+            "severity": 4,
+            "markers": ["wheeze"],
+            "reliever_used": True,
+            "note": "round trip",
+        },
+        now=_T0,
+    )
+    store.put(entry)
+    store.put_learned_thresholds(
+        "integ-user",
+        (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),),
+    )
+
+    held = store.query_window("integ-user", on - dt.timedelta(days=400), on)
+    assert len(held) == 1, "the reserved learned-threshold key leaked into a range query"
+    assert held[0].note == "round trip"
+    assert store.learned_thresholds("integ-user")["PM25"].sub_index == 88
+
+    # The count excludes the reserved item; the sweep still removes it.
+    assert store.forget_user("integ-user") == 1
+    assert store.learned_thresholds("integ-user") == {}
 
 
 def test_the_archive_round_trips_bytes_through_the_real_bucket() -> None:

@@ -30,12 +30,15 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping, Sequence
+from dataclasses import asdict
 from decimal import Decimal
 from typing import Any, cast
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.dedup import resolve_stored_reading
 from aqm_ingestion.domain.models import (
     CalibratedReading,
@@ -44,6 +47,11 @@ from aqm_ingestion.domain.models import (
     QualityFlag,
 )
 from aqm_ingestion.domain.profile import UserProfile, build_profile
+from aqm_ingestion.domain.symptoms import (
+    DEFAULT_SYMPTOM_RETENTION_DAYS,
+    SymptomEntry,
+    retention_floor,
+)
 from aqm_ingestion.observability.logging import get_logger
 from aqm_ingestion.ports.clock import Clock
 from aqm_ingestion.ports.protocols import (
@@ -409,6 +417,194 @@ class DynamoDbProfileStore:
     def delete(self, user_id: str) -> None:
         """Remove a profile. Idempotent, per Requirement 17.8's erasure."""
         self._table.delete_item(Key={"user_id": user_id})
+
+
+_LEARNED_SORT_KEY = "#learned"
+"""The reserved sort key the Learned_Thresholds are filed under.
+
+The ``#`` prefix is load-bearing, not decoration: ``#`` is 0x23 and ``0`` is 0x30, so this key
+sorts BEFORE every ISO date. A ``between('2026-01-01', '2026-12-31')`` range query therefore
+cannot pick it up, while ``forget_user``'s sort-key-unconstrained query does — which is exactly
+the pair of behaviours wanted. A suffix, or any key starting with a digit, would leak the
+derivation into a diary window query.
+"""
+
+
+class DynamoDbSymptomLogStore:
+    """The Symptom_Log in DynamoDB, keyed by identity and calendar date (Requirement 31.1).
+
+    THE COMPOSITE KEY IS WHAT IMPLEMENTS REQUIREMENT 31.7. ``user_id`` partitions and the ISO
+    date sorts, so there is nowhere to hold two entries for one calendar date and a re-put for
+    that date REPLACES rather than accumulating — a day cannot contribute twice to the
+    Requirement 32 association. The in-memory adapter reaches the same guarantee with a
+    ``(user, date)`` dict key, which is why the shared contract suite can hold both to it.
+
+    Retention (Requirement 31.8) is applied at QUERY time against the injected clock, matching
+    the in-memory adapter rather than relying on a DynamoDB TTL: a TTL deletes on the service's
+    own schedule, so an entry past its window could still be returned until the sweeper reached
+    it, and the exclusion would no longer move with the clock the tests inject.
+    """
+
+    def __init__(
+        self,
+        table_name: str,
+        *,
+        clock: Clock,
+        retention_days: int = DEFAULT_SYMPTOM_RETENTION_DAYS,
+        endpoint_url: str | None = None,
+    ) -> None:
+        """Bind the table.
+
+        Args:
+            table_name: the DynamoDB table.
+            clock: the Clock retention is measured from (§2 — never read directly).
+            retention_days: Requirement 31.8's retention window.
+            endpoint_url: an override for a local emulator; None uses the real service.
+        """
+        self._table = boto3.resource(
+            "dynamodb", endpoint_url=endpoint_url
+        ).Table(table_name)
+        self._clock = clock
+        self._retention_days = retention_days
+
+    def put(self, entry: SymptomEntry) -> SymptomEntry:
+        """Store one entry, replacing any existing entry for the same date."""
+        self._table.put_item(
+            Item={
+                "user_id": entry.user_id,
+                "entry_date": entry.entry_date.isoformat(),
+                "entry": entry.model_dump_json(),
+            }
+        )
+        return entry
+
+    def query_window(
+        self, user_id: str, start: dt.date, end: dt.date
+    ) -> Sequence[SymptomEntry]:
+        """Return this user's entries in the inclusive range, retention applied.
+
+        Raises:
+            ValueError: if the range is inverted — the same refusal the in-memory adapter makes,
+                since silently returning nothing would hide a caller bug (§5).
+        """
+        if end < start:
+            raise ValueError(
+                f"window end {end.isoformat()} precedes its start {start.isoformat()}"
+            )
+        floor = retention_floor(self._clock.now(), self._retention_days)
+        # The retention floor is folded into the KEY CONDITION rather than filtered afterwards,
+        # so an aged entry is never read and never billed for.
+        lower = max(start, floor)
+        if end < lower:
+            return ()
+        response = self._table.query(
+            KeyConditionExpression=(
+                Key("user_id").eq(user_id)
+                & Key("entry_date").between(lower.isoformat(), end.isoformat())
+            )
+        )
+        entries = [
+            SymptomEntry.model_validate_json(str(item["entry"]))
+            for item in response.get("Items", [])
+        ]
+        entries.sort(key=lambda entry: entry.entry_date)
+        return tuple(entries)
+
+    def learned_thresholds(self, user_id: str) -> Mapping[str, LearnedThreshold]:
+        """Return this user's Learned_Thresholds by species (Requirement 32.12).
+
+        Filed under a reserved sort key rather than in a table of its own, so ``forget_user``'s
+        single query sweeps the derivation along with the entries it came from.
+        """
+        response = self._table.get_item(
+            Key={"user_id": user_id, "entry_date": _LEARNED_SORT_KEY}
+        )
+        item = response.get("Item")
+        if item is None:
+            return {}
+        import json
+
+        return {
+            entry["species"]: LearnedThreshold(**entry)
+            for entry in json.loads(str(item["thresholds"]))
+        }
+
+    def put_learned_thresholds(
+        self, user_id: str, thresholds: Sequence[LearnedThreshold]
+    ) -> None:
+        """REPLACE this user's Learned_Thresholds with a fresh derivation."""
+        import json
+
+        self._table.put_item(
+            Item={
+                "user_id": user_id,
+                "entry_date": _LEARNED_SORT_KEY,
+                "thresholds": json.dumps([asdict(t) for t in thresholds]),
+            }
+        )
+
+    def forget_user(self, user_id: str) -> int:
+        """DELETE every entry for a user and return the ENTRY count (Requirement 31.9).
+
+        Deletes rather than de-identifies: a Symptom_Entry carries real clinical content, so a
+        de-identified husk of one would still record a course of illness.
+
+        The query is unconstrained on the sort key, so it also picks up the reserved
+        learned-threshold item — the derivation cannot outlive the diary it came from. That item
+        is excluded from the returned COUNT, since Requirement 31.9 reports entries removed
+        and a derived value is not an entry the user recorded.
+        """
+        response = self._table.query(
+            KeyConditionExpression=Key("user_id").eq(user_id),
+            ProjectionExpression="user_id, entry_date",
+        )
+        items = response.get("Items", [])
+        for item in items:
+            self._table.delete_item(
+                Key={"user_id": item["user_id"], "entry_date": item["entry_date"]}
+            )
+        return sum(
+            1 for item in items if str(item["entry_date"]) != _LEARNED_SORT_KEY
+        )
+
+    def count_all(self) -> int:
+        """Total entries held. A full scan, so operational reporting only, not a hot path."""
+        return int(self._table.scan(Select="COUNT").get("Count", 0))
+
+    def user_ids_with_entries(self) -> Sequence[str]:
+        """Every user with an entry inside the retention window, sorted.
+
+        A PAGINATED FULL SCAN, and that cost is accepted rather than hidden. DynamoDB has no
+        distinct-key operation, so the alternatives were a second index maintained on every
+        write
+        or a scan on a schedule — and this runs once per derivation cycle, not per request,
+        which
+        is exactly the trade Requirement 32.12 makes by keeping the derivation off the serving
+        path. Projecting only the key attributes keeps the read small.
+
+        The reserved learned-threshold rows are excluded: a user whose entries have all aged out
+        but who still carries a stale derivation has nothing to derive FROM, so handing them to
+        the job would guarantee a wasted cycle.
+        """
+        floor = retention_floor(self._clock.now(), self._retention_days).isoformat()
+        users: set[str] = set()
+        start_key: Mapping[str, object] | None = None
+        while True:
+            request: dict[str, object] = {
+                "ProjectionExpression": "user_id, entry_date",
+            }
+            if start_key is not None:
+                request["ExclusiveStartKey"] = start_key
+            page = self._table.scan(**request)
+            for item in page.get("Items", []):
+                entry_date = str(item["entry_date"])
+                if entry_date == _LEARNED_SORT_KEY or entry_date < floor:
+                    continue
+                users.add(str(item["user_id"]))
+            start_key = page.get("LastEvaluatedKey")
+            if start_key is None:
+                break
+        return tuple(sorted(users))
 
 
 def _is_active(record: object, at: dt.datetime) -> bool:

@@ -21,6 +21,7 @@ import pytest
 from pydantic import ValidationError
 
 from aqm_ingestion.domain.aqi.breakpoints import BreakpointTableRegistry
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.escalation import (
     DEFAULT_ORANGE_BAND_LOWER,
     SENSITIVITY_ESCALATION,
@@ -159,7 +160,7 @@ def test_the_default_orange_band_applies_when_the_level_is_absent() -> None:
     assert effective.source is ThresholdSource.DEFAULT_ORANGE_BAND
 
 
-def test_all_three_sources_are_reachable() -> None:
+def test_all_four_sources_are_reachable() -> None:
     # A precedence chain whose lowest tier is unreachable is as wrong as a missing tier.
     sources = set()
     for profile in (
@@ -181,7 +182,76 @@ def test_all_three_sources_are_reachable() -> None:
             None, species="PM25", registry=_REGISTRY, table_id=_TABLE_ID
         ).source
     )
+    # Requirement 32.7's tier, added by Requirement 32.
+    sources.add(
+        resolve_escalation(
+            build_profile(_profile_fields(), limits=_limits()),
+            species="PM25",
+            registry=_REGISTRY,
+            table_id=_TABLE_ID,
+            learned=_learned(88),
+        ).source
+    )
     assert sources == set(ThresholdSource)
+
+
+def _learned(sub_index: int) -> dict[str, LearnedThreshold]:
+    return {
+        "PM25": LearnedThreshold(
+            species="PM25", sub_index=sub_index, lag_days=3, observations=20
+        )
+    }
+
+
+# --- Req 22.1 / 32.7: a learned threshold never displaces a stated one ---
+
+def test_a_stated_threshold_wins_over_a_learned_one() -> None:
+    # Requirement 22.1: a Learned_Threshold "SHALL NOT displace" a Personal_Threshold, because a
+    # threshold the user stated is their explicit instruction and inference does not overrule an
+    # instruction. Tested in both directions — the pair below is the other order.
+    profile = build_profile(
+        _profile_fields(personal_thresholds={"PM25": {"kind": "sub_index", "value": 90}}),
+        limits=_limits(),
+    )
+    effective = resolve_escalation(
+        profile,
+        species="PM25",
+        registry=_REGISTRY,
+        table_id=_TABLE_ID,
+        learned=_learned(60),
+    )
+    assert effective.sub_index == 90
+    assert effective.source is ThresholdSource.PERSONAL_THRESHOLD
+
+
+def test_a_learned_threshold_wins_over_the_sensitivity_mapping() -> None:
+    # The other order: with no stated threshold, the learned tier must take precedence over the
+    # Sensitivity_Level default. Testing only the pair above would leave this tier dead.
+    profile = build_profile(_profile_fields(), limits=_limits())
+    effective = resolve_escalation(
+        profile,
+        species="PM25",
+        registry=_REGISTRY,
+        table_id=_TABLE_ID,
+        learned=_learned(88),
+    )
+    assert effective.sub_index == 88
+    assert effective.source is ThresholdSource.LEARNED
+
+
+def test_a_learned_threshold_for_another_species_does_not_leak_across() -> None:
+    # The escalation point is per SPECIES, as the module docstring insists; a learned NO2
+    # threshold must not govern PM25.
+    profile = build_profile(_profile_fields(), limits=_limits())
+    learned = {
+        "NO2": LearnedThreshold(
+            species="NO2", sub_index=70, lag_days=0, observations=20
+        )
+    }
+    effective = resolve_escalation(
+        profile, species="PM25", registry=_REGISTRY, table_id=_TABLE_ID, learned=learned
+    )
+    assert effective.source is ThresholdSource.SENSITIVITY_LEVEL
 
 
 # --- Req 22.5: a concentration threshold converts through the same table -

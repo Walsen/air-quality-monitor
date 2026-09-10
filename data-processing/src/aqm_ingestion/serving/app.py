@@ -60,6 +60,11 @@ from aqm_ingestion.serving.models import (
     iso_z,
 )
 from aqm_ingestion.serving.profiles import ProfileService, ResolvedProfile
+from aqm_ingestion.serving.symptoms import (
+    SymptomLogService,
+    entry_out,
+    parse_symptom_window,
+)
 
 _logger = get_logger("serving.app")
 
@@ -157,6 +162,7 @@ def build_app(
     clock: Clock,
     assembler: ResponseAssembler | None = None,
     profiles: ProfileService | None = None,
+    symptoms: SymptomLogService | None = None,
     readings: ReadingsStore | None = None,
     registry: SensorRegistryStore | None = None,
     audit: AuditStore | None = None,
@@ -386,30 +392,9 @@ def build_app(
         if profiles is None:  # pragma: no cover - wiring guard
             raise RuntimeError("the profile routes need a profile service")
         identity = request.state.identity
-        # Req 19.8: bad input NEVER 500s. Both of these were real 500s found by the hostile-body
-        # matrix — an absent body raises JSONDecodeError from .json(), and a scalar body raises
-        # TypeError from dict(). Neither is a programming error; both are things a client can
-        # send.
-        try:
-            submitted = await request.json()
-        except (ValueError, UnicodeDecodeError):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "detail": "the request body must be a JSON object",
-                    "problems": ["body: expected a JSON object"],
-                },
-            )
-        if not isinstance(submitted, dict):
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "detail": "the request body must be a JSON object",
-                    "problems": [
-                        f"body: expected a JSON object, got {type(submitted).__name__}"
-                    ],
-                },
-            )
+        submitted, failure = await _json_object(request)
+        if failure is not None:
+            return failure
         try:
             profiles.write(identity, submitted)
         except (ValidationError, ValueError) as invalid:
@@ -429,22 +414,112 @@ def build_app(
             status_code=200, content=_profile_out(profiles.resolve(identity))
         )
 
+    @app.put("/v1/symptoms/me")
+    async def put_symptom_entry(request: Request) -> JSONResponse:
+        """Requirement 31's diary write, replacing any entry for the same date (31.7)."""
+        if symptoms is None:  # pragma: no cover - wiring guard
+            raise RuntimeError("the diary routes need a symptom log service")
+        identity = request.state.identity
+        submitted, failure = await _json_object(request)
+        if failure is not None:
+            return failure
+        try:
+            stored = symptoms.write(identity, submitted)
+        except (ValidationError, ValueError) as invalid:
+            # §5: bad INPUT is a 400, never a 500. The message is already stripped of submitted
+            # values by build_symptom_entry, which Req 31.10 requires of an error message
+            # just as much as of a log line.
+            _logger.warning("symptom_entry_rejected", user_id=identity.user_id)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": "the submitted symptom entry was rejected",
+                    "problems": _problem_locations(invalid),
+                },
+            )
+        return JSONResponse(status_code=200, content={"entry": entry_out(stored)})
+
+    @app.get("/v1/symptoms/me")
+    async def get_symptom_entries(request: Request) -> JSONResponse:
+        """Requirement 31's diary read over an inclusive date range."""
+        if symptoms is None:  # pragma: no cover - wiring guard
+            raise RuntimeError("the diary routes need a symptom log service")
+        window, problems = parse_symptom_window(
+            request.query_params.get("start"),
+            request.query_params.get("end"),
+            symptoms.default_window(),
+        )
+        if window is None:
+            return _bad_request(problems)
+        entries = symptoms.read(request.state.identity, window)
+        return JSONResponse(
+            status_code=200,
+            content={
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+                "entries": [entry_out(entry) for entry in entries],
+            },
+        )
+
     @app.delete("/v1/profile/me")
     async def delete_profile(request: Request) -> JSONResponse:
-        """Requirement 19.5's deletion, per Requirement 17.8."""
+        """Requirement 19.5's deletion, per Requirements 17.8, 30.10 and 31.9."""
         if profiles is None:  # pragma: no cover - wiring guard
             raise RuntimeError("the profile routes need a profile service")
-        receipt = profiles.delete(request.state.identity)
+        identity = request.state.identity
+        receipt = profiles.delete(identity)
+        # Requirements 30.10 and 31.9: the diary and the medication/routine records go too, and
+        # the count is reported. Erasing the profile while leaving the diary would satisfy NO
+        # reading of either clause, and the gap would be invisible — every existing test would
+        # still pass.
+        symptom_entries = 0 if symptoms is None else symptoms.forget(identity)
         return JSONResponse(
             status_code=200,
             content={
                 "profileDeleted": receipt.profile_deleted,
                 "auditRecordsDeIdentified": receipt.audit_records_de_identified,
+                "symptomEntriesDeleted": symptom_entries,
             },
         )
 
     _ = tables  # resolved for the health route's disclosure
     return app
+
+
+async def _json_object(
+    request: Request,
+) -> tuple[dict[str, object], JSONResponse | None]:
+    """Read a JSON OBJECT body, or return the 400 that says why (Requirement 19.8).
+
+    Both branches here were REAL 500s found by the hostile-body matrix: an absent body raises
+    ``JSONDecodeError`` from ``.json()``, and a scalar body raises ``TypeError`` from
+    ``dict()``.
+    Neither is a programming error — both are things any client can send — so both are 400s.
+
+    Shared by every body-taking route rather than repeated, so a route added later cannot
+    reintroduce either 500 by forgetting one of the two guards.
+    """
+    try:
+        submitted = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return {}, JSONResponse(
+            status_code=400,
+            content={
+                "detail": "the request body must be a JSON object",
+                "problems": ["body: expected a JSON object"],
+            },
+        )
+    if not isinstance(submitted, dict):
+        return {}, JSONResponse(
+            status_code=400,
+            content={
+                "detail": "the request body must be a JSON object",
+                "problems": [
+                    f"body: expected a JSON object, got {type(submitted).__name__}"
+                ],
+            },
+        )
+    return submitted, None
 
 
 def _enforce_or_fail(
@@ -516,6 +591,25 @@ def _profile_out(resolved: ResolvedProfile) -> dict[str, object]:
         if profile.activity_level is None
         else str(profile.activity_level),
         "activity_duration_hours": profile.activity_duration_hours,
+        # Requirement 30.11: returned to the authenticated OWNER and to nobody else. This is the
+        # /me route, so the caller IS the owner — and the air-quality body deliberately has no
+        # field either could occupy, which a test asserts over every response model.
+        "medications": [
+            {"name": entry.name, "role": str(entry.role)} for entry in profile.medications
+        ],
+        "routines": [
+            {
+                "days": [str(day) for day in entry.days],
+                # snake_case, matching every other member of THIS body. The air-quality response
+                # is camelCase because Requirement 19.2 pins it that way; the profile route is
+                # not, and mixing both conventions in one body would be worse than either.
+                "start_time": entry.start_time.isoformat(),
+                "duration_hours": entry.duration_hours,
+                "activity_level": str(entry.activity_level),
+                "location": None if entry.location is None else str(entry.location),
+            }
+            for entry in profile.routines
+        ],
         "usedDefaultProfile": resolved.used_default,
     }
 

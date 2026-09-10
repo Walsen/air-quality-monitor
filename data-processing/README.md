@@ -50,6 +50,7 @@ Each port is chosen by name through `AQM_ADAPTER_<PORT>`; the first value listed
 | `sensor_registry_store` | `memory`, `dynamodb` |
 | `raw_archive` | `memory`, `s3` |
 | `profile_store` | `memory`, `dynamodb` |
+| `symptom_log_store` | `memory`, `dynamodb` |
 | `forecast_client` | `memory`, `http` |
 | `meteorology_provider` | `memory`, `http` |
 | `authenticator` | `local`, `cognito` |
@@ -68,9 +69,73 @@ what lets the local stack start with nothing to connect to.
 | `AQM_AUDIT_RETENTION_DAYS` | `365` |
 | `AQM_NOWCAST_WINDOW_HOURS` | `12` |
 | `AQM_MAX_HISTORY_SPAN_DAYS` | `30` |
+| `AQM_SYMPTOM_RETENTION_DAYS` | `365` |
 | `AQM_RATE_LIMIT_PER_MINUTE` | `60` |
 
 Retention is applied at query time, so data ages out with the injected clock and no timer.
+
+### Profile limits
+
+Every one of these is what the requirements call "configured". They were constants until the diary
+extensions landed, which made the word true of the model and false of the service.
+
+| Variable | Default |
+|---|---|
+| `AQM_LOCATION_PRECISION` | `3` |
+| `AQM_LOCATION_LIMIT` | `5` |
+| `AQM_MEDICATION_LIMIT` | `10` |
+| `AQM_ROUTINE_LIMIT` | `14` |
+| `AQM_MAX_ACTIVITY_DURATION_HOURS` | `24.0` |
+
+A medication is stored as a **name and a role only** — `reliever`, `preventer` or `other`. There is
+no field for a dose, a frequency, a route or a schedule, so dosing advice downstream has no stored
+input to draw on. That is structural rather than a validation rule, and it is deliberate.
+
+### Symptom log and learned thresholds
+
+| Variable | Default |
+|---|---|
+| `AQM_SYMPTOM_NOTE_MAX_LENGTH` | `280` |
+| `AQM_ASSOCIATION_MIN_OBSERVATIONS` | `14` |
+| `AQM_ASSOCIATION_MIN_STRENGTH` | `0.3` |
+| `AQM_ASSOCIATION_THRESHOLD_FLOOR` | `51` |
+| `AQM_ASSOCIATION_ELEVATED_SEVERITY` | `3` |
+
+The evaluated lags come from the config **file** as `association_lags`, defaulting to `[0, 3]`, not
+from an environment variable — a sequence would need a separator convention this loader does not
+have. Lag 3 is there because the gaseous-pollutant effect lands the same day while the particulate
+effect peaks about three days later, so a same-day-only setting would systematically miss the PM
+signal.
+
+Below `AQM_ASSOCIATION_MIN_OBSERVATIONS` paired observations the service reports a **shortfall**
+rather than a number: a threshold learned from four days is worse than no learned threshold, because
+it is stated with the same confidence and acted on the same way.
+
+The association's effective reach is the **shorter** of the symptom and readings retention windows,
+because a diary entry whose exposure data has aged out cannot be paired. With the shipped defaults
+that is 90 days, not 365; the resolved value is reported as `associationReachDays` in the startup
+log.
+
+### The association cycle
+
+`just run-association` derives Learned_Thresholds from the symptom diaries and exits. It is a
+**one-shot process, not a loop** — the schedule belongs outside this code (cron, an EventBridge rule,
+a Kubernetes CronJob). That separation is Requirement 32.12: a whole-history read must not sit on the
+per-request serving path, and a thread inside the serving process would compete with request handling
+for the same CPU and connection pool.
+
+It is idempotent, because a scheduler will occasionally deliver twice: the write replaces rather than
+merges, and the derivation is a pure function of stored data.
+
+It derives for users **with diaries**, not every user with a profile — a user with no diary has
+nothing to derive from. Pass identities to re-derive a subset:
+
+```
+just run-association user-123
+```
+
+A per-user failure is isolated and logged; the cycle still exits 0, because a non-zero exit would
+have a scheduler retry the whole cycle to fix one user.
 
 ### Credentials
 

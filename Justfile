@@ -9,6 +9,7 @@ docker := env_var_or_default("DOCKER", "docker")
 
 sim_dir := "sensor-simulator"
 ing_dir := "data-processing"
+adv_dir := "agent-advisor"
 
 # List available recipes.
 default:
@@ -22,19 +23,58 @@ default:
 # Run every service's offline suite (Hypothesis ci profile, >=100 examples).
 # Excludes the integration marker so the suites pass offline with no
 # credentials and no network beyond localhost.
-test: test-simulator test-ingestion
+test: test-simulator test-ingestion test-advisor
 
 # Run every service's integration checks (container engine or local broker).
-test-integration: test-integration-simulator test-integration-ingestion
+test-integration: test-integration-simulator test-integration-ingestion test-integration-advisor
 
 # Lint every service with ruff.
-lint: lint-simulator lint-ingestion
+lint: lint-simulator lint-ingestion lint-advisor
 
 # Static type check every service with mypy.
-typecheck: typecheck-simulator typecheck-ingestion
+typecheck: typecheck-simulator typecheck-ingestion typecheck-advisor
 
 # Auto-fix lint findings and format every service.
-fmt: fmt-simulator fmt-ingestion
+fmt: fmt-simulator fmt-ingestion fmt-advisor
+
+# Run ONE Exposure_Association derivation cycle and exit (Requirement 32.12).
+# A one-shot process, not a loop: the schedule belongs outside this code (cron, an
+# EventBridge rule, a CronJob), and keeping the derivation in its own invocation is
+# what keeps a whole-history read off the per-request serving path. Idempotent, so a
+# scheduler delivering twice is harmless. Pass user ids to re-derive a subset.
+run-association *users:
+    cd {{ing_dir}} && uv run python -m aqm_ingestion.jobs.entrypoint {{users}}
+
+# --- AI Advisor Agent (Service 3) ----------------------------------------
+
+# The single documented test command for Service 3 (Requirement 26.4).
+# Excludes the integration marker, which fences anything needing a live model,
+# a live guardrail, or a container engine (Requirement 35.8).
+test-advisor:
+    cd {{adv_dir}} && uv run pytest -m "not integration"
+
+# The fenced checks: a live model or guardrail, or a container engine.
+test-integration-advisor:
+    cd {{adv_dir}} && uv run pytest -m integration
+
+# The nightly property profile: every property at 1000 examples.
+test-advisor-nightly:
+    cd {{adv_dir}} && AQM_HYPOTHESIS_PROFILE=nightly uv run pytest -m "not integration"
+
+lint-advisor:
+    cd {{adv_dir}} && uv run ruff check .
+
+fmt-advisor:
+    cd {{adv_dir}} && uv run ruff check --fix . && uv run ruff format .
+
+typecheck-advisor:
+    cd {{adv_dir}} && uv run mypy
+
+# Serve the agent locally. app.run() answers POST /invocations and GET /ping on
+# :8080 with NO AWS involvement, which is what lets the offline suite assert the
+# AgentCore deployment contract (Requirement 26.5a).
+run-advisor:
+    cd {{adv_dir}} && uv run python -m aqm_advisor.agentcore.app
 
 # --- Sensor Simulator (Service 1) ----------------------------------------
 

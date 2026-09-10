@@ -1,4 +1,4 @@
-"""The nine ports: protocols the domain depends on.
+"""The ten ports: protocols the domain depends on.
 
 Design decision DD1: every port is a ``Protocol`` with no implementation and NO
 cloud type in any signature. That is not a stylistic preference — it is what lets
@@ -24,10 +24,13 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from aqm_ingestion.contract.records import SensorMetadataRecord
+from aqm_ingestion.domain.association import LearnedThreshold
 from aqm_ingestion.domain.models import CalibratedReading, DedupKey
 from aqm_ingestion.domain.profile import UserProfile
+from aqm_ingestion.domain.symptoms import SymptomEntry
 
-__all__ = ["UserProfile"]  # re-exported: the ProfileStore port is typed on it
+__all__ = ["SymptomEntry", "UserProfile"]
+"""Re-exported: the ProfileStore and SymptomLogStore ports are typed on them."""
 
 # --- boundary value types -------------------------------------------------
 
@@ -346,6 +349,87 @@ class ProfileStore(Protocol):
 
     def delete(self, user_id: str) -> None:
         """Remove a profile; absent is not an error."""
+        ...
+
+
+@runtime_checkable
+class SymptomLogStore(Protocol):
+    """Stores the user's Symptom_Log (Requirement 31.1), keyed by verified identity.
+
+    ``put`` REPLACES any entry for the same user and date rather than accumulating
+    (Requirement 31.7): two entries for one day would let that day contribute twice to the
+    Requirement 32 association. ``forget_user`` DELETES rather than de-identifying, because
+    unlike an Audit_Record a Symptom_Entry carries real clinical content (Requirement 31.9).
+
+    Retention is the adapter's responsibility and is applied at QUERY time against the
+    injected Clock (Requirement 31.8), mirroring the ReadingsStore — so the exclusion moves
+    with the clock and nothing has to run on a timer.
+
+    THE LEARNED THRESHOLDS LIVE HERE RATHER THAN IN A PORT OF THEIR OWN, and the reason is
+    erasure. They are DERIVED from the diary and share its whole lifecycle: recomputed from it,
+    meaningless without it, and — the load-bearing part — erased with it. A separate store would
+    need its own erasure path, which could fall out of step with Requirement 31.9's and leave an
+    inference standing about a user whose underlying data was deleted. One store owning both
+    makes ``forget_user`` a single call that cannot be half-done.
+    """
+
+    def put(self, entry: SymptomEntry) -> SymptomEntry:
+        """Store one entry, replacing any existing entry for the same date."""
+        ...
+
+    def query_window(
+        self, user_id: str, start: dt.date, end: dt.date
+    ) -> Sequence[SymptomEntry]:
+        """Return entries in the INCLUSIVE [start, end] range, retention already applied.
+
+        Inclusive on both ends because the range is calendar dates rather than instants: a
+        user asking for "the last week" means the day at each end, and a half-open range over
+        dates would silently drop today.
+        """
+        ...
+
+    def forget_user(self, user_id: str) -> int:
+        """Delete every entry for a user and return how many were removed."""
+        ...
+
+    def learned_thresholds(self, user_id: str) -> Mapping[str, LearnedThreshold]:
+        """Return this user's Learned_Thresholds by species, or an empty mapping.
+
+        Requirement 32.12 forbids computing an association on the serving path: the derivation
+        runs on its own schedule and STORES its result for the serving path to read, so this is
+        the handoff point.
+        """
+        ...
+
+    def put_learned_thresholds(
+        self, user_id: str, thresholds: Sequence[LearnedThreshold]
+    ) -> None:
+        """Replace this user's Learned_Thresholds with a fresh derivation.
+
+        REPLACES rather than merges: a re-derivation over a longer diary may legitimately stop
+        supporting a species it previously supported, and merging would leave that stale
+        threshold alerting forever with no data behind it.
+        """
+        ...
+
+    def count_all(self) -> int:
+        """Total entries held, for the erasure assertions and operational reporting."""
+        ...
+
+    def user_ids_with_entries(self) -> Sequence[str]:
+        """Every user who has at least one entry inside the retention window, sorted.
+
+        This is the set the Requirement 32.12 job iterates, and it is deliberately narrower than
+        "every user with a profile". A user with no diary has nothing to derive from, so
+        including
+        them would do work that can only return nothing — and most users will not keep a diary.
+        It
+        also happens to be the only enumeration available: no port can list profiles, and adding
+        one would have exposed a wider set for a narrower need.
+
+        Sorted so a batch run has a defined order (§2), which makes a partially-completed run
+        resumable and its log readable.
+        """
         ...
 
 

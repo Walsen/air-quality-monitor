@@ -35,11 +35,35 @@ from aqm_ingestion.domain.aqi.breakpoints import (
     BreakpointTableError,
     BreakpointTableRegistry,
 )
+from aqm_ingestion.domain.association import (
+    DEFAULT_ASSOCIATION_LAGS,
+    DEFAULT_ELEVATED_SEVERITY,
+    DEFAULT_MIN_OBSERVATIONS,
+    DEFAULT_MIN_STRENGTH,
+    DEFAULT_THRESHOLD_FLOOR,
+    AssociationLimits,
+)
 from aqm_ingestion.domain.calibration import (
     CalibrationRegistry,
     RhLinearCoefficients,
 )
-from aqm_ingestion.domain.profile import Condition, ProfileLimits
+from aqm_ingestion.domain.profile import (
+    DEFAULT_LOCATION_LIMIT,
+    DEFAULT_LOCATION_PRECISION,
+    DEFAULT_MEDICATION_LIMIT,
+    DEFAULT_ROUTINE_LIMIT,
+    Condition,
+    ProfileLimits,
+)
+from aqm_ingestion.domain.symptoms import (
+    DEFAULT_NOTE_MAX_LENGTH,
+    MAX_SEVERITY,
+    MIN_SEVERITY,
+    SymptomLogLimits,
+)
+from aqm_ingestion.domain.symptoms import (
+    DEFAULT_SYMPTOM_RETENTION_DAYS as _DEFAULT_SYMPTOM_RETENTION_DAYS,
+)
 from aqm_ingestion.domain.weighting import ConditionWeightingRegistry
 from aqm_ingestion.serving.app import ServingSettings
 from aqm_ingestion.serving.enrichment import EnrichmentSettings
@@ -58,6 +82,29 @@ DEFAULT_NOWCAST_WINDOW_HOURS = 12
 DEFAULT_MAX_HISTORY_SPAN_DAYS = 30
 DEFAULT_FRESHNESS_HOURS = 3
 
+DEFAULT_SYMPTOM_NOTE_MAX_LENGTH = DEFAULT_NOTE_MAX_LENGTH
+"""Requirement 31.5's default Symptom_Note bound, re-exported from its owning module."""
+
+DEFAULT_SYMPTOM_RETENTION_DAYS = _DEFAULT_SYMPTOM_RETENTION_DAYS
+"""Requirement 31.8's default retention window, re-exported from its owning module."""
+
+DEFAULT_ASSOCIATION_MIN_OBSERVATIONS = DEFAULT_MIN_OBSERVATIONS
+DEFAULT_ASSOCIATION_MIN_STRENGTH = DEFAULT_MIN_STRENGTH
+DEFAULT_ASSOCIATION_THRESHOLD_FLOOR = DEFAULT_THRESHOLD_FLOOR
+DEFAULT_ASSOCIATION_ELEVATED_SEVERITY = DEFAULT_ELEVATED_SEVERITY
+"""Requirement 32's defaults, re-exported so the loader's own surface names them.
+
+Re-exported rather than restated: each value has ONE owner in the domain, and a second literal
+here would be a copy free to drift from the module that actually uses it.
+"""
+
+_MIN_ASSOCIATION_OBSERVATIONS = 2
+"""A correlation over fewer than two pairs is undefined, not weak.
+
+So a configured minimum of 1 could never produce a usable association and would silently disable
+every learned threshold while looking like a deliberate loosening.
+"""
+
 _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
     "durations": frozenset(
         {
@@ -67,6 +114,7 @@ _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
             "nowcast_window_hours",
             "max_history_span_days",
             "freshness_hours",
+            "symptom_retention_days",
         }
     ),
     "adapters": frozenset(
@@ -75,9 +123,32 @@ _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
             "sensor_registry_store",
             "raw_archive",
             "profile_store",
+            "symptom_log_store",
             "forecast_client",
             "meteorology_provider",
             "authenticator",
+        }
+    ),
+    # Requirements 17.5, 17.6, 23.6, 30.4 and 30.6 all say "configured". Before this category
+    # existed the loader passed a bare ProfileLimits(), so every one of those words was true of
+    # the model and false of the service.
+    "profile": frozenset(
+        {
+            "location_precision",
+            "location_limit",
+            "medication_limit",
+            "routine_limit",
+            "max_activity_duration_hours",
+        }
+    ),
+    "symptoms": frozenset({"symptom_note_max_length"}),
+    "association": frozenset(
+        {
+            "association_lags",
+            "association_min_observations",
+            "association_min_strength",
+            "association_threshold_floor",
+            "association_elevated_severity",
         }
     ),
     "selection": frozenset(
@@ -102,6 +173,7 @@ _REGISTERED_ADAPTERS: Mapping[str, tuple[str, ...]] = {
     "sensor_registry_store": ("memory", "dynamodb"),
     "raw_archive": ("memory", "s3"),
     "profile_store": ("memory", "dynamodb"),
+    "symptom_log_store": ("memory", "dynamodb"),
     "forecast_client": ("memory", "http"),
     "meteorology_provider": ("memory", "http"),
     "authenticator": ("local", "cognito"),
@@ -130,6 +202,8 @@ class ServiceConfig:
     selection: SelectionSettings
     enrichment: EnrichmentSettings
     profile_limits: ProfileLimits
+    symptom_limits: SymptomLogLimits
+    association: AssociationLimits
     breakpoint_table: str
     species_precedence: tuple[str, ...]
     rh_linear: RhLinearCoefficients
@@ -160,6 +234,21 @@ class ServiceConfig:
             "quarantineRetentionDays": self.quarantine_retention_days,
             "auditRetentionDays": self.audit_retention_days,
             "nowcastWindowHours": self.nowcast_window_hours,
+            "symptomRetentionDays": self.symptom_limits.retention_days,
+            "symptomNoteMaxLength": self.symptom_limits.note_max_length,
+            "locationLimit": self.profile_limits.location_limit,
+            "medicationLimit": self.profile_limits.medication_limit,
+            "routineLimit": self.profile_limits.routine_limit,
+            "associationLags": list(self.association.lags),
+            "associationMinObservations": self.association.min_observations,
+            "associationMinStrength": self.association.min_strength,
+            "associationThresholdFloor": self.association.threshold_floor,
+            # Req 32.5's effective reach: the SHORTER of the two retention windows. Worth
+            # logging because it is derived rather than configured, so an operator who
+            # shortens readings retention can see the association's reach follow it.
+            "associationReachDays": min(
+                self.symptom_limits.retention_days, self.retention_days
+            ),
             "maxHistorySpanDays": self.serving.max_history_span_days,
             "freshnessHours": self.selection.freshness_hours,
             "rateLimitPerMinute": self.serving.rate_limit_per_minute,
@@ -249,6 +338,8 @@ def resolve_and_validate(
 
     _validate_registries(resolved, problems)
     _validate_durations(resolved, problems)
+    _validate_profile_and_symptom_limits(resolved, problems)
+    _validate_association(resolved, problems)
     _validate_log_level(resolved, problems)
     _validate_interfaces(resolved, problems)
     _validate_credentials(resolved, problems, exists)
@@ -292,6 +383,35 @@ _SCALARS: Mapping[str, tuple[str, object]] = {
         DEFAULT_MAX_HISTORY_SPAN_DAYS,
     ),
     "freshness_hours": ("AQM_FRESHNESS_HOURS", DEFAULT_FRESHNESS_HOURS),
+    "location_precision": ("AQM_LOCATION_PRECISION", DEFAULT_LOCATION_PRECISION),
+    "location_limit": ("AQM_LOCATION_LIMIT", DEFAULT_LOCATION_LIMIT),
+    "medication_limit": ("AQM_MEDICATION_LIMIT", DEFAULT_MEDICATION_LIMIT),
+    "routine_limit": ("AQM_ROUTINE_LIMIT", DEFAULT_ROUTINE_LIMIT),
+    "max_activity_duration_hours": ("AQM_MAX_ACTIVITY_DURATION_HOURS", 24.0),
+    "symptom_note_max_length": (
+        "AQM_SYMPTOM_NOTE_MAX_LENGTH",
+        DEFAULT_SYMPTOM_NOTE_MAX_LENGTH,
+    ),
+    "symptom_retention_days": (
+        "AQM_SYMPTOM_RETENTION_DAYS",
+        DEFAULT_SYMPTOM_RETENTION_DAYS,
+    ),
+    "association_min_observations": (
+        "AQM_ASSOCIATION_MIN_OBSERVATIONS",
+        DEFAULT_ASSOCIATION_MIN_OBSERVATIONS,
+    ),
+    "association_min_strength": (
+        "AQM_ASSOCIATION_MIN_STRENGTH",
+        DEFAULT_ASSOCIATION_MIN_STRENGTH,
+    ),
+    "association_threshold_floor": (
+        "AQM_ASSOCIATION_THRESHOLD_FLOOR",
+        DEFAULT_ASSOCIATION_THRESHOLD_FLOOR,
+    ),
+    "association_elevated_severity": (
+        "AQM_ASSOCIATION_ELEVATED_SEVERITY",
+        DEFAULT_ASSOCIATION_ELEVATED_SEVERITY,
+    ),
     "rate_limit_per_minute": ("AQM_RATE_LIMIT_PER_MINUTE", 60),
     "nearest_n": ("AQM_NEAREST_N", 3),
     "radius_km": ("AQM_RADIUS_KM", 10.0),
@@ -352,6 +472,18 @@ def _resolve_scalars(
     resolved["fallback_centre"] = tuple(
         float(part) for part in (data.get("fallback_centre") or (51.507, -0.128))
     )
+    # A sequence comes from the FILE only, following species_precedence and fallback_centre: an
+    # environment variable would need a separator convention this loader deliberately does not
+    # have, and inventing one here would make two settings parse differently.
+    lags = data.get("association_lags")
+    if lags is None:
+        resolved["association_lags"] = DEFAULT_ASSOCIATION_LAGS
+    else:
+        try:
+            resolved["association_lags"] = tuple(int(item) for item in lags)
+        except (TypeError, ValueError):
+            problems.add("association_lags", "a list of whole numbers of days")
+            resolved["association_lags"] = DEFAULT_ASSOCIATION_LAGS
     return resolved
 
 
@@ -431,6 +563,78 @@ def _validate_registries(resolved: Mapping[str, Any], problems: _Problems) -> No
         problems.add("rh_linear coefficients", str(error))
     else:
         _ = strategies
+
+
+def _validate_association(resolved: Mapping[str, Any], problems: _Problems) -> None:
+    """Check the Requirement 32 settings that the limits object cannot check for itself.
+
+    ``AssociationLimits`` is a plain frozen dataclass shared with a pure domain function, so it
+    carries no ``__post_init__`` validation — a domain type that raised on construction would
+    make the association's purity harder to reason about. The checks therefore live here, and
+    each one rules out a value that would silently disable the feature rather than fail loudly.
+    """
+    lags = resolved.get("association_lags") or ()
+    if not lags:
+        problems.add("association_lags", "at least one lag in whole days")
+    if any(int(lag) < 0 for lag in lags):
+        # A negative lag would pair a symptom with a LATER exposure, which is not a lag.
+        problems.add("association_lags", "every lag to be zero or more days")
+
+    minimum = resolved.get("association_min_observations")
+    if isinstance(minimum, int) and minimum < _MIN_ASSOCIATION_OBSERVATIONS:
+        problems.add(
+            f"association_min_observations={minimum}",
+            f"at least {_MIN_ASSOCIATION_OBSERVATIONS}, since a correlation over fewer "
+            "pairs is undefined rather than weak",
+        )
+
+    strength = resolved.get("association_min_strength")
+    if isinstance(strength, (int, float)) and not 0.0 < float(strength) <= 1.0:
+        problems.add(
+            f"association_min_strength={strength}",
+            "greater than 0 and at most 1, the range a correlation coefficient can occupy",
+        )
+
+    floor = resolved.get("association_threshold_floor")
+    if isinstance(floor, int) and not 1 <= floor <= 500:
+        problems.add(
+            f"association_threshold_floor={floor}",
+            "within the Sub_Index range 1 to 500, or no Learned_Threshold could ever meet it",
+        )
+
+    severity = resolved.get("association_elevated_severity")
+    if isinstance(severity, int) and not MIN_SEVERITY <= severity <= MAX_SEVERITY:
+        problems.add(
+            f"association_elevated_severity={severity}",
+            f"within the Symptom_Severity range {MIN_SEVERITY} to {MAX_SEVERITY}, or it would "
+            "select no days and silently disable every learned threshold",
+        )
+
+
+def _validate_profile_and_symptom_limits(
+    resolved: Mapping[str, Any], problems: _Problems
+) -> None:
+    """Check the positive-integer bounds Requirements 17, 30 and 31 configure.
+
+    One message per invalid value (Requirement 26.3), and each names the field so an operator
+    can act on it.
+    """
+    positive = (
+        ("location_precision", 0),
+        ("location_limit", 1),
+        ("medication_limit", 1),
+        ("routine_limit", 1),
+        ("symptom_note_max_length", 1),
+        ("symptom_retention_days", 1),
+    )
+    for key, lowest in positive:
+        value = resolved.get(key)
+        if isinstance(value, int) and value < lowest:
+            problems.add(f"{key}={value}", f"at least {lowest}")
+
+    duration = resolved.get("max_activity_duration_hours")
+    if isinstance(duration, (int, float)) and float(duration) <= 0:
+        problems.add(f"max_activity_duration_hours={duration}", "greater than 0")
 
 
 def _validate_durations(resolved: Mapping[str, Any], problems: _Problems) -> None:
@@ -560,7 +764,39 @@ def _build_settings(
         serving=serving,
         selection=selection,
         enrichment=enrichment,
-        profile_limits=ProfileLimits(),
+        # Built from the RESOLVED values rather than defaulted. Requirements 17.5, 17.6, 23.6,
+        # 30.4 and 30.6 each say "configured", and a bare ProfileLimits() made every one of
+        # those words true of the model and false of the service.
+        #
+        # threshold_species is derived from the CONFIGURED table rather than left at its
+        # default: otherwise configuring a different Breakpoint_Table would leave the profile
+        # rejecting thresholds for species that table actually defines.
+        profile_limits=ProfileLimits(
+            location_precision=int(resolved["location_precision"]),
+            location_limit=int(resolved["location_limit"]),
+            threshold_species=frozenset(
+                BreakpointTableRegistry.with_defaults().species_for(
+                    str(resolved["breakpoint_table"])
+                )
+            ),
+            max_activity_duration_hours=float(resolved["max_activity_duration_hours"]),
+            medication_limit=int(resolved["medication_limit"]),
+            routine_limit=int(resolved["routine_limit"]),
+        ),
+        symptom_limits=SymptomLogLimits(
+            note_max_length=int(resolved["symptom_note_max_length"]),
+            retention_days=int(resolved["symptom_retention_days"]),
+        ),
+        association=AssociationLimits(
+            lags=tuple(resolved["association_lags"]),
+            min_observations=int(resolved["association_min_observations"]),
+            min_strength=float(resolved["association_min_strength"]),
+            threshold_floor=int(resolved["association_threshold_floor"]),
+            elevated_severity=int(resolved["association_elevated_severity"]),
+            symptom_retention_days=int(resolved["symptom_retention_days"]),
+            readings_retention_days=int(resolved["retention_days"]),
+            species_precedence=tuple(resolved["species_precedence"]),
+        ),
         breakpoint_table=str(resolved["breakpoint_table"]),
         species_precedence=tuple(resolved["species_precedence"]),
         rh_linear=rh_linear,

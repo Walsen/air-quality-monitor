@@ -56,6 +56,11 @@ _SENTINELS: dict[str, tuple[str, ...]] = {
     "personal_thresholds": ("37.5",),
     "activity_level": ("vigorous",),
     "activity_duration_hours": ("3.25",),
+    # A medication name is the single most sensitive string a profile now holds: it implies the
+    # diagnosis even though no diagnosis field exists. A routine's day and hour are a movement
+    # pattern, so both the day name and the time are swept.
+    "medications": ("beclometasone", "salbutamol"),
+    "routines": ("thursday", "06:45", "6:45"),
     # an instant is not health data, but a created_at reveals when this person enrolled
     "consent": (_CONSENT_VERSION,),
     "created_at": ("2019-03-04",),
@@ -78,6 +83,19 @@ def _loud_fields(user_id: str = "user-sentinel") -> dict[str, object]:
         ],
         "activity_level": ActivityLevel.VIGOROUS,
         "activity_duration_hours": 3.25,
+        "medications": [
+            {"name": "salbutamol", "role": "reliever"},
+            {"name": "beclometasone", "role": "preventer"},
+        ],
+        "routines": [
+            {
+                "days": ["thursday"],
+                "start_time": dt.time(6, 45),
+                "duration_hours": 1.5,
+                "activity_level": ActivityLevel.VIGOROUS,
+                "location": LocationName.COMMUTE,
+            }
+        ],
         "consent": {
             "version": _CONSENT_VERSION,
             "given_at": dt.datetime(2019, 3, 4, tzinfo=dt.UTC),

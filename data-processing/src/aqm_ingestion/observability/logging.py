@@ -41,6 +41,39 @@ _LEVEL_NAMES: dict[int, str] = {value: name for name, value in _LEVELS.items()}
 # (Requirement 29.4 allows the user identity) is not caught by them.
 _PERMITTED_IDENTITY_KEYS = frozenset({"user_id", "sub", "subject"})
 
+_PERMITTED_CONFIG_KEYS = frozenset(
+    {
+        # Requirement 26.1 requires the resolved non-secret configuration to be logged once, and
+        # these keys collide with the markers below while carrying nothing about a user: a
+        # configured CAP is a service setting, an adapter NAME is "memory" or "dynamodb", and a
+        # credential marker is the BOOLEAN of whether a path resolved, never the path.
+        #
+        # EXACT names, matched against the lowered key, not substrings. That is what keeps the
+        # blast radius at one key each: `medicationlimit` is permitted and `medication`,
+        # `medications` and `medication_name` all stay redacted. A substring exception here
+        # would
+        # have quietly reopened the hole the markers exist to close.
+        #
+        # Two of these were already broken before the diary work: `feedcredentialconfigured` and
+        # `forecastcredentialconfigured` have always rendered as [redacted], so Requirement
+        # 26.8's
+        # "report whether a credential resolves" was never actually visible in the one log that
+        # is
+        # supposed to carry it.
+        #
+        # `routineLimit` and `symptom_log_store` are deliberately ABSENT: no marker catches
+        # either,
+        # so allowlisting them would achieve nothing while implying the markers cover something
+        # they do not. A non-vacuity test enforces that every entry here is one a marker really
+        # would have redacted.
+        "locationlimit",
+        "medicationlimit",
+        "profile_store",
+        "feedcredentialconfigured",
+        "forecastcredentialconfigured",
+    }
+)
+
 # Substrings marking a key whose value must never be rendered. Matched
 # case-insensitively against the key name, so casing cannot defeat the rule.
 _SENSITIVE_KEY_MARKERS = (
@@ -67,7 +100,7 @@ _RESERVED = set(logging.makeLogRecord({}).__dict__) | {
 def _is_sensitive(key: str) -> bool:
     """True when a context key must have its value redacted."""
     lowered = key.lower()
-    if lowered in _PERMITTED_IDENTITY_KEYS:
+    if lowered in _PERMITTED_IDENTITY_KEYS or lowered in _PERMITTED_CONFIG_KEYS:
         return False
     return any(marker in lowered for marker in _SENSITIVE_KEY_MARKERS)
 
