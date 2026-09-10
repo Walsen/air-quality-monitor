@@ -34,12 +34,23 @@ from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import ErrorDetails
 
 DEFAULT_LOCATION_PRECISION = 3
 """Requirement 17.5's default rounding, about 110 m."""
 
 DEFAULT_LOCATION_LIMIT = 5
 """Requirement 17.6's default maximum User_Location count."""
+
+DEFAULT_MEDICATION_LIMIT = 10
+"""Requirement 30.4's default maximum Medication_Entry count."""
+
+DEFAULT_ROUTINE_LIMIT = 14
+"""Requirement 30.6's default maximum Routine_Entry count.
+
+Fourteen rather than seven because a routine is one activity window, not one day: a commute out
+and a commute back on each of five weekdays is already ten.
+"""
 
 RECOGNIZED_CONSENT_VERSIONS: frozenset[str] = frozenset({"2026-01-01"})
 
@@ -116,6 +127,57 @@ class ActivityLevel(StrEnum):
     VIGOROUS = "vigorous"
 
 
+class MedicationRole(StrEnum):
+    """Requirement 30.2's permitted Medication_Role values.
+
+    The role is the ONLY clinical property stored about a medication, and it is stored because
+    it is the only one preparedness guidance needs: "have your reliever to hand" is expressible
+    from a role, while "take two puffs" is not expressible from anything this model holds.
+    """
+
+    RELIEVER = "reliever"
+    PREVENTER = "preventer"
+    OTHER = "other"
+
+
+class Weekday(StrEnum):
+    """The days a Routine_Entry may name (Requirement 30.5)."""
+
+    MONDAY = "monday"
+    TUESDAY = "tuesday"
+    WEDNESDAY = "wednesday"
+    THURSDAY = "thursday"
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
+
+
+WEEKDAY_ORDER: tuple[Weekday, ...] = (
+    Weekday.MONDAY,
+    Weekday.TUESDAY,
+    Weekday.WEDNESDAY,
+    Weekday.THURSDAY,
+    Weekday.FRIDAY,
+    Weekday.SATURDAY,
+    Weekday.SUNDAY,
+)
+"""The canonical weekday order Requirement 30.8 sorts by.
+
+Declared explicitly rather than relying on ``StrEnum`` definition order or on alphabetical
+comparison — ``"friday" < "monday"`` alphabetically, which would order a Friday routine before
+a Monday one and make the per-window dose report of Requirement 23.1a depend on a spelling
+accident. A test pins that this covers every member, since a missing day would make its own
+routines unsortable.
+"""
+
+_WEEKDAY_INDEX: Mapping[Weekday, int] = {
+    day: index for index, day in enumerate(WEEKDAY_ORDER)
+}
+
+HOURS_PER_DAY = 24.0
+"""Requirement 30.7's bound: a routine may not run past the end of its start day."""
+
+
 DEFAULT_PROFILE_CONDITION = Condition.NONE_DECLARED
 """Requirement 17.12's default Condition."""
 
@@ -140,6 +202,12 @@ class ProfileLimits:
 
     max_activity_duration_hours: float = 24.0
     """Requirement 23.6's configured maximum, inclusive ("up to the configured maximum")."""
+
+    medication_limit: int = DEFAULT_MEDICATION_LIMIT
+    """Requirement 30.4's configured maximum Medication_Entry count."""
+
+    routine_limit: int = DEFAULT_ROUTINE_LIMIT
+    """Requirement 30.6's configured maximum Routine_Entry count."""
 
 
 DEFAULT_PROFILE_LIMITS = ProfileLimits()
@@ -209,6 +277,96 @@ class UserLocation(_MinimalModel):
     longitude: Annotated[float, Field(ge=-180.0, le=180.0)]
 
 
+class MedicationEntry(_MinimalModel):
+    """One medication the user already has: a display name and a role. Nothing else.
+
+    Requirement 30.3 forbids storing a dose, frequency, route, prescriber or administration
+    schedule, and this model satisfies it STRUCTURALLY rather than by validation — there is no
+    field any of those could occupy, so dosing advice downstream has no stored input to draw on.
+    That is the same technique Requirement 25.8 applies to the Audit_Record, and it is stronger
+    than a rule because it cannot be forgotten at a later call site.
+
+    A consequence worth stating: this model can never answer "when did I last take it", and that
+    is deliberate. Answering it would require a schedule, and a schedule is what makes "you are
+    due a dose" expressible.
+    """
+
+    name: str = Field(min_length=1, max_length=100)
+    role: MedicationRole
+
+
+class RoutineEntry(_MinimalModel):
+    """One recurring activity window (Requirement 30.5).
+
+    ``start_time`` is a NAIVE time of day, which is the one place in this codebase where a
+    tz-aware value is the wrong shape: a routine happens at seven in the morning wherever the
+    user is, so it is a wall-clock time and not an instant. An offset-carrying value is rejected
+    rather than dropped, because silently discarding it would change the hour it means.
+    """
+
+    days: tuple[Weekday, ...] = Field(min_length=1)
+    start_time: dt.time
+    duration_hours: Annotated[float, Field(gt=0.0)]
+    activity_level: ActivityLevel
+    location: LocationName | None = None
+
+    @field_validator("days")
+    @classmethod
+    def _ordered_and_unique(cls, value: tuple[Weekday, ...]) -> tuple[Weekday, ...]:
+        """Collapse repeats and impose Requirement 30.8's order within the entry.
+
+        A repeated day would make the per-window dose report of Requirement 23.1a count that day
+        twice, which is a wrong number rather than a cosmetic flaw.
+        """
+        return tuple(sorted(set(value), key=lambda day: _WEEKDAY_INDEX[day]))
+
+    @field_validator("start_time")
+    @classmethod
+    def _must_be_wall_clock(cls, value: dt.time) -> dt.time:
+        """Refuse an offset-carrying time of day — see the class docstring."""
+        if value.tzinfo is not None:
+            raise ValueError(
+                "start_time is a wall-clock time of day and must not carry a UTC offset"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _must_not_cross_midnight(self) -> RoutineEntry:
+        """Enforce Requirement 30.7's day boundary.
+
+        Landing exactly on midnight is permitted: 30.7 forbids extending PAST the end of the
+        start day, and a window ending at 24:00 has not passed it. A window that wrapped would
+        belong partly to a day its ``days`` set may not even name, so the dose it produced could
+        not be attributed.
+
+        The message names the STATIC range and not the hours actually remaining. "at most 1
+        hour" would satisfy 30.7's "naming the permitted range" while disclosing that the start
+        time is 23:00 — and a start time is a profile field, so Requirement 30.9 forbids putting
+        it in an error message. The two clauses only appear to conflict: 30.7 wants the range,
+        30.9 forbids the value, and a range derived from the value is still the value.
+        """
+        start_hours = (
+            self.start_time.hour
+            + self.start_time.minute / 60
+            + self.start_time.second / 3600
+            + self.start_time.microsecond / 3_600_000_000
+        )
+        if start_hours + self.duration_hours > HOURS_PER_DAY:
+            raise ValueError(
+                "duration_hours must be greater than 0 and must not extend the window past "
+                f"the end of its start day, which is {HOURS_PER_DAY:g} hours long"
+            )
+        return self
+
+    def sort_key(self) -> tuple[int, dt.time]:
+        """Requirement 30.8's ordering: day of week, then start time.
+
+        Keyed on the EARLIEST day in the entry, since an entry may name several. That makes the
+        order total across entries whose day sets overlap, which a per-day key would not.
+        """
+        return (_WEEKDAY_INDEX[self.days[0]], self.start_time)
+
+
 class UserProfile(_MinimalModel):
     """Exactly the fields Requirement 17.2 declares, and nothing else.
 
@@ -225,6 +383,8 @@ class UserProfile(_MinimalModel):
     # happened, so storing one would record an event that did not occur. The configured MAXIMUM
     # is checked in build_profile, since it is configuration the model must not reach for (§1).
     activity_duration_hours: Annotated[float | None, Field(gt=0.0)] = None
+    medications: tuple[MedicationEntry, ...] = ()
+    routines: tuple[RoutineEntry, ...] = ()
     consent: ConsentRecord
     created_at: dt.datetime
     updated_at: dt.datetime
@@ -268,7 +428,14 @@ def build_profile(
             for entry in raw_locations
         )
 
+    # Requirements 30.4 and 30.6. Checked BEFORE model validation so an over-long list is
+    # rejected naming the limit rather than by whichever entry happens to be malformed — the
+    # caller needs to know the cap, which a per-entry error would not tell them.
+    _check_collection_limit(prepared, "medications", limits.medication_limit)
+    _check_collection_limit(prepared, "routines", limits.routine_limit)
+
     profile = _validate_without_echoing(prepared)
+    profile = _with_ordered_collections(profile)
 
     if profile.consent.version not in limits.consent_versions:
         raise _consent_error()
@@ -288,6 +455,55 @@ def build_profile(
     return profile
 
 
+def _check_collection_limit(
+    prepared: Mapping[str, object], field: str, limit: int
+) -> None:
+    """Reject an over-long medication or routine list naming the LIMIT (Requirements 30.4/30.6).
+
+    Names the field and the cap and never an entry, since a medication name is a profile field
+    under Requirement 30.9 and so may not appear in an error message.
+    """
+    value = prepared.get(field)
+    if isinstance(value, (list, tuple)) and len(value) > limit:
+        from pydantic_core import InitErrorDetails, ValidationError
+
+        raise ValidationError.from_exception_data(
+            "UserProfile",
+            [
+                InitErrorDetails(
+                    type="value_error",
+                    loc=(field,),
+                    input=None,
+                    ctx={
+                        "error": ValueError(
+                            f"at most {limit} {field} entries are accepted, "
+                            f"received {len(value)}"
+                        )
+                    },
+                )
+            ],
+        )
+
+
+def _with_ordered_collections(profile: UserProfile) -> UserProfile:
+    """Impose a defined order on the routine and medication lists.
+
+    Requirement 30.8 for routines — day of week then start time — and practice §2 for
+    medications, which names only "any iteration reaching output" and does not privilege one
+    collection. Ordering happens once, HERE, rather than at each read site, so two readers
+    cannot disagree about what "the first routine" means.
+    """
+    ordered_routines = tuple(sorted(profile.routines, key=lambda entry: entry.sort_key()))
+    ordered_medications = tuple(
+        sorted(profile.medications, key=lambda entry: (entry.name, entry.role.value))
+    )
+    if ordered_routines == profile.routines and ordered_medications == profile.medications:
+        return profile
+    return profile.model_copy(
+        update={"routines": ordered_routines, "medications": ordered_medications}
+    )
+
+
 def _validate_without_echoing(prepared: Mapping[str, object]) -> UserProfile:
     """Validate, re-raising any failure with the submitted VALUES stripped.
 
@@ -296,6 +512,14 @@ def _validate_without_echoing(prepared: Mapping[str, object]) -> UserProfile:
     otherwise travel in the very error that rejected it, which is the opposite of what the
     allowlist is for. This catches the original and rebuilds it from the field LOCATIONS
     alone.
+
+    One exception, and it is what the ``value_error`` branch below is for. A ``value_error`` is
+    raised by a validator in THIS module, whose messages are written to Requirement 17.9 and
+    name a field and a permitted range rather than a submitted value. Discarding those too would
+    satisfy 17.9 while violating Requirement 30.7 and §5, which require the rejection to name
+    the field and the range — the caller cannot fix a routine window from "failed validation".
+    Every other error type is pydantic's own and carries the input, so it still gets the generic
+    text. ``input`` is set to None either way, since the rendered form of an error appends it.
     """
     from pydantic import ValidationError
     from pydantic_core import InitErrorDetails
@@ -309,16 +533,23 @@ def _validate_without_echoing(prepared: Mapping[str, object]) -> UserProfile:
                 type="value_error",
                 loc=tuple(entry["loc"]),
                 input=None,  # never the submitted value
-                ctx={
-                    "error": ValueError(
-                        f"field {'.'.join(str(part) for part in entry['loc'])!r} is not "
-                        "accepted by the User_Profile allowlist or failed validation"
-                    )
-                },
+                ctx={"error": ValueError(_safe_message(entry))},
             )
             for entry in error.errors()
         ]
         raise CoreValidationError.from_exception_data("UserProfile", details) from None
+
+
+def _safe_message(entry: ErrorDetails) -> str:
+    """The message for one rejected field, keeping only what cannot echo a value."""
+    location = ".".join(str(part) for part in entry["loc"])
+    if entry["type"] == "value_error":
+        # Raised by a validator in this module; see _validate_without_echoing.
+        return f"field {location!r}: {entry['msg']}"
+    return (
+        f"field {location!r} is not accepted by the User_Profile allowlist "
+        "or failed validation"
+    )
 
 
 def _round_location(entry: object, precision: int) -> object:
