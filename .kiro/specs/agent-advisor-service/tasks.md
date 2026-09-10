@@ -46,7 +46,7 @@ directory.
       floor and a `nightly` profile at 1000
     - _Requirements: 26.1, 26.2, 26.3, 26.4, 26.6, 26.9, A1, A2, A9_
 
-  - [ ] 1.2 Implement the JSON logger with central redaction
+  - [x] 1.2 Implement the JSON logger with central redaction
     - Single-line JSON to stdout, never `print`; redaction configured once in the formatter covering the
       credential, condition, sensitivity, personal threshold, coordinate, medication name and utterance
       keys; a handled-error helper carrying exception type and stack as a string so redaction still
@@ -61,34 +61,34 @@ directory.
     - _Requirements: 22.5, 24.4, 24.5, 32.10, 32.11_
 
 - [ ] 2. Boundaries: Clock, ports, and local fakes
-  - [ ] 2.1 Implement the Clock port and its implementations
+  - [x] 2.1 Implement the Clock port and its implementations
     - `Clock` protocol, `SystemClock` at the process edge only, `FixedClock` for tests; instants
       normalised to UTC and a naive instant refused
     - _Requirements: 1.3, 25.2, 25.5_
 
-  - [ ] 2.2 Define the four port protocols
+  - [x] 2.2 Define the four port protocols
     - `ServingClient`, `GuardrailChecker`, `AdviceAuditStore`, `AssociationTrigger`, transcribed from the
       design's signature block; no Bedrock, AgentCore or httpx type in any signature, asserted by a test
       that renders each signature and scans for SDK imports
     - _Requirements: 2.1, 3.1, 4.1, 20.1, 33.3, 34.2_
 
-  - [ ] 2.3 Implement the scripted `Model` subclass
+  - [x] 2.3 Implement the scripted `Model` subclass
     - A Strands `Model` subclass implementing ALL FOUR of the ABC's abstract methods — `stream`,
       `structured_output`, `get_config`, `update_config` — because a subclass missing any of them
       cannot be instantiated at all; `stream` yields a scripted sequence of stream events and
       performs no network call; supports scripting a tool-use request, a text generation, a
-      truncation, a `guardrail_intervention` stop reason and a raised failure, so every branch of
+      truncation, a `guardrail_intervened` stop reason and a raised failure, so every branch of
       the pipeline is drivable offline; `structured_output` is scripted too, since Req 6.3b routes
       the response's structured fields through it and it is part of the abstract surface
     - _Requirements: 6.2, 6.3b, 6.5a, 35.1_
 
-  - [ ] 2.4 Implement the local fakes for the other three ports
+  - [x] 2.4 Implement the local fakes for the other three ports
     - Scripted `ServingClient` returning canned Service 2 bodies built from that service's real response
       shape; local `GuardrailChecker` applying the pattern set with no network; in-memory
       `AdviceAuditStore` with a read accessor for tests; recording `AssociationTrigger`
     - _Requirements: 26.5, 34.5_
 
-  - [ ] 2.5 Write the architecture enforcement checks
+  - [x] 2.5 Write the architecture enforcement checks
     - AST checks over real source: no `domain/` import of `adapters/` or `agentcore/`; no wall-clock read
       or `random` import in `domain/`; no whole-config parameter in a domain function; plus self-checks
       proving each detector can actually fail, so no rule can pass vacuously
@@ -270,7 +270,7 @@ directory.
   - [ ] 10.3 Implement structured output and stop-reason handling
     - Obtain the response's structured fields through Strands structured output against a Pydantic model;
       treat `StructuredOutputException` as a model failure; treat `content_filtered` and
-      `guardrail_intervention` as guardrail rejections rather than failures; handle every stop reason the
+      `guardrail_intervened` as guardrail rejections rather than failures; handle every stop reason the
       SDK can return, with a test that fails if one is unhandled
     - _Requirements: 6.3b, 6.5a, 31.7_
 

@@ -365,7 +365,7 @@ whole advisory path is testable without a Bedrock account and so the model is sw
    expiry as a model failure under Requirement 21.
 5. THE Service SHALL request a configured maximum output length and SHALL treat a truncated generation
    as a failure rather than emitting partial Guidance.
-5a. THE Service SHALL treat the Strands stop reasons `content_filtered` and `guardrail_intervention` as
+5a. THE Service SHALL treat the Strands stop reasons `content_filtered` and `guardrail_intervened` as
    guardrail rejections under Requirement 8 rather than as generation failures, because the model
    declining to produce text is the guardrail working and not the service breaking.
 6. THE Service SHALL resolve the model credential only from the environment or a runtime-supplied path,

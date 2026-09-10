@@ -169,7 +169,7 @@ so a future early return cannot skip them (Req 31.5).
 | Forbidden claims | yes | diagnosis, dosing, medication instruction | reject, one repair, then degrade |
 | Medication closure | yes | a drug not in the user's stored list | reject |
 | `ApplyGuardrail` OUTPUT | no | phrasings no pattern anticipated | reject |
-| Strands `guardrail_intervention` / `content_filtered` stop reasons | yes (scripted) | the model declining | treat as rejection, not failure |
+| Strands `guardrail_intervened` / `content_filtered` stop reasons | yes (scripted) | the model declining | treat as rejection, not failure |
 
 **Fails closed.** When the managed check is unavailable, any generation the local checks cannot clear is
 not returned (Req 34.6). An unverifiable health-adjacent generation is worse than none.
@@ -635,7 +635,7 @@ Practice §5, and the container's own constraint.
 | Serving_Client 400 on a history window | Report the period is unavailable and the permitted bound; no silent re-request |
 | Model_Port failure, timeout, or truncation | Degraded response built from retrieved data; one warning |
 | `StructuredOutputException` | Treated as a model failure, not an unvalidated response |
-| `guardrail_intervention` / `content_filtered` stop reason | A guardrail rejection, not a failure |
+| `guardrail_intervened` / `content_filtered` stop reason | A guardrail rejection, not a failure |
 | Grounding / forbidden / closure rejection | One repair attempt, then degrade; warning names the category, never the rejected text |
 | `ApplyGuardrail` unavailable | Fail closed: any generation the local checks cannot clear is not returned |
 | Audit write failure | Logged; the response is still returned |
