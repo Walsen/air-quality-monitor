@@ -248,7 +248,29 @@ directory.
     - Assert the required emergency guidance and disclaimer texts are not themselves rejected by the
       pattern set — a real risk, since the emergency text must mention a reliever inhaler, so a bare
       medication-word pattern would make the required text unpublishable
-    - _Requirements: 8.4, 8.5_
+    - EXTENDED for Req 30.2's generated-output enforcement: `ATTRIBUTION_PATTERNS`, a third category
+      (`causal_attribution`) in the Forbidden_Claim set. Req 8.2 already checks generated Guidance against
+      that set before returning it and Req 8.7 makes it configuration, so this needed entries rather than a
+      new mechanism
+    - IT MATCHES A CLAIM, NOT A WORD, and that distinction is load-bearing. Req 30.2 forbids describing an
+      association "as a cause, a trigger, a diagnosis, or a prediction"; Req 21.5 forbids naming an allergen
+      as "the user's trigger". Both offend on the ATTRIBUTION — the possessive that turns a correlation in
+      someone's diary into a statement about their body. A word ban would have deleted a REQUIRED action
+      template reading "Both irritant and allergic triggers can matter on the same day, so it is worth
+      watching how you respond rather than assuming one cause", which uses both nouns to say the anti-causal
+      thing the requirement wants said
+    - THE ACTION TEMPLATES HAD NEVER BEEN IN THIS SWEEP. That was the gap which would have let the new
+      patterns reject a required text with no test failing — the fourth time a broad guardrail has nearly
+      made an obliged text unpublishable. Every template is now swept, with a test asserting a template
+      really does use these nouns so the survival test cannot go vacuous
+    - The permitted-framing boundary is tested rather than hoped for: generic trigger talk, the association
+      phrasing Req 30.2 explicitly allows, and Req 15's forecast attribution all pass. A guardrail that
+      rejected those would push the model toward vaguer prose, which is a worse answer rather than a safer
+      one
+    - The default-set completeness assertion was rewritten as a UNION over the category mapping instead of a
+      sum of named lengths. The arithmetic version had to be hand-edited when this set landed, which is the
+      shape of an assertion that stops being checked because updating it looks like fixing it
+    - _Requirements: 8.4, 8.5, 8.2, 8.7, 30.2, 21.5_
 
   - [x]* 6.4 Write property test for guardrail verdict totality
     - **Property 5: Guardrail verdict totality**
@@ -749,19 +771,15 @@ directory.
       the substance rather than the spec's own wording
     - All three texts joined task 6.3's sweep; the explanation carries four numerals and the word
       "association", so it is exactly the kind of text a tightened pattern set could start rejecting
-    - SCOPE LIMIT found by review, recorded rather than papered over: `CAUSAL_WORDS` is swept over the
-      texts THIS MODULE produces, and those are all hand-written. It is NOT a runtime filter on
-      model-generated prose — nothing in `src/` imports it — and the Req 8 `forbidden_matches` set carries
-      no association-causality patterns. So Req 30.2 is met for the service's own texts and NOT yet
-      enforced on generated guidance. That belongs with output verification (task 18's guardrail wiring),
-      not here, and it needs care rather than a blanket ban: "trigger" is legitimate in
-      preparedness advice under Req 29.1, so a filter that rejected the word everywhere would block text
-      the service is obliged to produce. Req 30.2 stays OPEN against generated output
-    - The review also noted `CAUSAL_WORDS` omits `worsen`, `aggravate`, `set off`, `brings on`, `due to`,
-      `reason for`, `provoke`, `induce`, `driving` and `contribute to`. Left as-is deliberately while the
-      set guards only fixed strings this service authors; widen it when it becomes a runtime filter, and
-      prefer token matching then, since substring matching would fire on "predictable"
-    - _Requirements: 30.1, 30.3, 30.4, 30.5, 30.6, 30.7; 30.2 PARTIAL (own texts only)_
+    - Req 30.2's GENERATED-OUTPUT enforcement was initially left open here and is now CLOSED, in
+      `forbidden.ATTRIBUTION_PATTERNS` — see the note under task 6 below. `CAUSAL_WORDS` remains what it
+      always was: a self-consistency sweep over the fixed strings THIS module authors, where a bare noun is
+      avoidable. Its docstring now says so, so it is not mistaken for the runtime rule
+    - CORRECTION: an earlier version of this note said the generated-output fix belonged to "task 18's
+      guardrail wiring". That was wrong — task 18 is the asynchronous association trigger. The fix belongs
+      in the Forbidden_Claim set, because Req 8.2 already checks generated Guidance against that set before
+      returning it and Req 8.7 makes it configuration: Req 30.2 needed entries, not a new mechanism
+    - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7_
 
   - NOTE spanning 14.1 and 14.2, from the pre-merge review: the `ProfileDraft` / `SymptomEntryDraft`
     confirmation gates are correct in isolation, but the wired `profile_put` / `symptom_entry_put` tools

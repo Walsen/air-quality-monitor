@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from aqm_advisor.domain.forbidden import (
+    ATTRIBUTION_PATTERNS,
     DEFAULT_FORBIDDEN_PATTERNS,
     DIAGNOSIS_PATTERNS,
     DOSING_PATTERNS,
@@ -101,7 +102,32 @@ def test_ordinary_exposure_advice_passes(text: str) -> None:
 def test_the_default_pattern_set_is_populated() -> None:
     assert len(DIAGNOSIS_PATTERNS) >= 4
     assert len(DOSING_PATTERNS) >= 4
-    assert len(DEFAULT_FORBIDDEN_PATTERNS) == len(DIAGNOSIS_PATTERNS) + len(DOSING_PATTERNS)
+    assert len(ATTRIBUTION_PATTERNS) >= 4
+
+
+def test_the_default_set_is_exactly_the_union_of_the_category_sets() -> None:
+    # Asserted as a UNION over the category mapping rather than a sum of named lengths, so a
+    # fifth
+    # category is covered the moment it is added. The arithmetic version had to be edited by
+    # hand
+    # when the attribution set landed, which is the shape of an assertion that stops being
+    # checked
+    # because updating it is indistinguishable from fixing it.
+    from aqm_advisor.domain.forbidden import _CATEGORY_BY_PATTERN
+
+    assert set(DEFAULT_FORBIDDEN_PATTERNS) == set(_CATEGORY_BY_PATTERN)
+    assert len(DEFAULT_FORBIDDEN_PATTERNS) == len(set(DEFAULT_FORBIDDEN_PATTERNS)), (
+        "a pattern appears in two categories, so its reported category depends on order"
+    )
+
+
+def test_every_default_pattern_has_a_category() -> None:
+    # A pattern with no category is reported as "other", which tells an operator nothing about
+    # what the generation did wrong (Req 8.6 wants the category named).
+    from aqm_advisor.domain.forbidden import _CATEGORY_BY_PATTERN
+
+    for pattern in DEFAULT_FORBIDDEN_PATTERNS:
+        assert _CATEGORY_BY_PATTERN.get(pattern) not in (None, "other"), pattern
 
 
 # --- Req 8.6: a rejection names the category, never the text -------------
@@ -158,6 +184,7 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     # rather than the CLAIM, and only a guard over all required texts finds that.
     import datetime as dt
 
+    from aqm_advisor.domain.actions import CONDITION_ACTIONS
     from aqm_advisor.domain.association import (
         PRECEDENCE_TEXT,
         explain_learned_threshold,
@@ -236,6 +263,20 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
             )
         ),
         *TIMING_TEMPLATES,
+        # Reqs 12.4/12.5's action templates. These had NEVER been in this sweep, which is the
+        # gap
+        # that would have let Req 30.2's new attribution patterns silently reject a required
+        # text:
+        # one template reads "Both irritant and allergic triggers can matter on the same day, so
+        # it
+        # is worth watching how you respond rather than assuming one cause", using both
+        # forbidden
+        # nouns to say the anti-causal thing the requirement wants said.
+        *(
+            template.text
+            for templates in CONDITION_ACTIONS.values()
+            for template in templates
+        ),
     )
     for text in required:
         assert forbidden_matches(text) == (), text
