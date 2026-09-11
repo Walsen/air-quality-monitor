@@ -159,6 +159,11 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     from aqm_advisor.domain.attribution import unavailable_text
     from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
     from aqm_advisor.domain.degradation import missing_data_note
+    from aqm_advisor.domain.elicitation import (
+        DeclinedKind,
+        decline_message,
+        limit_rejection_message,
+    )
     from aqm_advisor.domain.reporting import (
         GASEOUS_SAME_DAY_TEXT,
         PARTICULATE_LAG_TEXT,
@@ -181,6 +186,14 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
         # and a degraded turn is exactly when the service can least afford a withheld response.
         missing_data_note(("the pollen count",)),
         missing_data_note(("PM2.5", "tomorrow's outlook")),
+        # Reqs 27.3, 27.4 and 27.6. The highest-risk additions to this sweep so far: the dose
+        # decline TALKS ABOUT doses ("never a dose or how often you take it"), which is exactly
+        # the shape the dosing patterns look for. They pass because those patterns require a
+        # medication object nearby and a message about what is NOT recorded names none — but
+        # that
+        # is a property of the current patterns, so it is pinned here rather than assumed.
+        *(decline_message(kind) for kind in DeclinedKind),
+        limit_rejection_message(field="medications", limit=5),
         *TIMING_TEMPLATES,
     )
     for text in required:

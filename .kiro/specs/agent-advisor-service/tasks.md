@@ -644,12 +644,35 @@ directory.
     - **Validates: Requirements 18.1, 18.2, 18.3, 18.4**
 
 - [ ] 14. Conversational writes to Service 2
-  - [ ] 14.1 Implement health profile elicitation
-    - Elicit condition, sensitivity, medication entries, routine entries and locations conversationally;
-      restate the structured interpretation and obtain explicit confirmation before any write; decline an
-      offered dose, frequency, route or schedule without echoing it; decline a diagnosis narrative, date
-      of birth, name or contact detail without echoing it; store nothing locally; report a limit rejection
-      without reporting the change as applied
+  - [x] 14.1 Implement health profile elicitation
+    - `domain/elicitation.py`. Reqs 27.3 and 27.4 both end with "SHALL NOT echo the offered value", and
+      that is STRUCTURAL: `decline_message` takes a KIND, not the offered text, so there is no parameter
+      through which a dose or a date of birth could reach the reply. A function that received the text and
+      promised not to use it would be a promise; one that cannot see it is a guarantee. A signature test
+      asserts no text-carrying parameter exists, and no decline message contains a numeral either — a dose
+      and a date of birth are both numeric, so that would be the echo arriving by another route
+    - `MedicationEntry` carries exactly `name` and `role` with `extra="forbid"`, so an attempt to record a
+      dose RAISES rather than being silently dropped — a dropped field looks identical to one never
+      offered, and this service must be able to say truthfully that it did not record it
+    - The name is also checked for an embedded strength. "salbutamol 100mcg" puts the dose IN the name,
+      which a field check alone would wave through, and a name with a strength in it is not only the name
+    - Req 27.2's confirmation is a GATE: a draft starts unconfirmed and `write_body` raises, the same
+      fail-closed shape as the verification ledger. The restatement names every field the write would
+      apply, because one that omitted a field would obtain consent for less than the write does. An empty
+      draft is refused — asking someone to confirm nothing obtains a confirmation authorising nothing
+    - Req 27.5 keeps values for the turn only, so the draft is FROZEN and `confirm()` returns a new value.
+      A mutable draft is a place to accumulate values across turns, which is how "for the turn" quietly
+      becomes "for the session". It also has nowhere to put a name, date of birth, contact detail or
+      diagnosis narrative: declining at the boundary is necessary but not sufficient, since a field able to
+      hold one is a place a later author could put it
+    - Reqs 27.6 and 4.5: the rejection message names the field and the limit, and is swept for every word
+      that would read as success. Reporting an unapplied change as applied leaves someone believing their
+      profile is something it is not, which then shapes advice they think was personalised
+    - The decline messages joined task 6.3's required-texts sweep, and they are the highest-risk additions
+      so far: the dose decline TALKS ABOUT doses ("never a dose or how often you take it"), exactly the
+      shape the dosing patterns look for. They pass because those patterns require a medication object
+      nearby and a message about what is NOT recorded names none — a property of the current patterns, so
+      it is pinned rather than assumed
     - _Requirements: 4.2, 4.3, 4.4, 4.5, 27.1, 27.2, 27.3, 27.4, 27.5, 27.6_
 
   - [ ] 14.2 Implement symptom diary capture
