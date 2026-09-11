@@ -232,7 +232,19 @@ _SCALARS: Mapping[str, tuple[str, object]] = {
     "streaming_enabled": (f"{_ENV_PREFIX}STREAMING_ENABLED", False),
     "turn_budget_seconds": (f"{_ENV_PREFIX}TURN_BUDGET_SECONDS", DEFAULT_TURN_BUDGET_SECONDS),
     "jwt_discovery_url": (f"{_ENV_PREFIX}JWT_DISCOVERY_URL", None),
-    "jwt_allowed_audience": (f"{_ENV_PREFIX}JWT_ALLOWED_AUDIENCE", None),
+    # NOT an AQM_ADVISOR_ name, deliberately. Req 32.14 requires this service's inbound
+    # authorizer to
+    # accept the SAME audience Service 2's does, and for a Cognito JWT that audience IS the app
+    # client
+    # id. Two separately-named variables for one app client is precisely how they drift apart —
+    # and
+    # the requirement notes the drift then fails at Service 2, "the hardest place to attribute
+    # it".
+    # One shared variable makes the disagreement impossible to express rather than merely
+    # detectable.
+    # `tests/unit/test_audience_agreement.py` reads Service 2's wiring from disk and pins the
+    # match.
+    "jwt_allowed_audience": ("AQM_COGNITO_CLIENT_ID", None),
 }
 """Each key's environment variable and default. `key -> (env_var, default)`.
 

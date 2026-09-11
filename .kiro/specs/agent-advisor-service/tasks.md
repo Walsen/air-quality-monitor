@@ -1246,7 +1246,7 @@ directory.
       ever wanted
     - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
-- [ ] 17. AgentCore entrypoint and the deployment contract
+- [x] 17. AgentCore entrypoint and the deployment contract
   - [x] 17.1 Implement the entrypoint and health endpoint
     - `@app.entrypoint` async throughout so no blocking operation can block `/ping`; `@app.ping` reporting
       `Healthy` or `HealthyBusy`; `time_of_last_update` omitted or set only on a real status change; the
@@ -1318,7 +1318,7 @@ directory.
       request exists
     - _Requirements: 33.8, 33.9_
 
-  - [ ] 17.4 Write the offline deployment-contract tests
+  - [x] 17.4 Write the offline deployment-contract tests
     - Drive `POST /invocations` and `GET /ping` against the locally served application with no AWS; assert
       the health response shape; assert `/ping` stays responsive and reports `HealthyBusy` for the whole
       time a turn is in flight
@@ -1326,11 +1326,49 @@ directory.
       Service 2. A4's direct forwarding is documented as sufficient only WHERE those match, so this is the
       test that keeps the assumption true rather than merely asserted. Drift here fails at Service 2, not
       here, which is the hardest place to attribute it
+    - `tests/unit/test_agentcore_app.py` (15) plus `tests/unit/test_audience_agreement.py` (4).
+      Advisor 1573 -> 1578 tests. Driven through `httpx.ASGITransport`, the pattern Service 2 already
+      uses; no socket is bound and `app.run()` is never called, so there is nothing to be flaky
+    - REQ 32.14 COULD NOT BE TESTED AS WRITTEN, AND THE FIX IS STRONGER THAN THE TEST. The obvious
+      reading -- compare the advisor's configured audience with Service 2's -- is not assertable
+      offline: both are resolved from the environment in two separately deployed processes, so there
+      is no runtime value to compare and matching DEFAULTS would prove nothing about a deployment
+    - What is assertable, and better: BOTH SERVICES NOW READ THE AUDIENCE FROM ONE ENVIRONMENT
+      VARIABLE. The advisor read `AQM_ADVISOR_JWT_ALLOWED_AUDIENCE` while Service 2 read
+      `AQM_COGNITO_CLIENT_ID` -- two names for one Cognito app client, with nothing linking them,
+      which is exactly the silent divergence Req 32.14 describes. `jwt_allowed_audience` is now on
+      `AQM_COGNITO_CLIENT_ID`, so the disagreement cannot be EXPRESSED rather than merely being
+      detectable after the fact
+    - Service 2's side is read FROM DISK and parsed from its AST, not imported (cross-service imports
+      are forbidden) and not hard-coded (a rename in Service 2 must FAIL this test, not pass it). A
+      non-vacuity test pins that the parse actually finds the variable
+    - The dropped `AQM_ADVISOR_` prefix is a deliberate exception with two tests around it: one
+      asserting this key does NOT carry the prefix, with the reason in the message so a tidy-up that
+      "fixes" it fails loudly, and one asserting every OTHER setting still does
+    - CORRECTED THE JUSTFILE: its note claimed tasks 17.4 and 19.3 would fix `test-integration-advisor`
+      selecting zero tests. 17.4 does not -- Req 26.5a puts the deployment contract in the OFFLINE
+      suite because the SDK serves those endpoints with no AWS, so these tests are unmarked. The first
+      `integration`-marked advisor test arrives with task 19.3
     - _Requirements: 26.5a, 32.4b, 32.14_
 
-  - [ ]* 17.5 Write property test that ping stays live during a turn
+  - [x]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**
     - **Validates: Requirements 32.4, 32.4a, 32.4b**
+    - `tests/properties/test_ping_properties.py`. Advisor 1578 -> 1582 tests
+    - SPLIT DELIBERATELY, AND THE SPLIT IS THE INTERESTING PART. "Ping stays live while a turn is in
+      flight" has two halves. The half needing REAL concurrency -- that GET /ping answers while
+      /invocations executes -- is an example test in `test_agentcore_app.py`, driven through a real
+      ASGI client with the turn gated on a threading event. The half that GENERALISES is here: for any
+      interleaving of turns starting and finishing, the status is busy exactly while work is
+      outstanding, and always returns to Healthy when balanced
+    - SYNCHRONOUS ON PURPOSE. All 99 other `@given` uses in this suite are sync and no property test is
+      async. Combining hypothesis with an event loop and an ASGI transport is where hanging tests come
+      from -- task 17.1 already lost ninety minutes to one hang -- and the concurrency that would
+      justify the risk is already pinned by the example. So this drives the SDK's own task bookkeeping,
+      which is the state /ping reads
+    - The load-bearing assertion is the EQUIVALENCE, in both directions: busy iff outstanding. Neither
+      a permanently-busy nor a never-busy implementation satisfies it. A fourth property covers the
+      timestamp: repeated reads must not advance it, and a real change must
 
 - [ ] 18. Asynchronous association trigger
   - [ ] 18.1 Implement the association trigger

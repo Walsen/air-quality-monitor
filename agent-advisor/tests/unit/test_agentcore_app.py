@@ -84,6 +84,22 @@ def _client(app: object) -> httpx.AsyncClient:
 # --- Req 32.1: the two routes exist -----------------------------------
 
 
+async def test_the_health_response_carries_exactly_the_documented_shape() -> None:
+    # Req 32.4's body, asserted as a SHAPE rather than by reading one field. The Runtime
+    # consumes this
+    # response to decide whether the session is healthy, so an extra or renamed key is a
+    # deployment
+    # fault that no advisory test would notice — and a malformed health response after a push to
+    # ECR
+    # is the expensive way to find out (Req 26.5a's own argument for testing it here).
+    async with _client(_app()) as client:
+        reply = await client.get("/ping")
+    body = reply.json()
+    assert set(body) == {"status", "time_of_last_update"}, body
+    assert body["status"] in {"Healthy", "HealthyBusy"}, body
+    assert isinstance(body["time_of_last_update"], int), body
+
+
 async def test_ping_answers_healthy_when_idle() -> None:
     async with _client(_app()) as client:
         reply = await client.get("/ping")
