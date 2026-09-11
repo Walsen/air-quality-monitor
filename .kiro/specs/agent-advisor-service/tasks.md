@@ -565,30 +565,81 @@ directory.
     - **Property 15: Audit minimisation**
     - **Validates: Requirement 20.3**
 
-- [ ] 13. Untrusted content and data minimisation
-  - [ ] 13.1 Implement the untrusted-content rules
-    - Treat the utterance, prior turns and every retrieved value as data; keep retrieved data structurally
-      separate from the utterance so text inside a field cannot present itself as a turn boundary; never
-      reveal system instructions, pattern sets or configuration; apply the output checks regardless of
-      what the input requested
+- [x] 13. Untrusted content and data minimisation
+  - [x] 13.1 Implement the untrusted-content rules
+    - `domain/disclosure.py`. Reqs 18.1 and 18.2 are deliberately NOT implemented as detection: you cannot
+      reliably recognise an instruction hidden in prose, and a service that believed it could would be
+      trusting a filter that fails silently. Compliance is instead made impossible to EXPRESS
+    - Req 18.3 holds because the output checks are unconditional — the verification ledger starts unverified
+      and `TurnPipeline.run` refuses to assemble without a positive verdict, so a successful injection can
+      only produce a WITHHELD turn, never a Forbidden_Claim
+    - Req 18.5's mechanism is JSON ENCODING, not a filter. The tools return `json.dumps` output and JSON
+      escapes newlines, so a retrieved field carrying a fake `Human:` turn boundary arrives as the two
+      characters backslash-n rather than a line break. Tested over four hostile shapes, plus a round-trip
+      test proving the value survives — escaping that lost the data would be a different bug. A structural
+      test also asserts no prompt-assembly function takes both an utterance and retrieved data, so there is
+      no string into which a retrieved field could be spliced beside the user's words
+    - Req 18.4 needed a real check, and over-breadth was the trap: the prompt talks about asthma,
+      emergencies and particulates, so a naive overlap test would reject every legitimate answer. The signal
+      is a VERBATIM SPAN of 8+ consecutive words. Protected text is matched LITERALLY, never compiled — the
+      Forbidden_Claim patterns are regexes, and compiling one would report disclosure whenever the
+      generation merely MATCHED the pattern, so an answer describing symptoms would be flagged
+    - A finding names which protected item was quoted and the run length, never the run or the protected
+      text: these strings reach logs, and a log echoing the system prompt discloses it a second time (same
+      reasoning as Req 21.8's field-name-only warning)
+    - DEFECT CAUGHT BEFORE SHIPPING: the system prompt states the particulate-lag and gaseous-same-day
+      explanations in the SAME WORDS the service is obliged to emit, because the prompt asks for that
+      wording. Without an exemption, an answer correctly explaining the three-day lag was reported as
+      disclosing the system prompt and the turn would have been withheld — the `you have` defect exactly.
+      `required_texts()` assembles every obliged text so a caller cannot forget the exemption, and the
+      sweep covers ALL of them rather than the one that failed, since narrowness was the root cause the
+      first time. A non-vacuity test proves the exemption does not swallow the hard-limits section
+    - A second test-side defect: the short-phrase threshold test used `str.split()` while the checker
+      tokenises on non-alphanumerics, so seven whitespace tokens yielded eight word tokens. Built from the
+      tokeniser's own output now
     - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.5_
 
-  - [ ] 13.2 Implement the personal-data minimisation sweep
-    - A data-driven leak sweep running the full turn lifecycle at DEBUG with a distinctive sentinel in
-      every request and profile field, plus a completeness test comparing sentinel keys against the model
-      field sets so adding a field fails until it has a sentinel; a self-check proving the sweep can see a
-      planted value; assert the pseudonymous identity is still logged
-    - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.6_
+  - [x] 13.2 Implement the personal-data minimisation sweep
+    - `tests/unit/test_minimisation_sweep.py`. Redaction is keyed on the KEY NAME, so the leak the sweep
+      exists to catch is a sensitive VALUE arriving under an innocuous key — a condition logged as `detail`
+      is invisible to `SENSITIVE_KEY_MARKERS`. The sweep therefore inspects no key names: it plants a
+      distinctive sentinel in every field a turn can carry, runs the lifecycle at DEBUG, and asserts no
+      sentinel reaches the log by any route. Assertions are on the FORMATTED output, because context
+      arrives as `extra` and the formatter is what reaches stdout
+    - The lifecycle run deliberately covers the paths a happy-path test would skip — the drift watcher, the
+      degraded response, the top-level handler and a FAILING audit store — because those are where an author
+      reaches for "just log the context so we can debug it"
+    - COMPLETENESS is data-driven: sentinel keys are compared against `AdvisoryRequest.model_fields`,
+      `PriorTurn.model_fields` and the canned profile body's own keys, so a new field fails this file until
+      it has a sentinel. That test immediately earned its place — it caught `sensitivity_level` where I had
+      assumed `sensitivity`, and a `routines` field I had not covered at all
+    - SELF-CHECK included: one test plants a sentinel deliberately and asserts the sweep sees it, because a
+      sweep that could not see a leak would pass on a service that logged everything. Sentinels are
+      distinctive rather than realistic (`SENTINEL-CONDITION-Q7X`, not `asthma`) so they cannot collide
+      with the service's own prose and report a leak that is really a docstring
+    - Req 19.3 asserted POSITIVELY: the pseudonymous identity still reaches the log, since a sweep that
+      redacted everything would look maximally safe while making an incident undiagnosable
+    - DEFECT FIXED: Req 19.4 has two clauses, and the broad `location` marker satisfied the first while
+      making the second IMPOSSIBLE — "WHERE a location must be identified THE Service SHALL use the
+      location name Service 2 returned", yet `location_name` was redacted, so there was no way to say which
+      of a user's sites an entry concerned. New `PERMITTED_LOCATION_KEYS` (`location_name`, `site_name`,
+      `site_code`), exact names only exactly as `PERMITTED_COUNT_KEYS` is — a substring exception would
+      re-open the marker it exists to narrow, and `location_coordinates` would pass. Eight near-miss keys
+      are pinned as still redacted, and a test asserts the three permitted sets are disjoint
+    - `locationName` in camelCase stays REDACTED deliberately: this service writes its own log keys in
+      snake_case, so the camelCase form only appears when a whole retrieved body is passed — which is
+      exactly what must not be logged
+    - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.5, 19.6_
 
-  - [ ]* 13.3 Write property test for credential non-disclosure
+  - [x]* 13.3 Write property test for credential non-disclosure
     - **Property 8: Credential non-disclosure**
     - **Validates: Requirements 5.1, 5.2, 5.4**
 
-  - [ ]* 13.4 Write property test that personal data never reaches a log
+  - [x]* 13.4 Write property test that personal data never reaches a log
     - **Property 9: Personal data never reaches a log**
     - **Validates: Requirements 19.2, 19.4, 24.5**
 
-  - [ ]* 13.5 Write property test for injection resistance
+  - [x]* 13.5 Write property test for injection resistance
     - **Property 18: Injection does not move the guardrails**
     - **Validates: Requirements 18.1, 18.2, 18.3, 18.4**
 

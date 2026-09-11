@@ -6,37 +6,29 @@ call.
 
 REDACTION IS CONFIGURED ONCE, IN THE FORMATTER, and that is the whole design. A per-call-site
 discipline cannot deliver Requirement 19.2's promise, because the promise has to hold at call
-sites
-nobody has written yet. So the formatter is the only place that decides, and every event goes
-through it.
+sites nobody has written yet. So the formatter is the only place that decides, and every event
+goes through it.
 
 **Service 3 holds a category of data Service 2 never did: the user's own words.** Requirement
-19.2
-forbids any utterance substring reaching a log. A key-name redactor cannot promise that alone —
-a
-caller can always put prose under an innocent key — so there are two layers, and the second is
-structural: ``AdvisoryRequest`` carries the utterance in a field that refuses to render, the
-same
-technique that made Service 2's ``UserProfile`` opaque. This module is the first layer.
+19.2 forbids any utterance substring reaching a log. A key-name redactor cannot promise that
+alone — a caller can always put prose under an innocent key — so there are two layers, and the
+second is structural: ``AdvisoryRequest`` carries the utterance in a field that refuses to
+render, the same technique that made Service 2's ``UserProfile`` opaque. This module is the
+first layer.
 
 TWO CLAUSES THAT LOOK LIKE ONE. Requirement 19.4 permits logging the pseudonymous identity while
 19.2 forbids everything else about the user. So the identity is an explicit exception rather
-than an
-oversight, and a test asserts it still appears — otherwise every redaction test above it would
-pass
-just as happily against a logger that emitted nothing.
+than an oversight, and a test asserts it still appears — otherwise every redaction test above it
+would pass just as happily against a logger that emitted nothing.
 
 THE COUNT ALLOWLIST CARRIES A LESSON FROM SERVICE 2, where a configured CAP on medications was
 redacted as though it were a medication name. Here the collision is ``token``: Requirement 22
-bounds
-a turn in OUTPUT TOKENS and Requirement 24.4 counts token usage, and a token COUNT is not a
-credential. The exception is EXACT-MATCH, so ``output_tokens`` is permitted while
-``access_token``,
-``id_token`` and ``token_value`` stay redacted. Two guards keep it honest: a near-miss must
-still be
-redacted, and an entry no marker would have caught is dead weight that implies coverage it does
-not
-provide — a guard that caught two such entries in Service 2 on its first run.
+bounds a turn in OUTPUT TOKENS and Requirement 24.4 counts token usage, and a token COUNT is not
+a credential. The exception is EXACT-MATCH, so ``output_tokens`` is permitted while
+``access_token``, ``id_token`` and ``token_value`` stay redacted. Two guards keep it honest: a
+near-miss must still be redacted, and an entry no marker would have caught is dead weight that
+implies coverage it does not provide — a guard that caught two such entries in Service 2 on its
+first run.
 """
 
 from __future__ import annotations
@@ -82,6 +74,21 @@ PERMITTED_COUNT_KEYS = frozenset(
     }
 )
 """Keys that look credential-shaped but carry a count. See the module docstring."""
+
+PERMITTED_LOCATION_KEYS = frozenset({"location_name", "site_name", "site_code"})
+"""Requirement 19.4's prescribed ALTERNATIVE to a coordinate.
+
+Req 19.4 has two clauses, and the broad `location` marker below satisfied the first while making
+the second impossible: "THE Service SHALL NOT include a coordinate in a log entry, and WHERE a
+location must be identified THE Service SHALL use the location name Service 2 returned." With
+`location_name` redacted there was no way to identify a site at all, so an operator diagnosing
+one user's site had nothing to go on and the requirement's safe option was unavailable.
+
+Exact names only, exactly as `PERMITTED_COUNT_KEYS` is. A substring exception would re-open the
+marker it exists to narrow — `location` would match `location_coordinates` again. A site code
+and a site name are public sensor facts, the same reasoning that lets the audit record store the
+composite identifier.
+"""
 
 SENSITIVE_KEY_MARKERS: tuple[str, ...] = (
     # Credentials. The inbound credential is opaque to this service (assumption A4a) and must
@@ -142,11 +149,14 @@ def is_sensitive(key: str) -> bool:
     """True when a context key must have its value redacted.
 
     Public because the tests assert over it directly: a rule this load-bearing should be
-    checkable
-    without going through a formatted record, so a near-miss can be pinned key by key.
+    checkable without going through a formatted record, so a near-miss can be pinned key by key.
     """
     lowered = key.lower()
-    if lowered in PERMITTED_IDENTITY_KEYS or lowered in PERMITTED_COUNT_KEYS:
+    if (
+        lowered in PERMITTED_IDENTITY_KEYS
+        or lowered in PERMITTED_COUNT_KEYS
+        or lowered in PERMITTED_LOCATION_KEYS
+    ):
         return False
     return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
 
@@ -197,8 +207,7 @@ class EventLogger:
 
     An event name rather than a formatted message, because a message built by interpolation is
     exactly how a redacted value re-enters a log: the formatter can only redact what arrives as
-    a
-    separate key.
+    a separate key.
     """
 
     def __init__(self, logger: logging.Logger) -> None:
@@ -264,8 +273,7 @@ def log_handled_error(
     into a documented response separately.
 
     The stack is passed as a STRING so the formatter's redaction still applies to it. Rendered
-    as
-    a structure it would sidestep that path, and a stack frame can carry a local holding an
+    as a structure it would sidestep that path, and a stack frame can carry a local holding an
     utterance.
     """
     stack = "".join(
@@ -277,6 +285,7 @@ def log_handled_error(
 __all__ = [
     "PERMITTED_COUNT_KEYS",
     "PERMITTED_IDENTITY_KEYS",
+    "PERMITTED_LOCATION_KEYS",
     "PERMITTED_LOG_LEVELS",
     "REDACTED",
     "SENSITIVE_KEY_MARKERS",
