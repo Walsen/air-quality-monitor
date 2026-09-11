@@ -344,6 +344,22 @@ connect how I have been feeling to what I have been breathing.
 
 1. WHEN the turn requires readings over a past window, THE Service SHALL retrieve them through the
    Serving_Client by calling Service 2's `/v1/air-quality/history` with an explicit start and end.
+1a. THE Service SHALL take the `siteCode` that call requires from the Air_Quality_Snapshot already
+   retrieved in the same turn, and SHALL NOT configure one, derive one from a coordinate, or invent
+   one. Service 2's Requirement 19 criterion 3 makes `siteCode` a required parameter and its
+   criterion 7 answers 404 for a site absent from the Sensor_Registry, so a history call has no
+   valid form without one. The site is resolved per user from their stored location, which means a
+   deployment-wide configured value would serve one user another location's readings as if they
+   were their own — a correctness fault before it is a privacy one. THEREFORE a history retrieval
+   REQUIRES a snapshot first, and IF none was retrieved THEN THE Service SHALL report the period as
+   unavailable rather than guessing a site.
+1b. THE Service SHALL use the NEAREST site the snapshot names, and this is a STATED LIMITATION rather
+   than a resolved design: Service 2 merges every stored location into one distance-sorted list, so
+   for a user with several locations the nearest site overall may not be the one their question was
+   about, and the history tool offers no way to say which location they meant. A review raised this;
+   it is recorded here so the limit is visible rather than implied. Per-location history would need a
+   selector that maps a location to a site drawn FROM THE SNAPSHOT, which criterion 1a already
+   requires, and is out of scope until a requirement asks for it.
 2. THE Service SHALL derive the requested window from the utterance and the injected Clock, and SHALL
    NOT request a span exceeding the maximum Service 2 permits.
 3. IF Service 2 rejects the window, THEN THE Service SHALL report that the requested period is not
@@ -1143,6 +1159,22 @@ the non-diagnostic constraint does not rest solely on the model's willingness to
    `ApplyGuardrail` operation with `source` set to `OUTPUT`. That operation is decoupled from model
    invocation, so it verifies text the service already holds — which is what makes it a check on the
    output rather than a hope about the generation.
+2a. THE Service SHALL treat guidance that is empty or whitespace-only as PASSED WITHOUT calling
+   `ApplyGuardrail`, because there is no content to deny and the call would otherwise spend a request to
+   learn nothing. The decisive reason is not cost: `GuardrailTextBlock.text` carries no minimum length in
+   the service model, so botocore does NOT reject an empty string client-side and the rejection, if any,
+   arrives from the service as a `ValidationException` — which an adapter's error handling would most
+   naturally map to unavailable. Emptiness would then MASQUERADE AS UNAVAILABILITY and trigger criterion
+   6's fail-closed path for a text that is trivially clean. An empty generation is a Requirement 6
+   criterion 5 problem, not a guardrail verdict.
+2b. THE Service SHALL map the guardrail response by matching the SUCCESS value explicitly — `action` equal
+   to `NONE` yields passed — and SHALL treat every other value, including one this service does not
+   recognise, as an intervention. `GuardrailAction` carries exactly two values today, `NONE` and
+   `GUARDRAIL_INTERVENED`, so the inverted test would be equivalent now and would FAIL OPEN the day AWS
+   adds a third: an unrecognised action read as passed would emit unverified health-adjacent text. There is
+   no response value meaning "could not evaluate", so an unavailable verdict can only originate from an
+   exception and never from a response.
+
 3. THE Service SHALL configure Denied Topics covering diagnosis, medication administration, and dosing,
    because Denied Topics enforced on output is the control that most directly expresses Requirement 8's
    prohibition.

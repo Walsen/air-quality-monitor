@@ -145,16 +145,17 @@ def test_the_client_records_its_calls_in_order() -> None:
     client = ScriptedServingClient()
     client.air_quality("c")
     client.profile_get("c")
-    client.history("c", _NOW, _NOW)
+    client.history("c", "AQM1", _NOW, _NOW)
     assert client.tool_names() == ("air_quality", "profile_get", "history")
 
 
 def test_the_history_call_records_the_window_it_was_asked_for() -> None:
     client = ScriptedServingClient()
-    client.history("c", _NOW, _NOW + dt.timedelta(days=1), frozenset({"PM25"}))
+    client.history("c", "AQM1", _NOW, _NOW + dt.timedelta(days=1), frozenset({"PM25"}))
     _name, args = client.calls[0]
-    assert args[0] == _NOW
-    assert args[2] == frozenset({"PM25"})
+    assert args[0] == "AQM1", "Req 3.1a's site code must be recorded with the window"
+    assert args[1] == _NOW
+    assert args[3] == frozenset({"PM25"})
 
 
 def test_the_canned_body_carries_the_guardrail_envelope() -> None:

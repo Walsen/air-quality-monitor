@@ -124,11 +124,23 @@ class ServingClient(Protocol):
     def history(
         self,
         credential: str,
+        site_code: str,
         start: dt.datetime,
         end: dt.datetime,
         species: frozenset[str] | None = None,
     ) -> Mapping[str, object]:
-        """Return a readings history over a window (Requirement 3.1)."""
+        """Return a readings history over a window (Requirements 3.1, 3.1a).
+
+        `site_code` comes from the Air_Quality_Snapshot retrieved earlier in the same turn and
+        is
+        REQUIRED, because Service 2's Req 19.3 makes it a required parameter — a history call
+        has no
+        valid form without one. It was absent from this signature until task 16.3 wrote the
+        first
+        real HTTP adapter and found the request could not be built; the scripted adapter had
+        masked
+        it by answering from a canned body. Req 3.1a forbids configuring or inventing one.
+        """
         ...
 
     def profile_get(self, credential: str) -> Mapping[str, object]:

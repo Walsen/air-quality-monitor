@@ -47,10 +47,55 @@ from aqm_advisor.ports.protocols import ServingFailureKind
 OTHER = "other"
 """The label value an unrecognised one collapses to. Never a truncation of the original."""
 
-PERMITTED_GUARDRAIL_CATEGORIES: frozenset[str] = frozenset(
-    _CATEGORY_BY_PATTERN.values()
-) | {"other"}
-"""Req 8's Forbidden_Claim families, which are what Req 20.2 stores and Req 24.4 counts."""
+MANAGED_GUARDRAIL_CATEGORY_PREFIXES: tuple[str, ...] = (
+    "content_",
+    "word_",
+    "pii_",
+    "regex_",
+    "grounding_",
+)
+"""Prefixes the Bedrock guardrail adapter puts on a managed-policy category.
+
+Prefixes rather than an exhaustive list, because the values behind them are AWS enums — content
+filter types, PII entity types, managed word lists — that AWS extends without asking. An exact-
+match
+allowlist over those would collapse each newly added type to `other` the day it first fired,
+which
+is the same silent-miscount this set exists to prevent.
+"""
+
+PERMITTED_GUARDRAIL_CATEGORIES: frozenset[str] = (
+    frozenset(_CATEGORY_BY_PATTERN.values())
+    | {OTHER}
+    | {"medication_administration", "uncategorised_intervention", "guardrail_unavailable"}
+)
+"""Req 8's Forbidden_Claim families, which are what Req 20.2 stores and Req 24.4 counts.
+
+WIDENED FOR THE MANAGED GUARDRAIL. A review found this set derived only from the LOCAL regex
+families, while task 16.4's Bedrock adapter emits `medication_administration` (one of Req 34.3's
+own
+denied topics), plus `uncategorised_intervention` and `guardrail_unavailable`. Because
+`safe_label_value` is exact-match, all three collapsed to `other`: the Req 34.4 total survived,
+but an
+operator could not see how often the dosing topic fired or how often the guardrail was down.
+Latent
+rather than live only because nothing calls the metric until task 21 wires it.
+"""
+
+
+def is_permitted_guardrail_category(category: str) -> bool:
+    """Whether a category may be published as a metric label.
+
+    Exact match against the set above, OR a known managed-policy prefix. Two mechanisms because
+    the
+    two vocabularies differ in kind: this service's own families are a closed set it can
+    enumerate,
+    while AWS's are an open set it can only recognise by shape.
+    """
+    return category in PERMITTED_GUARDRAIL_CATEGORIES or any(
+        category.startswith(prefix) and len(category) > len(prefix)
+        for prefix in MANAGED_GUARDRAIL_CATEGORY_PREFIXES
+    )
 
 PERMITTED_SERVING_FAILURE_KINDS: frozenset[str] = frozenset(
     kind.value for kind in ServingFailureKind
@@ -163,11 +208,16 @@ class AdvisorMetrics:
         self._turns_degraded.add(1)
 
     def guardrail_rejection(self, category: str) -> None:
-        """Count one withheld generation, by category (Req 24.4, Req 8.6)."""
-        self._guardrail_rejections.add(
-            1,
-            {"category": safe_label_value(category, permitted=PERMITTED_GUARDRAIL_CATEGORIES)},
-        )
+        """Count one withheld generation, by category (Req 24.4, Req 8.6).
+
+        Routed through `is_permitted_guardrail_category` rather than a bare exact-match set, so
+        a
+        managed-policy category from the Bedrock adapter keeps its identity instead of
+        collapsing to
+        `other` and hiding which policy fired.
+        """
+        label = category if is_permitted_guardrail_category(category) else OTHER
+        self._guardrail_rejections.add(1, {"category": label})
 
     def escalation_returned(self, kind: str) -> None:
         """Count one escalating turn, by kind."""

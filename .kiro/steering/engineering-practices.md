@@ -15,7 +15,7 @@ Air Quality Monitor is a monorepo of three services:
 | Directory | Service | Role |
 |-----------|---------|------|
 | `sensor-simulator/` | Sensor Simulator | Emits Breathe-London-shaped sensor data over MQTT and REST |
-| `data-procesing/` | Ingestion & Serving | Ingests, calibrates, computes AQI, stores, and serves per-user views |
+| `data-processing/` | Ingestion & Serving | Ingests, calibrates, computes AQI, stores, and serves per-user views |
 | `agent-advisor/` | AI Advisor Agent | Consumes the serving API and generates guidance |
 
 - **Language:** Python 3.12 across all three services.

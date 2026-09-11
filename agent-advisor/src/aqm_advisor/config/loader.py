@@ -92,9 +92,9 @@ class _Problems:
 
 
 REGISTERED_ADAPTERS: Mapping[str, tuple[str, ...]] = {
-    "serving_client": ("scripted",),
+    "serving_client": ("scripted", "http"),
     "guardrail_checker": ("local", "bedrock"),
-    "advice_audit_store": ("memory",),
+    "advice_audit_store": ("memory", "dynamodb"),
     "association_trigger": ("recording",),
     "model": ("scripted", "bedrock"),
     "clock": ("system", "fixed"),

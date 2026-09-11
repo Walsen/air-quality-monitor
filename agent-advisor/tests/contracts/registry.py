@@ -24,12 +24,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
+from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
+from aqm_advisor.adapters.guardrail.bedrock import ApplyGuardrailChecker
 from aqm_advisor.adapters.local import (
     InMemoryAdviceAuditStore,
     LocalGuardrailChecker,
     RecordingAssociationTrigger,
     ScriptedServingClient,
+    canned_air_quality,
 )
+from aqm_advisor.adapters.serving.http import HttpServingClient
 from aqm_advisor.ports.protocols import (
     AdviceAuditStore,
     AssociationTrigger,
@@ -38,6 +44,7 @@ from aqm_advisor.ports.protocols import (
     ServingFailureKind,
     port_protocols,
 )
+from tests.support.fake_dynamodb import FakeTable
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +68,14 @@ class AdapterCase:
     A case with no seam cannot have that contract checked at all, and the suites treat the
     absence
     as a FAILURE rather than a skip: "we could not test the failure path" is not a pass.
+
+    `build_intervening` exists for the same reason and was found the same way — by this suite
+    failing when the second guardrail adapter joined. WHAT MAKES AN ADAPTER INTERVENE IS
+    ADAPTER-SPECIFIC: the local checker decides from its own patterns, the Bedrock one from what
+    the service replied. So a shared test feeding clinical text and expecting an intervention
+    was
+    testing the DECISION, which differs per adapter, rather than the port's contract — which is
+    that an intervention comes back as a verdict carrying categories, never as an exception.
     """
 
     port: str
@@ -69,6 +84,7 @@ class AdapterCase:
     requires_endpoint: str | None = None
     build_failing: Callable[[], Any] | None = None
     build_unavailable: Callable[[], Any] | None = None
+    build_intervening: Callable[[], Any] | None = None
 
     @property
     def is_offline(self) -> bool:
@@ -122,6 +138,72 @@ paragraph is wrong.
 """
 
 
+class _StubGuardrailRuntime:
+    """A `bedrock-runtime` stand-in for the contract registry.
+
+    Lets the `ApplyGuardrailChecker` be a contract case WITHOUT an AWS account, which is the
+    payoff of its
+    client being injected. What this verifies is the part that can be wrong in the adapter's own
+    code — the
+    action mapping, the category extraction, the fail-closed default. What it does NOT verify is
+    that a real
+    `ApplyGuardrail` response has the shape this adapter parses, and no offline test can: that
+    belongs behind
+    Req 26.6's integration fence, and saying so is the difference between a scoped guarantee and
+    an overclaim.
+    """
+
+    def __init__(self, *, raises: Exception | None = None, intervenes: bool = False) -> None:
+        self.raises = raises
+        self.intervenes = intervenes
+
+    def apply_guardrail(self, **_kwargs: object) -> dict[str, object]:
+        """Answer as a guardrail that intervened, or did not, or could not be reached."""
+        if self.raises is not None:
+            raise self.raises
+        if self.intervenes:
+            return {
+                "action": "GUARDRAIL_INTERVENED",
+                "assessments": [
+                    {"topicPolicy": {"topics": [{"name": "diagnosis"}]}}
+                ],
+            }
+        return {"action": "NONE", "assessments": []}
+
+
+def _bedrock_checker(
+    *, raises: Exception | None = None, intervenes: bool = False
+) -> ApplyGuardrailChecker:
+    return ApplyGuardrailChecker(
+        client=_StubGuardrailRuntime(raises=raises, intervenes=intervenes),
+        guardrail_identifier="gr-contract",
+        guardrail_version="DRAFT",
+    )
+
+
+def _http_serving(*, failing: bool = False) -> HttpServingClient:
+    """The real HTTP adapter on a mock transport, so it stays a contract case offline.
+
+    The payoff of the transport being injectable: the routing, the per-call credential handling
+    and
+    the whole status-to-kind mapping are this adapter's own code and are checkable with no
+    account
+    and no network. What it does NOT prove is that Service 2 answers these shapes — that is Req
+    26.6's integration fence, and the honest boundary of what this case certifies.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failing:
+            raise httpx.ConnectError("refused")
+        return httpx.Response(200, json=dict(canned_air_quality()))
+
+    return HttpServingClient(
+        base_url="https://serving.invalid",
+        timeout_seconds=30,
+        transport=httpx.MockTransport(handler),
+    )
+
+
 ADAPTER_CASES: tuple[AdapterCase, ...] = (
     AdapterCase(
         "serving_client",
@@ -132,12 +214,31 @@ ADAPTER_CASES: tuple[AdapterCase, ...] = (
         ),
     ),
     AdapterCase(
+        "serving_client",
+        "http",
+        _http_serving,
+        build_failing=lambda: _http_serving(failing=True),
+    ),
+    AdapterCase(
         "guardrail_checker",
         "local",
         LocalGuardrailChecker,
         build_unavailable=lambda: LocalGuardrailChecker(unavailable=True),
+        build_intervening=LocalGuardrailChecker,
+    ),
+    AdapterCase(
+        "guardrail_checker",
+        "bedrock",
+        _bedrock_checker,
+        build_unavailable=lambda: _bedrock_checker(raises=RuntimeError("throttled")),
+        build_intervening=lambda: _bedrock_checker(intervenes=True),
     ),
     AdapterCase("advice_audit_store", "memory", InMemoryAdviceAuditStore),
+    AdapterCase(
+        "advice_audit_store",
+        "dynamodb",
+        lambda: DynamoDbAdviceAuditStore(table=FakeTable()),
+    ),
     AdapterCase("association_trigger", "recording", RecordingAssociationTrigger),
 )
 """Every adapter of every port.

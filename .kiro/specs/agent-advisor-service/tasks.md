@@ -960,7 +960,7 @@ directory.
     - _Requirements: 23.2, 23.3, 23.4, 23.5, 23.6, 34.9; 23.1 PARTIAL (payload provided, emission deferred
       to task 21.1)_
 
-- [ ] 16. Real adapters and shared port contract suites
+- [x] 16. Real adapters and shared port contract suites
   - [x] 16.1 Write the shared behavioural test suite per port
     - `tests/contracts/`: a `registry.py` holding every adapter of every port, plus one behavioural suite per
       port parameterised over that port's adapters. Advisor 1372 -> 1404 tests. New recipe
@@ -1030,30 +1030,221 @@ directory.
       integration-only, and a vacuous suite is worse than none because it certifies
     - _Requirements: 26.8_
 
-  - [ ] 16.2 Implement the `BedrockModel` adapter configuration
+  - [x] 16.2 Implement the `BedrockModel` adapter configuration
     - Model identifier and region from configuration and never a literal; `temperature` 0 by default with
       any sampling parameter as configuration; the request timeout and maximum output length applied; the
       model credential resolved only from the environment or a runtime path and never logged
+    - `adapters/model/bedrock.py`. No wrapper class, per DD2: the Strands `Model` ABC IS the port, so
+      this is a CONFIGURED `BedrockModel` and nothing more
+    - THE FINDING IS A FAIL-OPEN IN THE FRAMEWORK. `strands-agents==1.55.1` bakes in
+      `DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"` and
+      `DEFAULT_BEDROCK_REGION = "us-west-2"`, and `BedrockModel.__init__` substitutes them with only a
+      `warning` when none is supplied. Req 6.1b says the identifier and region come from configuration and
+      "never from a literal in code" — A FRAMEWORK LITERAL IS STILL A LITERAL. Without a refusal an
+      unconfigured deployment answers on a model nobody chose, in a region nobody chose, having logged a
+      warning nobody read. `build_bedrock_model` refuses, accumulating BOTH missing values like the loader
+    - Req 6.4's timeout is NOT a `BedrockConfig` field — it belongs to `boto_client_config`, read from the
+      installed strands source. Assuming otherwise would have set a key the SDK ignores and left Req 6.4
+      unenforced WHILE LOOKING CONFIGURED, which no test asserting `get_config()` would have caught. The
+      test therefore asserts through `model.client.meta.config`
+    - `max_tokens` is OMITTED, not passed as None, when unconfigured: Req 6.5 treats a truncated generation
+      as a failure, so inventing a ceiling would manufacture the very failure the requirement detects
+    - Req 6.6 takes NO credential parameter — boto3's own chain resolves from the environment or a runtime
+      path, which is exactly what the requirement permits. A parameter would be a second path and a value
+      that can reach a repr, a log line or a traceback
+    - The two token keys stay distinct, confirmed rather than merged: `max_output_tokens` is Req 22's loop
+      budget via `InvocationBounds`, `model_max_output_tokens` is Req 6.5's per-request ceiling
+    - REVIEW FIX — `model_credential_path` was REQUIRED by the loader whenever the bedrock adapter is
+      selected and CONSUMED BY NOTHING, so an operator had to supply a path to a real file that
+      changed no behaviour, and omitting it refused startup for no reason. Req 6.6 permits the
+      environment OR "a runtime-supplied path", so the path is now honoured: a low-level session with
+      its shared-credentials-file variable set to that path, wrapped in a `boto3.Session`
+    - THE TRAP THAT CAME WITH IT — `BedrockModel.__init__` RAISES `ValueError` when handed both
+      `region_name` and `boto_session`, and derives the region from `session.region_name` instead. So
+      consuming the path required moving the region onto the session; without that, selecting a
+      credential path would have raised at construction. Read from the installed strands source
+    - The path is HANDED OVER, never opened. Resolution is lazy — it happens when a call is first
+      signed — so a nonexistent path still builds, which is asserted, and no secret material enters
+      this process's frames. `session_for_credential_path` is its own function because testing it
+      through a built model meant reaching into `model.client` internals, which do not retain the
+      session; a test that cannot see what it claims to check is a shape a review already caught here
+    - `max_tokens` is now passed even when None, after reading `format_request`: it builds
+      `inferenceConfig` with an `if value is not None` filter, so a None never reaches the wire. An
+      earlier comment here asserted omitted and None were different requests, which is FALSE for this
+      SDK — verifying it collapsed four call forms into two
     - _Requirements: 6.1b, 6.4, 6.5, 6.6, 25.4_
 
-  - [ ] 16.3 Implement the HTTP `ServingClient` adapter
+  - [x] 16.3 Implement the HTTP `ServingClient` adapter
     - `httpx` client over Service 2's routes forwarding the credential in the header; the credential folded
       into the client and not retained as an attribute; failures translated to typed errors naming the
       failure kind and never the credential; a token rejected for remaining lifetime reported as an
       authentication failure with no refresh attempt
-    - _Requirements: 5.2, 5.4, 21.1, 32.8a_
+    - `adapters/serving/http.py`, registered as `http`. Driven through `httpx.MockTransport`, which ships
+      with the pinned `httpx==0.28.1` — no new dependency, and the whole adapter is offline-testable
+    - FOUND A REAL CROSS-SERVICE CONTRACT DEFECT, and it needed a REQUIREMENTS fix first (new Req 3.1a).
+      Service 2's Req 19.3 makes `siteCode` a REQUIRED parameter of `/v1/air-quality/history`, and the
+      advisor's requirements did not mention `siteCode` ANYWHERE. The port's
+      `history(credential, start, end, species)` therefore could not build a valid request at all. The
+      scripted adapter had masked it completely by answering from a canned body — the defect would have
+      surfaced first at deployment
+    - Req 3.1a resolves it: the site comes from the Air_Quality_Snapshot retrieved in the SAME turn, never
+      configured and never invented. A deployment-wide configured site would serve one user another
+      location's readings as if they were their own, which is a correctness fault before it is a privacy
+      one; and a guessed site is answered 404 by Service 2, so a guess would surface as a service fault
+      rather than the mistake it is. History now REQUIRES a snapshot first and reports the period
+      unavailable otherwise. The tool exposes no site parameter, asserted against the model-facing
+      `inputSchema` so the model cannot supply one
+    - THE CREDENTIAL IS BUILT PER CALL, NEVER FOLDED INTO A CLIENT. An `httpx.Client(headers={...})` is the
+      obvious shape and it is wrong: the client is held as an attribute, so the credential becomes
+      reachable and lands in any repr, log line or traceback. The contract suite's `_deep_render` walks
+      three hops looking for exactly that, and the adapter passes it
+    - 401 AND 403 map to UNAUTHORIZED and are NOT retried (Req 32.8a): a forwarded token keeps ageing, so
+      it can be accepted at the front door and be near expiry by a later call in the same turn. Asserted by
+      counting requests, because a retry is invisible to a kind assertion alone
+    - `from None` on every raise: chaining would attach the original `httpx` error, whose message and
+      request object can name the URL and carry the Authorization header — what Reqs 5.2 and 21.4 forbid
+    - Status mapping is EXPLICIT rather than a range test, so 401/403 cannot fall into 400's bucket; a
+      non-JSON body and a JSON body that is not an object both map to UNUSABLE_BODY
+    - REVIEW FIX — the air-quality call counter incremented BEFORE the request, so one transient
+      serving failure spent the turn's only retrieval: the model's retry was refused with "already
+      retrieved" (false), and Req 3.1a then left history unavailable for the rest of the turn. Req 2.6
+      bounds SUCCESSFUL snapshots — its reason is that a second snapshot could differ from the basis,
+      and an attempt that returned nothing cannot differ from anything
+    - REVIEW FIX — Req 3.3 requires a rejected window be reported "and the permitted bound", and the
+      bound could never reach the model: it exists only in Service 2's body, which Req 21.4 forbids
+      forwarding, so the note carried the bare kind `bad_request`. `_failure_note` now restates the
+      bound from THIS service's own constant, so no Service 2 text crosses the boundary
+    - REVIEW FIX — a 3xx fell through every status branch to `.json()`, so a redirect carrying a JSON
+      body was returned AS SUCCESS. Also `httpx.InvalidURL`, `CookieConflict` and `StreamError` are
+      NOT `HTTPError` subclasses, so they escaped the adapter and broke the port's contract that a
+      failure arrives as `ServingClientError` — the caller catches only that, so one would have
+      crashed the turn instead of degrading it. Neither carries a `.request`, so no credential was at
+      risk; the contract was still untrue
+    - REVIEW FIX — multiple species were comma-joined, but Service 2's route takes ONE species, so the
+      request asked for a species literally named "NO2,PM25" and matched nothing: an EMPTY window
+      returned as success, which is worse than an error because nothing reports it. Now refused as a
+      request Service 2 cannot serve
+    - A SECURITY REVIEW TRIED TO BREAK THE CREDENTIAL CLAIM AND COULD NOT. It traced the returned
+      `Response` (which does hold a `Request` carrying the header), exception chaining, traceback
+      locals, the non-`HTTPError` escapes, the idempotency key and the patch body. Every path breaks
+      before a log, for two independent reasons worth keeping: standard traceback formatting does not
+      render frame locals, and `handle_at_top_level` logs `type(error).__name__` ONLY
+    - CARRIED TO TASK 17 — `retrieved_site_code` lives in a per-turn closure, and nothing production
+      reuses it yet. If task 17's entrypoint ever builds the tool tuple ONCE and reuses it, the site
+      code leaks across turns and, with one closure serving two users, across users. Task 17 should
+      assert per-turn construction structurally
+    - _Requirements: 3.1a, 3.1b, 3.3, 5.2, 5.4, 21.1, 32.8a_
 
-  - [ ] 16.4 Implement the `ApplyGuardrail` adapter
+  - [x] 16.4 Implement the `ApplyGuardrail` adapter
     - `ApplyGuardrail` with `source` OUTPUT against a configured guardrail identifier and version; denied
       topics covering diagnosis, medication administration and dosing; an intervention treated as a
       rejection counted by category; unavailability failing closed for anything the local checks cannot
       clear
-    - _Requirements: 34.2, 34.3, 34.4, 34.6, 34.9_
+    - `adapters/guardrail/bedrock.py`. Advisor 1407 -> 1444 tests. Taken BEFORE 16.2 and 16.3 because Req
+      30.2's regex fast path is documented as insufficient with Req 34.5's managed guardrail as the
+      AUTHORITY, so until this adapter existed Req 30.2 had no real enforcement on generated text
+    - EVERY API FACT WAS READ FROM BOTOCORE'S SERVICE MODEL, not assumed — and doing so CORRECTED the
+      premise I started from. A review had said `ApplyGuardrail` rejects empty content; the model puts NO
+      minimum on `GuardrailTextBlock.text`, so botocore does not reject it client-side at all
+    - NEW REQ 34.2a: empty or whitespace-only guidance is PASSED WITHOUT calling the API. The reason is not
+      cost. The service's own rejection would arrive as an exception, the adapter would map it to
+      UNAVAILABLE, and Req 34.6's fail-closed path would fire for a text that is trivially clean —
+      emptiness would MASQUERADE AS UNAVAILABILITY. An empty generation is Req 6.5's problem
+    - NEW REQ 34.2b, the sharper find: `GuardrailAction` has exactly TWO values, so `action == "NONE"` and
+      `action != "GUARDRAIL_INTERVENED"` are equivalent TODAY and fail in OPPOSITE directions the day AWS
+      adds a third. The inverted test would read an unrecognised action as PASSED and emit unverified
+      health-adjacent text. The success value is matched explicitly; anything else, including a differently
+      cased or absent action, is an intervention. For a safety control the only acceptable default is closed
+    - Req 34.6's fail-closed is CONDITIONAL — "for any generation the local check cannot clear" — so the
+      decision belongs to the caller that knows both results. This adapter therefore returns an UNAVAILABLE
+      verdict and never raises; an adapter that raised would take the decision away by crashing the turn.
+      The catch is broad but bounded at `Exception`, so `KeyboardInterrupt` still propagates
+    - THE CONTRACT SUITE FROM 16.1 IMMEDIATELY EARNED ITSELF. Registering this adapter made two shared tests
+      FAIL, and they were right to: WHAT MAKES AN ADAPTER INTERVENE IS ADAPTER-SPECIFIC — the local checker
+      decides from patterns, this one from what the service replied — so a shared test feeding clinical text
+      and expecting an intervention was testing the DECISION, not the port's contract. Added a
+      `build_intervening` seam, the same shape as `build_failing`, which was the same lesson
+    - Registered as an OFFLINE contract case with an injected stub client, so the shared suite covers BOTH
+      guardrail adapters with no AWS account. What that verifies is the part that can be wrong in this
+      adapter's own code — the action mapping, the category extraction, the fail-closed default. What it
+      does NOT verify is that a real response has the shape parsed here, and no offline test can: that
+      belongs behind Req 26.6's integration fence, and saying so is the difference between a scoped
+      guarantee and an overclaim
+    - `DENIED_TOPIC_NAMES` lives as data so the provisioning step and the category mapping cannot disagree;
+      a topic renamed in one place only would produce interventions this service could not categorise, and
+      Req 34.4 requires the rejection be counted by category. An intervention that named none falls back to
+      a single uncategorised entry rather than an empty tuple, which would be invisible to that count
+    - REVIEW CORRECTION — Req 34.3 IS NOT MET BY THIS TASK, and an earlier version of this line
+      claimed it. `DENIED_TOPIC_NAMES` is a tuple of names; it CONFIGURES NOTHING in Bedrock. Req
+      34.3 says the Service SHALL CONFIGURE Denied Topics, which needs a `CreateGuardrail` call or a
+      provisioning template, and neither exists yet. The constant's real job is to stop the future
+      provisioning step and the category mapping disagreeing about the names. 34.3 is DEFERRED to the
+      deployment work, and is no longer claimed here
+    - REVIEW FIX — the category extraction read only `topicPolicy`, one of SIX policy members on
+      `GuardrailAssessment`. An intervention from a content filter, a word list, a PII rule or
+      contextual grounding therefore produced no category and fell back to
+      `uncategorised_intervention`: Req 34.4's total survived while its by-category breakdown silently
+      collapsed, so an operator could not tell a prompt-injection block from a diagnosis block. All
+      six are now read, with a prefix per policy so two cannot collide on one name
+    - REVIEW FIX — only BLOCKED entries are counted now. `GuardrailTopicPolicyAction` is an enum of
+      `BLOCKED` and `NONE`, so an assessment can name a topic it EVALUATED and did not block; counting
+      those inflated the rejection count with reasons that never fired
+    - A `match` FIELD IS NEVER HARVESTED. `customWords[].match` and `piiEntities[].match` hold the
+      offending text itself, so putting one in a category label would breach Req 8.6 — a custom word
+      contributes a fixed label instead. This was not in the review; the schema made it visible
+    - _Requirements: 34.2, 34.2a, 34.2b, 34.4, 34.6, 34.9 (34.3 DEFERRED — see the correction above)_
 
-  - [ ] 16.5 Implement the audit store adapter and erasure
+  - [x] 16.5 Implement the audit store adapter and erasure
     - Append and `forget_user`; erasure deletes rather than de-identifies where the record carries clinical
       content, and reports the count
-    - _Requirements: 20.1, 20.2_
+    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. Advisor 1444 -> 1551 tests after the review round. AgentCore Memory was EVALUATED FIRST and
+      rejected with reasons: it is built for conversational context a model reads back, where Req 20's
+      trail is an OPERATOR record — queried by identity and date, never fed to a model, and required to
+      outlive the session. Req 20.3 also strips it of exactly the content Memory exists to carry
+    - THE TASK'S "where the record carries clinical content" IS VACUOUS BY DESIGN, and that is the finding.
+      Req 20.3 forbids the record from holding an utterance, guidance, a condition, a sensitivity, a
+      threshold or a coordinate, "so the trail carries no health-adjacent content and erasure has only an
+      identity to remove". `AdviceRecord` has nowhere to put any of it, so there is no
+      de-identify-versus-delete choice to make — the row goes. A test pins the ABSENCE of every clinical
+      key on the persisted item, so the day someone adds one the question must be answered deliberately
+      rather than silently inherited
+    - NOTE THE ASYMMETRY WITH SERVICE 2, which de-identifies: its `/v1/profile/me` DELETE reports
+      `auditRecordsDeIdentified` because its audit rows carry servable content worth keeping. This service
+      has none, which is why the same word means a different action in each
+    - COUNT SEMANTICS STATED, as task 16.1's review directed: the count is rows that EXISTED and were
+      REMOVED BY THIS CALL. It comes from what the query FOUND, not from delete requests issued — a request
+      count would report a second deletion on a repeat and double-count an audited erasure. Requirement 20
+      is silent on the return value, so this is recorded as a design decision, not quoted as a requirement
+    - The sort key is the idempotency key, NOT the turn instant: two deliveries of one turn carry the same
+      key and must collapse to one row, where a timestamp key would write a second (Req 32.4c)
+    - `append` RAISES rather than swallowing. Req 20.5 puts the still-answer decision at the CALL SITE; a
+      store that swallowed the failure would make an audit gap invisible to the log Req 20.5 requires
+    - The item mapping is EXPLICIT, not a `model_dump()` splat, so a new `AdviceRecord` field fails the
+      persistence test loudly instead of arriving under a name nothing queries
+    - REVIEW FIX, CRITICAL — `forget_user` passed a BARE STRING as `KeyConditionExpression`. boto3
+      compiles a `ConditionBase` into an expression plus placeholders but forwards a bare `str`
+      VERBATIM as the wire expression, so DynamoDB was asked to evaluate the expression `user-1` with
+      no attribute values, which it rejects. The erasure path could not have worked in production —
+      and EVERY TEST PASSED, because both fakes had independently reimplemented `query` as "match
+      `userId` against this string", the one reading the real API does not apply. Now
+      `Key("userId").eq(user_id)`
+    - THAT IS THE FAILURE THE CONTRACT SUITE EXISTS TO PREVENT, and it did not: a stub faithful to a
+      nonexistent API certifies falsely, which is worse than no stub. There is now ONE fake, in
+      `tests/support/fake_dynamodb.py`, imported by both the unit suite and the registry, and it
+      RAISES on a bare string — with a self-check test proving it does, so the regression test cannot
+      go vacuous
+    - REVIEW FIX — erasure read ONE page. `Query` returns at most 1 MB and signals more through
+      `LastEvaluatedKey`, so for a user with many rows it silently under-deleted AND under-reported:
+      the worst shape for an erasure control, because the caller is told a number smaller than what
+      was left behind. Now paginates, and the fake models paging so the loop is exercised
+    - REVIEW FIX — the count is now incremented after each delete RETURNS, so a partial failure
+      propagates having counted only what genuinely went rather than a total never achieved
+    - REVIEW FIX — the module docstring claimed the record is "queried by identity and date", which
+      the key schema cannot serve: the sort key is the idempotency key, so a date-range query is not
+      supported. Req 20's user story asks about a specific piece of advice rather than a window, so the
+      schema is right and the CLAIM was wrong. A GSI on `(userId, turnAt)` is the change if that is
+      ever wanted
+    - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
 - [ ] 17. AgentCore entrypoint and the deployment contract
   - [ ] 17.1 Implement the entrypoint and health endpoint

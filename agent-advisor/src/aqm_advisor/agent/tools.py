@@ -38,7 +38,11 @@ from aqm_advisor.domain.idempotency import TurnIdentity, profile_idempotency_key
 from aqm_advisor.domain.records import RetrievedValues, ToolCall
 from aqm_advisor.domain.snapshot import DEFAULT_PROFILE_TEXT, snapshot_sites
 from aqm_advisor.ports.clock import Clock
-from aqm_advisor.ports.protocols import ServingClient, ServingClientError
+from aqm_advisor.ports.protocols import (
+    ServingClient,
+    ServingClientError,
+    ServingFailureKind,
+)
 
 _MAX_HISTORY_DAYS = 30
 """Service 2's default maximum history span. A drift guard pins it against that
@@ -60,6 +64,31 @@ def _snapshot_notes(body: object) -> list[str]:
         if isinstance(personalized, dict) and personalized.get("usedDefaultProfile"):
             notes.append(DEFAULT_PROFILE_TEXT)
     return notes
+
+
+def _site_code_of(body: object) -> str | None:
+    """The nearest sensor's `siteCode` from a snapshot, for Req 3.1a's history call.
+
+    Takes the FIRST entry of `nearestSensors`, which is the nearest one: Service 2 orders that
+    list
+    by distance, and a history window is asked about where the user is. Returns None rather than
+    a
+    fallback when the body has no usable site, so the history tool reports the period
+    unavailable
+    instead of calling Service 2 with a site it guessed — which Req 3.1a forbids and which
+    Service 2
+    would answer 404 for, making a guess look like a service fault.
+    """
+    if not isinstance(body, dict):
+        return None
+    sensors = body.get("nearestSensors")
+    if not isinstance(sensors, list) or not sensors:
+        return None
+    nearest = sensors[0]
+    if not isinstance(nearest, dict):
+        return None
+    code = nearest.get("siteCode")
+    return code if isinstance(code, str) and code.strip() else None
 
 
 @dataclass
@@ -117,8 +146,24 @@ def _failure_note(name: str, error: ServingClientError) -> str:
 
     Never a raw exception, a stack trace or Service 2's error body: Req 21.4 forbids returning
     any of those, and a kind is what a degraded response can honestly name.
+
+    ONE EXCEPTION, for Req 3.3. A rejected history window must be reported "and the permitted
+    bound",
+    and a review found the bound could never reach the model: Service 2 names it only in the
+    response
+    body, which Req 21.4 forbids forwarding, so the note carried the bare kind `bad_request`.
+    The
+    bound is restated here from THIS SERVICE'S OWN constant instead — no Service 2 text crosses
+    the
+    boundary, and the model gets the fact Req 3.3 requires.
     """
-    return f"{name} unavailable: {error.kind.value}. Do not state any condition value for it."
+    note = f"{name} unavailable: {error.kind.value}."
+    if name == "history" and error.kind is ServingFailureKind.BAD_REQUEST:
+        note += (
+            f" The permitted window is 1 to {_MAX_HISTORY_DAYS} days. Report the period as "
+            "unavailable and do not retry with a different window."
+        )
+    return f"{note} Do not state any condition value for it."
 
 
 def build_retrieval_tools(
@@ -142,6 +187,15 @@ def build_retrieval_tools(
     cannot reach.
     """
     air_quality_calls = 0
+    retrieved_site_code: str | None = None
+    """The site the snapshot named, for Req 3.1a's history call.
+
+    Held in the closure rather than asked of the model, because Req 3.1a forbids inventing or
+    configuring a site: it must be the one Service 2 resolved for THIS user. A site the model
+    supplied would be a site the model could get wrong, and Service 2 answers 404 for a site
+    absent from its registry — so a wrong guess reads as a service fault rather than the mistake
+    it is.
+    """
     profile_write_key = profile_idempotency_key(identity=identity)
 
     @tool
@@ -155,19 +209,29 @@ def build_retrieval_tools(
         Returns:
             The air-quality snapshot as JSON, or a note naming why it was unavailable.
         """
-        nonlocal air_quality_calls
+        nonlocal air_quality_calls, retrieved_site_code
         recorder.record_call("air_quality")
         if air_quality_calls >= 1:
             return (
                 "Air quality was already retrieved for this turn. Use the snapshot you have; "
                 "retrieving again could return a different reading than the basis describes."
             )
-        air_quality_calls += 1
         try:
             body = client.air_quality(credential)
         except ServingClientError as error:
             return _failure_note("air_quality", error)
+        # Incremented only AFTER a successful retrieval. A review found the increment above the
+        # `try`, so a transient serving failure consumed the turn's one air-quality call: the
+        # model's
+        # retry was then refused with "already retrieved" — which was false — and Req 3.1a left
+        # history permanently unavailable for the turn. Req 2.6 bounds SUCCESSFUL snapshots,
+        # because
+        # its reason is that a second snapshot could differ from the basis; an attempt that
+        # returned
+        # nothing cannot differ from anything.
+        air_quality_calls += 1
         recorder.record_body(body)
+        retrieved_site_code = _site_code_of(body)
         return json.dumps({"snapshot": body, "notes": _snapshot_notes(body)}, default=str)
 
     @tool
@@ -193,8 +257,19 @@ def build_retrieval_tools(
         end = clock.now()
         start = end - dt.timedelta(days=days)
         selected = frozenset({species}) if species else None
+        if retrieved_site_code is None:
+            # Req 3.1a: the site must come from a snapshot retrieved this turn. Reported as
+            # unavailable rather than guessed, because Service 2 answers 404 for a site absent
+            # from its registry — a guess would surface as a service fault instead of the
+            # mistake it is.
+            return (
+                "history unavailable: current air quality has not been retrieved this turn, so "
+                "the site to read history for is not known. Retrieve air quality first, then "
+                "ask "
+                "for history. Report the period as unavailable if that is not possible."
+            )
         try:
-            body = client.history(credential, start, end, selected)
+            body = client.history(credential, retrieved_site_code, start, end, selected)
         except ServingClientError as error:
             return _failure_note("history", error)
         recorder.record_body(body)

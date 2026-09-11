@@ -328,8 +328,10 @@ def test_a_window_within_the_bound_reaches_the_client() -> None:
     # Non-vacuity: a bound that refused everything would make history unusable.
     client = ScriptedServingClient()
     tools, _ = _build(client)
+    # Req 3.1a: the snapshot supplies the site code, so it must be retrieved first.
+    _by_name(tools)["air_quality"]()
     _by_name(tools)["history"](days=7)
-    assert client.tool_names() == ("history",)
+    assert client.tool_names() == ("air_quality", "history")
 
 
 def test_the_window_is_derived_from_the_injected_clock() -> None:
@@ -338,11 +340,68 @@ def test_the_window_is_derived_from_the_injected_clock() -> None:
     # is reproducible.
     client = ScriptedServingClient()
     tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()  # Req 3.1a supplies the site code
     _by_name(tools)["history"](days=3)
-    _name, args = client.calls[0]
-    start, end = args[0], args[1]
+    _name, args = client.calls[1]
+    start, end = args[1], args[2]
     assert end == _NOW
     assert start == _NOW - dt.timedelta(days=3)
+
+
+def test_history_without_a_snapshot_reports_unavailable_and_makes_no_call() -> None:
+    # Req 3.1a. Found by writing the first real HTTP adapter in task 16.3: Service 2's Req 19.3
+    # makes `siteCode` REQUIRED, so a history call has no valid form without one, and the
+    # scripted
+    # client had masked that entirely by answering from a canned body.
+    #
+    # The call must not be attempted at all. A guessed site would be answered 404 by Service 2 —
+    # surfacing as a service fault rather than the mistake it is — and a deployment-wide
+    # configured
+    # site would serve one user another location's readings as if they were their own.
+    client = ScriptedServingClient()
+    tools, _ = _build(client)
+    result = str(_by_name(tools)["history"](days=7)).casefold()
+    assert "unavailable" in result
+    assert client.tool_names() == (), "history reached the client with no site code"
+
+
+def test_history_uses_the_site_the_snapshot_named() -> None:
+    # The site must be the one Service 2 resolved for THIS user, not a literal and not the
+    # model's
+    # suggestion — the history tool takes no site parameter, so the model cannot supply one.
+    client = ScriptedServingClient()
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    _by_name(tools)["history"](days=7)
+    _name, args = client.calls[1]
+    assert args[0] == "AQM1", args
+
+
+def test_the_history_tool_exposes_no_site_parameter_to_the_model() -> None:
+    # Structural, so the guarantee cannot be undone by a later signature change: Req 3.1a
+    # says the site comes from the snapshot, and a tool parameter would be exactly the
+    # route by which a model-invented site reached Service 2.
+    #
+    # Asserted against the model-facing `inputSchema`, not the Python signature, because
+    # that schema is what the model is actually offered: a parameter absent from it
+    # cannot be supplied however the function is spelled.
+    history = _by_name(_build()[0])["history"]
+    properties = history.tool_spec["inputSchema"]["json"].get("properties", {})
+    assert "site_code" not in properties
+    assert "siteCode" not in properties
+
+
+def test_a_snapshot_with_no_sensors_does_not_enable_a_history_call() -> None:
+    # The degraded case. An empty `nearestSensors` means Service 2 found no site for this user,
+    # so
+    # there is still nothing valid to ask history for — and `_site_code_of` returning None must
+    # keep the tool on the refusal path rather than sending an empty string.
+    client = ScriptedServingClient(air_quality_body={"user": "u1", "nearestSensors": []})
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    result = str(_by_name(tools)["history"](days=7)).casefold()
+    assert "unavailable" in result
+    assert client.tool_names() == ("air_quality",)
 
 
 # --- the framing arrives WITH the data, not by the model noticing --------
@@ -395,5 +454,38 @@ def test_the_history_tool_delivers_a_labelled_summary() -> None:
     # does not
     # have to remember to say so.
     tools, _ = _build()
+    _by_name(tools)["air_quality"]()  # Req 3.1a supplies the site code
     result = str(_by_name(tools)["history"](days=7)).casefold()
     assert "summar" in result
+
+
+def test_a_failed_air_quality_call_does_not_consume_the_turn_s_one_retrieval() -> None:
+    # A review found the call counter incremented BEFORE the request, so one transient serving
+    # failure spent the turn's only air-quality call. The retry was then refused with "already
+    # retrieved" — false — and Req 3.1a left history unavailable for the rest of the turn. Req
+    # 2.6
+    # bounds SUCCESSFUL snapshots: its reason is that a second snapshot could differ from the
+    # basis,
+    # and an attempt that returned nothing cannot differ from anything.
+    client = ScriptedServingClient(air_quality_body=ServingFailureKind.TIMEOUT)
+    tools, _ = _build(client)
+    first = str(_by_name(tools)["air_quality"]())
+    assert "unavailable" in first.casefold()
+    second = str(_by_name(tools)["air_quality"]())
+    assert "already retrieved" not in second.casefold(), second
+
+
+def test_a_rejected_history_window_reports_the_permitted_bound() -> None:
+    # Req 3.3 requires the period be reported unavailable AND the permitted bound named. The
+    # bound
+    # exists only in Service 2's body, which Req 21.4 forbids forwarding, so the note carried a
+    # bare
+    # kind and the clause was unmet. It is restated from this service's own constant instead.
+    client = ScriptedServingClient(
+        history_body=ServingFailureKind.BAD_REQUEST,
+    )
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    note = str(_by_name(tools)["history"](days=7)).casefold()
+    assert "30 days" in note, note
+    assert "do not retry" in note, note

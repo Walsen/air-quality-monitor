@@ -195,5 +195,5 @@ def test_a_successful_read_returns_a_mapping(client: ServingClient) -> None:
 
 def test_history_accepts_a_window(client: ServingClient) -> None:
     end = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
-    body = client.history(_CREDENTIAL, end - dt.timedelta(days=7), end)
+    body = client.history(_CREDENTIAL, "AQM1", end - dt.timedelta(days=7), end)
     assert hasattr(body, "keys"), type(body)
