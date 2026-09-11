@@ -72,48 +72,85 @@ DOSING_PATTERNS: tuple[str, ...] = (
     r"\byou (?:should|need to|ought to) (?:take|use|puff|inhale)\b",
 )
 
+_SYMPTOM_OBJECT = (
+    r"(?:symptoms?|cough|coughing|wheeze|wheezing|breathless|breathlessness|"
+    r"chest|attack|flare[- ]?up|worse|ill|struggle)"
+)
+
+_CAUSAL_VERB = (
+    r"(?:caus\w*|trigger\w*|aggravat\w*|worsen\w*|flar\w*|irritat\w*|provok\w*|"
+    r"inflam\w*|exacerbat\w*)"
+)
+
 ATTRIBUTION_PATTERNS: tuple[str, ...] = (
-    # Req 30.2 and Req 21.5. Every pattern binds a causal word TO THE USER, because that is the
-    # claim the requirements forbid — not the noun. `domain/actions.py` ships a required
-    # template
-    # reading "Both irritant and allergic triggers can matter on the same day, so it is worth
-    # watching how you respond rather than assuming one cause", which uses both nouns and is
-    # ANTI-causal; a word ban would delete the text that does the right thing.
-    #
-    # A trigger, possessive or attributed.
+    # A trigger, possessive or attributed, in either word order.
     r"\bis\s+(?:your|the)\s+(?:\w+\s+){0,2}?trigger\b",
-    r"\b(?:your|the)\s+trigger\s+for\s+your\b",
-    r"\btrigger(?:s|ed)\s+your\b",
+    r"\b(?:your|the)\s+trigger\s+(?:for\s+your|is)\b",
+    r"\btrigger(?:s|ed)\s+(?:you|your)\b",
     r"\b(?:are|is)\s+your\s+(?:\w+\s+){0,2}?trigger\b",
-    # A cause, attributed to the user's symptoms.
-    r"\bcaus(?:e|es|ed|ing)\s+your\b",
-    r"\bbecause\s+of\s+the\s+\w+\b[^.?!]{0,20}?\byour\s+(?:symptoms?|cough|wheeze)\b",
-    r"\byour\s+(?:symptoms?|cough|wheeze|breathlessness)\b[^.?!]{0,20}?"
-    r"\b(?:are|is|were|was)\s+because\s+of\b",
+    r"\b(?:appears|seems)\s+to\s+be\s+your\s+(?:\w+\s+){0,2}?trigger\b",
+    # A causal verb bound to the user, active voice. Open-ended by STEM, because a review found
+    # a
+    # closed list catching only `cause` and `trigger` while an LLM reaches just as readily for
+    # `aggravates`, `worsens`, `irritates`, `provokes`, `flares`.
+    rf"\b{_CAUSAL_VERB}\s+(?:your|you)\b",
+    r"\b(?:sets?|set)\s+(?:off\s+(?:your|you)|you\s+off)\b",
+    r"\bbrings?\s+on\s+(?:your|you)\b",
+    r"\byou(?:r body)?\s+(?:react|reacts|reacting|respond|responds)\s+to\b",
+    r"\bmakes?\s+you\s+(?:react|worse|wheeze|cough|ill|breathless|feel\s+worse)\b",
+    # The same claim in PASSIVE voice, which the active anchors cannot see.
+    rf"\byour\s+{_SYMPTOM_OBJECT}\b[^.?!]{{0,30}}?"
+    r"\b(?:was|were|is|are|been|being)\s+"
+    r"(?:caused|triggered|brought\s+on|set\s+off|driven|aggravated|worsened)\b",
+    # Nominalised attribution: the cause OF your symptoms.
+    r"\b(?:cause|reason|source|explanation)\s+(?:of|for)\s+your\b",
+    r"\bis\s+(?:behind|driving|to\s+blame\s+for|the\s+reason\s+for)\s+your\b",
+    rf"\bexplains?\s+(?:your|the)\s+{_SYMPTOM_OBJECT}\b",
     r"\bresponsible\s+for\s+your\b",
-    r"\bmakes?\s+you\s+(?:worse|wheeze|cough|ill|breathless)\b",
-    # A prediction about the user's future symptoms.
-    r"\bwill\s+make\s+you\s+(?:worse|wheeze|cough|ill|breathless)\b",
-    r"\byou\s+will\s+(?:have|get|experience|feel)\b",
+    r"\bbecause\s+of\s+the\s+\w+\b[^.?!]{0,20}?\byour\s+(?:symptoms?|cough|wheeze)\b",
+    rf"\byour\s+{_SYMPTOM_OBJECT}\b[^.?!]{{0,20}}?"
+    r"\b(?:are|is|were|was)\s+because\s+of\b",
+    # A PREDICTION about the user's future symptoms. Every one is bound to a SYMPTOM OBJECT,
+    # because Req 30.2's own wording is "a prediction about the user's future SYMPTOMS" — and an
+    # unbound version rejected "you will get less exposure" and "you will have your reliever
+    # with
+    # you", which is the exposure framing the system prompt asks for and the preparedness
+    # language
+    # Req 8.4 permits. Req 8.2 DISCARDS a matching response, so that destroyed a good answer
+    # silently, which is a worse failure than a vague answer.
+    rf"\bwill\s+make\s+you\s+{_SYMPTOM_OBJECT}\b",
+    rf"\byou\s+will\s+(?:have|get|experience|feel)\b[^.?!]{{0,24}}?\b{_SYMPTOM_OBJECT}\b",
+    rf"\byou\s+(?:are|'re)\s+going\s+to\s+(?:\w+\s+){{0,3}}?{_SYMPTOM_OBJECT}\b",
+    rf"\byou\s+(?:may|might|could|should|are\s+likely\s+to)\b[^.?!]{{0,24}}?"
+    rf"\b{_SYMPTOM_OBJECT}\b[^.?!]{{0,24}}?\b(?:tomorrow|tonight|overnight|later)\b",
     r"\bexpect\s+(?:your\s+)?symptoms?\s+to\b",
     r"\bpredicts?\s+your\b",
 )
-"""Req 30.2's generated-output enforcement, and Req 21.5's allergen clause.
+"""Req 30.2's generated-output FAST PATH, and Req 21.5's allergen clause.
 
-THIS IS A CLAIM CHECK, NOT A WORD CHECK. Req 30.2 forbids describing an Exposure_Association "as
-a cause, a trigger, a diagnosis, or a prediction about the user's future symptoms"; Req 21.5
-forbids naming "a specific allergen as the user's trigger". Both offend on the ATTRIBUTION — the
-possessive that turns a correlation in someone's diary into a statement about their body.
+**THIS IS NOT COMPLETE ENFORCEMENT OF REQ 30.2 AND MUST NOT BE PRESENTED AS SUCH.** An
+adversarial review composed 77 sentences an LLM would plausibly produce that make a forbidden
+causal or predictive claim, and the first version of this set caught 6. The patterns above close
+the highest-traffic holes it found, but the remaining ceiling is the METHOD's, not the tuning's:
+Req 30.2 forbids a SEMANTIC ACT — attributing causation, or predicting the user's future
+symptoms — and that act has unbounded surface forms. Any regex set can be paraphrased around,
+e.g. "the two tend to move together for you", or "on days like today your chest often has a
+harder time".
 
-The distinction is load-bearing rather than stylistic. `domain/association.py` is obliged by Req
-30.1 to explain a learned threshold, and a service that could not say the word "pattern" near
-the word "your" would have no way to meet it. Meanwhile the guidance a user most needs — that
-several kinds of trigger exist and they should watch their own response rather than assume one
-cause — uses both forbidden nouns to say something the requirement wants said.
+So this is a cheap deterministic pre-filter and Req 34.5's managed guardrail is the AUTHORITY
+for the semantic claim. That is the architecture `KNOWN_MEDICATION_TOKENS` already documents for
+a vocabulary it admits cannot be complete: a miss degrades one of several defences rather than
+removing the only one. The corpus in `tests/unit/test_attribution_patterns.py` is a coverage
+FLOOR of shapes known to be caught, never a claim that all are.
 
-Placed in the Forbidden_Claim set because Req 8.2 already checks generated Guidance against that
-set before returning it and Req 8.7 makes it configuration. Req 30.2 needed entries, not a new
-mechanism.
+**IT MATCHES A CLAIM, NOT A WORD.** Both requirements offend on the ATTRIBUTION — the possessive
+that turns a correlation in someone's diary into a statement about their body.
+`domain/actions.py` ships a required template reading "Both irritant and allergic triggers can
+matter on the same day, so it is worth watching how you respond rather than assuming one cause":
+it uses both forbidden nouns to say the anti-causal thing the requirement wants said, so a word
+ban would delete the text that does the right thing. And `domain/association.py` is obliged by
+Req 30.1 to explain a learned threshold, so a service that could not put "pattern" near "your"
+could not meet it.
 """
 
 _CATEGORY_BY_PATTERN: dict[str, str] = {

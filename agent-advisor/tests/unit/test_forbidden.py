@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from aqm_advisor.adapters.local import DEFAULT_DISCLAIMER, DEFAULT_EMERGENCY_GUIDANCE
 from aqm_advisor.domain.forbidden import (
     ATTRIBUTION_PATTERNS,
     DEFAULT_FORBIDDEN_PATTERNS,
@@ -27,15 +28,13 @@ from aqm_advisor.domain.forbidden import (
     unlisted_medications,
 )
 
-_EMERGENCY = (
-    "If you are severely breathless, your reliever inhaler is not helping, or your lips or "
-    "face look blue, seek emergency care now."
-)
-_DISCLAIMER = (
-    "This information is for exposure reduction and general wellness. It is not medical "
-    "advice, "
-    "diagnosis, or treatment. Follow the plan agreed with your clinician."
-)
+# Imported, NOT re-typed. A review found these as hand-copied string literals, which meant the
+# sweep asserted over a COPY: if the shipped constant changed, this file would keep checking the
+# old text and the real emitted string would go unchecked. Asserting on a copy of the thing
+# under
+# test is the same defect class as the duplicate `AdviceRecord` — it passes by luck.
+_EMERGENCY = DEFAULT_EMERGENCY_GUIDANCE
+_DISCLAIMER = DEFAULT_DISCLAIMER
 
 
 # --- Req 8.2, 8.3: diagnosis assertions ---------------------------------
@@ -201,8 +200,11 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     )
     from aqm_advisor.domain.elicitation import (
         DeclinedKind,
+        MedicationEntry,
+        ProfileDraft,
         decline_message,
         limit_rejection_message,
+        restate_for_confirmation,
     )
     from aqm_advisor.domain.records import SymptomEntryDraft
     from aqm_advisor.domain.reporting import (
@@ -276,6 +278,18 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
             template.text
             for templates in CONDITION_ACTIONS.values()
             for template in templates
+        ),
+        # Req 27.2's PROFILE restatement. A review found only the DIARY one in this sweep, so
+        # the
+        # profile confirmation — which interpolates the user's own condition, medication role
+        # and
+        # routine text — was a required emitted text sitting outside the guard.
+        restate_for_confirmation(
+            ProfileDraft(
+                condition="asthma",
+                medications=(MedicationEntry(name="salbutamol", role="reliever"),),
+                confirmed=True,
+            )
         ),
     )
     for text in required:
