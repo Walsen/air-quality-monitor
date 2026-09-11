@@ -61,14 +61,17 @@ def test_a_cloud_case_skips_only_when_its_endpoint_is_absent() -> None:
 
 
 def test_no_case_skips_when_its_endpoint_is_present() -> None:
-    # THE assertion task 16.1 asks for. Read as a contrapositive it is the useful direction: if
-    # a
-    # parameter skipped while its endpoint was configured, the suite would be reporting green
-    # over
-    # an adapter that was reachable and simply not exercised.
+    # Task 16.1's named assertion, WITH ITS SCOPE STATED. A review pointed out this proves the
+    # PREDICATE and not the FIXTURE: it never builds an adapter and never observes a run, so
+    # every
+    # other way a test can vanish — an exception in `build()`, a `pytest.skip` in a body, a
+    # `skipif` marker — was invisible to it. Calling that "nothing may skip" oversold it.
     #
-    # Evaluated over the real registry AND the synthetic pair, so it is meaningful today rather
-    # than only once a cloud adapter lands.
+    # The session hook in `conftest.py` covers those, by recording what the runner ACTUALLY
+    # skipped
+    # and failing the session on any skip this environment cannot explain. This test stays as
+    # the
+    # cheap direct check on the predicate that hook defers to.
     supplied = {
         case.requires_endpoint: "https://endpoint.example.test"
         for case in (*ADAPTER_CASES, *synthetic_cases())
@@ -114,6 +117,17 @@ def test_each_case_builds_something_that_satisfies_its_port(case: AdapterCase) -
     # otherwise run that port's whole behavioural suite against an object of another shape, and
     # the
     # failures would read as behavioural rather than as a registry mistake.
+    #
+    # Routed through `would_skip` because a review found it calling `build()` UNCONDITIONALLY —
+    # the
+    # one place bypassing the predicate. A cloud case with no endpoint configured would have had
+    # its
+    # constructor run anyway, erroring the offline suite for a case every other test correctly
+    # skips.
+    import os
+
+    if would_skip(case, os.environ):
+        pytest.skip(f"{case.name} needs {case.requires_endpoint}, which is not configured")
     built = case.build()
     assert isinstance(built, PORT_TYPES[case.port]), (case.port, case.name, type(built))
 

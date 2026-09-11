@@ -56,9 +56,16 @@ def _record(user_id: str = "user-1") -> AdviceRecord:
 
 
 @pytest.fixture(params=cases_for("guardrail_checker"), ids=lambda c: c.name)
-def checker(request: pytest.FixtureRequest) -> GuardrailChecker:
+def case(request: pytest.FixtureRequest) -> AdapterCase:
+    """The guardrail CASE, for tests needing its declared seams."""
     _skip_unless_available(request.param)
-    return request.param.build()  # type: ignore[no-any-return]
+    return request.param  # type: ignore[no-any-return]
+
+
+@pytest.fixture
+def checker(case: AdapterCase) -> GuardrailChecker:
+    """One adapter of this port, built from the case above."""
+    return case.build()  # type: ignore[no-any-return]
 
 
 def test_the_checker_satisfies_the_protocol(checker: GuardrailChecker) -> None:
@@ -86,11 +93,47 @@ def test_an_intervention_names_categories_and_not_the_text(checker: GuardrailChe
     # Req 8.6: the rejected text is the thing that must not be recorded, so the result carries
     # categories. Plural, as the field is named — a single category would lose the second
     # reason.
-    result = checker.check("You are having an asthma attack. Take two puffs now.")
+    # Driven with a SENTINEL rather than by checking for the two phrases this input happens to
+    # contain. A review pointed out that phrase-coupled absence checks only SAMPLE the property:
+    # an adapter echoing a different substring of the offending text would pass. The sentinel
+    # makes the assertion about echoing at all.
+    result = checker.check(
+        "You are having an asthma attack. SENTINEL-GEN-Q7X. Take two puffs now."
+    )
     assert result.categories, result
     for category in result.categories:
+        assert "SENTINEL-GEN-Q7X" not in category, category
         assert "asthma attack" not in category
         assert "puffs" not in category
+
+
+def test_unavailability_is_its_own_verdict_and_never_passed(case: AdapterCase) -> None:
+    # Req 34.6 FAILS CLOSED, and it is this port's load-bearing safety clause. A review found NO
+    # test driving it: an adapter that swallowed a ClientError and returned PASSED would have
+    # left
+    # the suite green while output went unchecked.
+    #
+    # UNAVAILABLE is deliberately distinct from INTERVENED — the enum's own docstring says an
+    # operator must tell "the guardrail stopped this" from "the guardrail could not look" — so
+    # this
+    # asserts the third value rather than merely not-PASSED.
+    if case.build_unavailable is None:
+        pytest.fail(
+            f"{case.port}:{case.name} declares no build_unavailable seam, so Req 34.6's "
+            "fail-closed path cannot be checked for it — add one to its AdapterCase"
+        )
+    result = case.build_unavailable().check("Air quality is moderate today.")
+    assert result.verdict is GuardrailVerdict.UNAVAILABLE, result
+
+
+def test_unavailability_is_returned_not_raised(case: AdapterCase) -> None:
+    # The other half of fail-closed: a VERDICT, not an exception. An exception would make "the
+    # guardrail could not look" indistinguishable from a bug in the adapter, where Req 34.6
+    # needs
+    # the caller to withhold the text rather than crash the turn.
+    if case.build_unavailable is None:
+        pytest.fail(f"{case.port}:{case.name} declares no build_unavailable seam")
+    assert isinstance(case.build_unavailable().check("anything").verdict, GuardrailVerdict)
 
 
 def test_the_verdict_is_total_over_any_text(checker: GuardrailChecker) -> None:
@@ -116,11 +159,20 @@ def test_the_store_satisfies_the_protocol(store: AdviceAuditStore) -> None:
 def test_an_appended_record_is_erasable_and_the_count_is_reported(
     store: AdviceAuditStore,
 ) -> None:
-    # Req 20.1 and the erasure clause. The COUNT is the contract, not a boolean: a caller
-    # answering
-    # a data-subject request has to say how many records were removed, and "something was
-    # deleted"
-    # is not an answer to that.
+    # The COUNT is the contract, not a boolean: a caller answering a data-subject request has to
+    # say how many records were removed, and "something was deleted" is not an answer.
+    #
+    # HONESTY NOTE from review: this and the two tests below are NOT grounded in Reqs 20.1/20.2,
+    # which say what a record CONTAINS and nothing about erasure's return value. The count
+    # semantics come from the port signature (`forget_user(...) -> int`) plus Req 20.3's
+    # reasoning
+    # that erasure "has only an identity to remove". They are a design decision recorded as one,
+    # rather than a requirement being quoted — so a future author knows which they are arguing
+    # with. Task 16.5 should state the semantics explicitly: the count is rows that EXISTED and
+    # were removed by THIS call, which is what makes a repeat return zero. A DynamoDB adapter
+    # counting delete REQUESTS issued rather than rows found would fail the idempotency test,
+    # and
+    # would be right to, because that count cannot answer the question a subject asked.
     store.append(_record())
     assert store.forget_user("user-1") == 1
 
@@ -162,21 +214,24 @@ def test_the_trigger_satisfies_the_protocol(trigger: AssociationTrigger) -> None
     assert isinstance(trigger, AssociationTrigger)
 
 
-def test_the_trigger_declares_no_return_value(trigger: AssociationTrigger) -> None:
+def test_the_trigger_declares_and_returns_no_value(trigger: AssociationTrigger) -> None:
     # Req 33.1: never awaited during a turn. A return value would invite a caller to wait for
     # it,
     # and a caller who waits has made the association synchronous — the thing forbidden.
     #
-    # Asserted on the DECLARED annotation, not by comparing the call to None. mypy pointed out
+    # BOTH halves are checked. mypy objects that reading the return value is redundant — and the
+    # ignore above is deliberate, because mypy is reasoning FROM the annotation, which is the
+    # very
+    # thing under test. A review showed the annotation-only version could not catch an adapter
     # that
-    # `assert trigger.request(...) is None` is a tautology when the protocol already says `->
-    # None`:
-    # it passes for every conforming adapter without checking anything. The annotation is the
-    # contract, so that is what is checked — and the call is still made, so a raising adapter
-    # fails.
+    # KEPT `-> None` while returning a value from its body. The annotation is the promise; the
+    # runtime value is whether it was kept. Checking only one leaves the other free.
     import typing
 
-    trigger.request("user-1", "corr-1")
+    returned = trigger.request(  # type: ignore[func-returns-value]
+        "user-1", "corr-1"
+    )
+    assert returned is None, f"the adapter returned {returned!r} despite declaring None"
     hints = typing.get_type_hints(type(trigger).request)
     assert hints.get("return") is type(None), hints
 

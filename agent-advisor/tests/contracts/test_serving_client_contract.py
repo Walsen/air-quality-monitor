@@ -31,7 +31,7 @@ from aqm_advisor.ports.protocols import (
     ServingClientError,
     ServingFailureKind,
 )
-from tests.contracts.registry import cases_for, would_skip
+from tests.contracts.registry import AdapterCase, cases_for, would_skip
 
 pytestmark = pytest.mark.contract
 
@@ -40,17 +40,26 @@ _CREDENTIAL = "SENTINEL-CRED-Q7X-do-not-log"
 
 
 @pytest.fixture(params=_CASES, ids=lambda c: c.name)
-def client(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> ServingClient:
-    """One adapter of this port, skipped when it needs an endpoint this environment lacks.
+def case(request: pytest.FixtureRequest) -> AdapterCase:
+    """The CASE, for tests needing its declared seams rather than a built adapter.
 
-    The skip goes through `would_skip`, the SAME predicate the fence asserts over, so a
-    parameter cannot be excused here by logic the fence does not see.
+    Skipped through `would_skip`, which is the predicate the session fence in `conftest.py`
+    recognises — so a skip here is one the fence can explain rather than an unexplained
+    disappearance.
     """
     import os
 
-    case = request.param
-    if would_skip(case, os.environ):
-        pytest.skip(f"{case.name} needs {case.requires_endpoint}, which is not configured")
+    selected: AdapterCase = request.param
+    if would_skip(selected, os.environ):
+        pytest.skip(
+            f"{selected.name} needs {selected.requires_endpoint}, which is not configured"
+        )
+    return selected
+
+
+@pytest.fixture
+def client(case: AdapterCase) -> ServingClient:
+    """One adapter of this port, built from the case above."""
     return case.build()  # type: ignore[no-any-return]
 
 
@@ -73,62 +82,107 @@ def test_profile_put_requires_an_idempotency_key(client: ServingClient) -> None:
     )
 
 
-def test_the_credential_is_not_retained_as_an_attribute(client: ServingClient) -> None:
+def _deep_render(obj: object, depth: int = 3) -> str:
+    """Every string reachable from `obj` within `depth` hops.
+
+    A review defeated the first version, which was `repr(vars(client))`: a credential held in
+    `__slots__` (no `__dict__`, so it fell back to a bare `<Foo object at 0x…>`) or one
+    attribute-hop away inside a nested object both passed while genuinely retained. `__slots__`
+    is
+    not exotic — it is what a performance-minded HTTP client is likely to use, and an
+    `httpx.Client` holding an Authorization header is exactly the nested case.
+    """
+    if depth < 0:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", "replace")
+    parts = [repr(obj)]
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            parts.append(_deep_render(key, depth - 1))
+            parts.append(_deep_render(value, depth - 1))
+    elif isinstance(obj, list | tuple | set | frozenset):
+        for item in obj:
+            parts.append(_deep_render(item, depth - 1))
+    else:
+        for name in getattr(obj, "__dict__", {}):
+            parts.append(_deep_render(getattr(obj, name, None), depth - 1))
+        for name in getattr(type(obj), "__slots__", ()):
+            parts.append(_deep_render(getattr(obj, name, None), depth - 1))
+    return " ".join(parts)
+
+
+def test_the_credential_is_not_retained_anywhere_reachable(client: ServingClient) -> None:
     # Req 5.2's shape: the credential is per call and opaque. An adapter that stored it would
-    # put it
-    # somewhere a repr, a pickle or a debugger dump could reach.
+    # put
+    # it somewhere a repr, a pickle or a debugger dump could reach — which is the threat model
+    # the
+    # first version of this test claimed and did not actually cover.
     client.air_quality(_CREDENTIAL)
-    rendered = repr(vars(client)) if hasattr(client, "__dict__") else repr(client)
-    assert _CREDENTIAL not in rendered
+    assert _CREDENTIAL not in _deep_render(client)
+
+
+def test_the_deep_render_catches_every_shape_the_shallow_one_missed() -> None:
+    # Self-check over the three shapes that defeated the shallow version, because a scanner
+    # which
+    # found nothing would report this guarantee for free.
+    class _Slotted:
+        __slots__ = ("token",)
+
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+    class _Nested:
+        def __init__(self, token: str) -> None:
+            self.box = _Slotted(token)
+
+    class _Plain:
+        def __init__(self, token: str) -> None:
+            self._token = token
+
+    for holder in (_Slotted(_CREDENTIAL), _Nested(_CREDENTIAL), _Plain(_CREDENTIAL)):
+        assert _CREDENTIAL in _deep_render(holder), type(holder).__name__
 
 
 # --- failure is an exception carrying a KIND --------------------------
 
 
-def test_a_failure_raises_rather_than_returning_a_sentinel(client: ServingClient) -> None:
+def _failing(case: AdapterCase) -> ServingClient:
+    """The adapter rigged to fail, or a hard FAILURE when it declares no seam.
+
+    NOT a skip. A review found the previous helper returning None for any adapter without the
+    scripted client's `air_quality_body` kwarg, which silently deleted the two most important
+    tests in this file for exactly the adapter that can leak a credential over a network. "We
+    could not test the failure path" is not a pass.
+    """
+    if case.build_failing is None:
+        pytest.fail(
+            f"{case.port}:{case.name} declares no build_failing seam, so Reqs 21.1, 5.4 "
+            "and 21.4 cannot be checked for it — add one to its AdapterCase"
+        )
+    return case.build_failing()  # type: ignore[no-any-return]
+
+
+def test_a_failure_raises_rather_than_returning_a_sentinel(case: AdapterCase) -> None:
     # THE clause. Req 21.1 needs a degraded response naming the failure kind, and a sentinel
     # return
     # would let a caller treat "unavailable" as "nothing found" — the difference between telling
     # someone the data is missing and telling them the air is clean.
-    #
-    # Driven through whatever mechanism the adapter offers for forcing a failure. An adapter
-    # with no
-    # such mechanism cannot be contract-tested here, which is itself worth knowing.
-    failing = _failing_variant(client)
-    if failing is None:
-        pytest.skip(f"{type(client).__name__} exposes no way to force a failure")
     with pytest.raises(ServingClientError) as caught:
-        failing.air_quality(_CREDENTIAL)
+        _failing(case).air_quality(_CREDENTIAL)
     assert isinstance(caught.value.kind, ServingFailureKind)
 
 
-def test_the_error_discloses_neither_the_credential_nor_a_body(client: ServingClient) -> None:
-    # Reqs 5.4 and 21.4. The exception is the most likely thing to be logged verbatim by a
-    # caller,
-    # so it must carry nothing but the kind.
-    failing = _failing_variant(client)
-    if failing is None:
-        pytest.skip(f"{type(client).__name__} exposes no way to force a failure")
+def test_the_error_discloses_neither_the_credential_nor_a_body(case: AdapterCase) -> None:
+    # Reqs 5.4 and 21.4. The exception is the most likely thing a caller logs verbatim, so it
+    # must
+    # carry nothing but the kind. Scanned deeply, for the same reason the credential test is.
     with pytest.raises(ServingClientError) as caught:
-        failing.air_quality(_CREDENTIAL)
-    rendered = f"{caught.value} {caught.value.args!r}"
-    assert _CREDENTIAL not in rendered
-    assert rendered.strip() != ""
-
-
-def _failing_variant(client: ServingClient) -> ServingClient | None:
-    """A copy of `client` rigged to fail, or None when the adapter offers no such control.
-
-    Kept as a helper rather than a fixture parameter because HOW an adapter is made to fail is
-    adapter-specific, while THAT it must raise is the port's contract. This is the seam between
-    the two, and putting it anywhere else would leak an implementation detail into the shared
-    suite.
-    """
-    if hasattr(client, "air_quality_body"):
-        return type(client)(  # type: ignore[call-arg]
-            air_quality_body=ServingFailureKind.UNREACHABLE
-        )
-    return None
+        _failing(case).air_quality(_CREDENTIAL)
+    assert _CREDENTIAL not in _deep_render(caught.value)
+    assert str(caught.value).strip() != ""
 
 
 # --- reads return a mapping ------------------------------------------

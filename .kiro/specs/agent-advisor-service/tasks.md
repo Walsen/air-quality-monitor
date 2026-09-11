@@ -990,6 +990,44 @@ directory.
     - mypy caught a VACUOUS assertion I had written: `assert trigger.request(...) is None` is a tautology
       when the protocol already declares `-> None`, so it passed for every conforming adapter while checking
       nothing. Replaced with an assertion on the declared annotation, which is the actual contract
+    - FIVE DEFECTS FOUND BY PRE-MERGE REVIEW AND FIXED. Two independent lanes ran: one mutation-tested the
+      suite with deliberately broken adapters, one predicted which assertions the REAL adapters would break
+      1. WORST: `_failing_variant` returned None for any adapter without the scripted client's
+         `air_quality_body` kwarg, and the tests then SKIPPED — silently deleting the two most important
+         assertions in the serving suite (failure raises with a kind; the error hides the credential) for
+         exactly the adapter that can leak a credential over a network. The seam now lives on `AdapterCase`
+         as `build_failing`, so each adapter declares its own, and a missing seam is `pytest.fail`, NOT a
+         skip: "we could not test the failure path" is not a pass. This also removes the if/elif-per-adapter
+         shape the practices' Open/Closed rule warns about
+      2. The credential test was `repr(vars(client))`, which a review defeated three ways: `__slots__` (no
+         `__dict__`, so it fell back to a bare object repr), a nested object one hop away, and by extension
+         an `httpx.Client` holding an Authorization header. Replaced with a depth-limited reachability scan
+         plus a self-check over all three shapes
+      3. The fence proved the PREDICATE, not the FIXTURE. It never built an adapter and never observed a run,
+         so an exception in `build()`, a `pytest.skip` in a body or a `skipif` marker were all invisible —
+         while the docstring claimed "nothing may skip". A session-level hook in `tests/contracts/conftest.py`
+         now records what the runner ACTUALLY skipped and fails the session on any skip this environment
+         cannot explain, verified by planting one and confirming exit status 1. The in-suite test's claim was
+         narrowed to what it really covers
+      4. `test_each_case_builds_something_that_satisfies_its_port` called `build()` UNCONDITIONALLY — the one
+         place bypassing the predicate, which would have run a cloud constructor with no endpoint configured
+      5. Req 34.6's FAIL-CLOSED path had NO test at all, and it is that port's load-bearing safety clause: an
+         adapter swallowing a ClientError and returning PASSED would have left the suite green while output
+         went unchecked. Added via a `build_unavailable` seam, asserting the distinct UNAVAILABLE verdict
+    - The trigger return-value test now checks BOTH the declared annotation and the runtime value. mypy calls
+      the second redundant, and the ignore is deliberate: mypy reasons FROM the annotation, which is the very
+      thing under test — an adapter can keep `-> None` and return a value from its body
+    - The category-leak assertion moved from two hard-coded phrases to a SENTINEL, since phrase-coupled
+      absence checks only sample the property; an adapter echoing a different substring would have passed
+    - HONESTY CORRECTION: the erasure tests cited Reqs 20.1/20.2, which say what a record CONTAINS and
+      nothing about erasure's return value. The count semantics come from the port signature plus Req 20.3's
+      reasoning. Recorded as a design decision rather than a quoted requirement, with the semantics task 16.5
+      must state: the count is rows that EXISTED and were removed by THIS call
+    - THE MODEL PORT'S EXCLUSION IS NOW AN EXPLICIT SCOPED EXCEPTION, not a silent omission. A literal
+      reading of Req 26.8 is not satisfied for it, and the grounds are written down: DD2 makes the Strands
+      `Model` class itself the port, and the port has no adapter-independent behavioural contract checkable
+      offline — its behaviour is which tokens it streams. A shared Model suite would be vacuous or
+      integration-only, and a vacuous suite is worse than none because it certifies
     - _Requirements: 26.8_
 
   - [ ] 16.2 Implement the `BedrockModel` adapter configuration

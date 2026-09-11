@@ -35,6 +35,7 @@ from aqm_advisor.ports.protocols import (
     AssociationTrigger,
     GuardrailChecker,
     ServingClient,
+    ServingFailureKind,
     port_protocols,
 )
 
@@ -47,12 +48,27 @@ class AdapterCase:
     endpoint itself. The registry therefore names a dependency without embedding a URL, and a
     test can decide whether the case can run by asking whether that key is set — no network
     probe, so the offline suite stays offline.
+
+    `build_failing` is how THIS adapter is made to fail, and `build_unavailable` how it is made
+    unreachable. Both live on the case rather than in a shared helper because a review found the
+    helper keying on `hasattr(client, "air_quality_body")` — a scripted-adapter implementation
+    detail — and returning None for anything else, which made the two most important tests in
+    the
+    serving suite SKIP for exactly the adapter that can leak a credential over a network. Each
+    case now declares its own seam, so adding an adapter is one entry rather than another arm in
+    an if/elif chain that the practices' Open/Closed rule warns about.
+
+    A case with no seam cannot have that contract checked at all, and the suites treat the
+    absence
+    as a FAILURE rather than a skip: "we could not test the failure path" is not a pass.
     """
 
     port: str
     name: str
     build: Callable[[], Any]
     requires_endpoint: str | None = None
+    build_failing: Callable[[], Any] | None = None
+    build_unavailable: Callable[[], Any] | None = None
 
     @property
     def is_offline(self) -> bool:
@@ -81,21 +97,58 @@ PORT_TYPES: Mapping[str, type] = {
     "advice_audit_store": AdviceAuditStore,
     "association_trigger": AssociationTrigger,
 }
-"""Port name to its Protocol, so a case can be checked against what it claims to implement."""
+"""Port name to its Protocol, so a case can be checked against what it claims to implement.
+
+**THE MODEL PORT IS DELIBERATELY ABSENT, AND THIS IS THE SCOPED EXCEPTION.** A literal reading
+of Req 26.8 — "one shared behavioral test suite per port, executed against every adapter of that
+port" — is not satisfied for the Model_Port, which will have two adapters (the scripted one, and
+`BedrockModel` in task 16.2). Recorded here rather than left silent, because a reviewer who
+spots the gap would otherwise re-derive this argument or "fix" it by adding a suite.
+
+The exception rests on two facts. First, design decision DD2 makes the Strands `Model` abstract
+class ITSELF the port, so there is no first-party Protocol to register, and its four abstract
+methods are enforced by construction: a subclass missing one cannot be instantiated. Second, and
+decisively, the Model port has no adapter-independent behavioural contract that is checkable
+offline. Every other suite here asserts observable behaviour — raises with a kind, returns a
+verdict, reports a count on erase. The Model's behaviour is WHICH TOKENS IT STREAMS, which is
+exactly what differs per adapter and per prompt, and which for Bedrock needs a live account.
+
+So a shared Model suite would be either vacuous or integration-only, and a vacuous suite is
+worse than none because
+it certifies. No proposed Model assertion survives the test every other suite in this file
+passes: true of every
+adapter AND checkable offline. If someone later finds one that does, it belongs here and this
+paragraph is wrong.
+"""
 
 
 ADAPTER_CASES: tuple[AdapterCase, ...] = (
-    AdapterCase("serving_client", "scripted", ScriptedServingClient),
-    AdapterCase("guardrail_checker", "local", LocalGuardrailChecker),
+    AdapterCase(
+        "serving_client",
+        "scripted",
+        ScriptedServingClient,
+        build_failing=lambda: ScriptedServingClient(
+            air_quality_body=ServingFailureKind.UNREACHABLE
+        ),
+    ),
+    AdapterCase(
+        "guardrail_checker",
+        "local",
+        LocalGuardrailChecker,
+        build_unavailable=lambda: LocalGuardrailChecker(unavailable=True),
+    ),
     AdapterCase("advice_audit_store", "memory", InMemoryAdviceAuditStore),
     AdapterCase("association_trigger", "recording", RecordingAssociationTrigger),
 )
 """Every adapter of every port.
 
 ONLY OFFLINE CASES EXIST TODAY. Tasks 16.2 to 16.5 add the cloud ones, each as one entry
-carrying its `requires_endpoint` — which is the same one-entry extension the configuration
-registry asks for, and is why the skip mechanism is built and proven before the adapter that
-needs it.
+carrying its `requires_endpoint` AND its failure seams — the same one-entry extension the
+configuration registry asks for.
+
+An HTTP serving client's `build_failing` will not resemble the scripted one's: pointing it at a
+closed local port, or handing it a stub transport that raises, both stay offline-safe. That the
+seam DIFFERS per adapter is exactly why it belongs on the case rather than in a shared helper.
 """
 
 
