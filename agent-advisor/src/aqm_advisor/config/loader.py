@@ -483,6 +483,41 @@ not.
 """
 
 
+def _validate_budget_covers_a_request(
+    resolved: Mapping[str, Any], problems: _Problems
+) -> None:
+    """The turn budget must be at least one request timeout (Reqs 32.13, 32.4a).
+
+    A CROSS-FIELD RULE, and the only one here. Both values validate fine alone, which is exactly
+    why
+    this was missing: nothing looked at their RELATIONSHIP. A turn budget SHORTER than a single
+    downstream timeout guarantees the budget expires while a retrieval is still in flight — and
+    the
+    entrypoint runs the turn on a worker thread that `asyncio.timeout` cannot kill, because
+    Python
+    cannot kill a thread. So every such turn abandons a running thread.
+
+    Repeated abandonment fills the executor, and a saturated pool makes later turns answer
+    degraded
+    WITHOUT EVER EXECUTING while the container still reports healthy — a silent liveness
+    collapse
+    that no health check notices. A review found the accumulation; this refuses the
+    configuration
+    that makes it routine instead of rare.
+    """
+    budget = resolved.get("turn_budget_seconds")
+    timeout = resolved.get("request_timeout_seconds")
+    if not isinstance(budget, int) or not isinstance(timeout, int):
+        return  # each is reported on its own by _validate_scalars
+    if budget < timeout:
+        problems.add(
+            "turn_budget_seconds",
+            f"must be at least request_timeout_seconds ({timeout}); a budget of {budget} "
+            "would expire while a retrieval is still running, abandoning a worker thread "
+            "that cannot be cancelled",
+        )
+
+
 def _validate_scalars(resolved: Mapping[str, Any], problems: _Problems) -> None:
     """Req 23.2: validate every resolved value this loader owns."""
     for key in _POSITIVE_SCALARS:
@@ -702,6 +737,7 @@ def resolve_and_validate(
 
     _validate_serving(resolved, problems)
     _validate_scalars(resolved, problems)
+    _validate_budget_covers_a_request(resolved, problems)
     _validate_registries(resolved, problems)
     _validate_log_level(resolved, problems)
     _validate_guardrail(resolved, problems)

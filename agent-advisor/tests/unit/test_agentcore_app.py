@@ -139,7 +139,8 @@ async def test_ping_reports_healthybusy_while_a_turn_is_in_flight() -> None:
         gate.wait(timeout=10)  # bounded, so a broken test cannot hang the suite
         return _response()
 
-    async with _client(_app(run_turn=blocking_turn)) as client:
+    app = _app(run_turn=blocking_turn)
+    async with _client(app) as client:
 
         async def turn() -> httpx.Response:
             return await client.post("/invocations", json=_payload())
@@ -160,6 +161,14 @@ async def test_ping_reports_healthybusy_while_a_turn_is_in_flight() -> None:
     assert turn_reply.status_code == 200
     assert ping_reply.status_code == 200, "ping did not stay responsive during the turn"
     assert "HealthyBusy" in seen, seen
+
+    # A review found this test passing against an implementation that registered the task and
+    # NEVER
+    # completed it: asserting HealthyBusy merely APPEARED says nothing about it going away.
+    # Siblings
+    # covered that, but this test's own docstring claimed more than it proved.
+    async with _client(app) as after:
+        assert (await after.get("/ping")).json()["status"] == "Healthy"
 
 
 async def test_ping_returns_to_healthy_after_the_turn() -> None:
@@ -256,14 +265,20 @@ async def test_a_turn_exceeding_its_budget_is_a_degraded_response() -> None:
     release = threading.Event()
 
     def overrunning_turn(_request: AdvisoryRequest) -> AdvisoryResponse:
-        release.wait(timeout=10)
+        release.wait(timeout=2)
         return _response()
 
     try:
         async with _client(_app(run_turn=overrunning_turn, turn_budget_seconds=1)) as client:
             reply = await client.post("/invocations", json=_payload())
-        assert reply.status_code == 200
-        assert reply.json()["degraded"] is True
+            assert reply.status_code == 200
+            assert reply.json()["degraded"] is True
+            # Released INSIDE the context, so the worker is reclaimed before the next test
+            # rather
+            # than after this one's assertions. A review noted the pool slot stayed occupied in
+            # the
+            # window between the budget expiring and the `finally`.
+            release.set()
     finally:
         release.set()
 
@@ -314,3 +329,82 @@ async def test_debug_actions_are_not_reachable() -> None:
             "/invocations", json={"_agent_core_app_action": "force_healthy"}
         )
     assert "forced_status" not in reply.text, reply.text
+
+
+# --- regressions from the review round ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (f"Bearer {_CREDENTIAL}", _CREDENTIAL),
+        (f"bearer {_CREDENTIAL}", _CREDENTIAL),
+        (f"BEARER {_CREDENTIAL}", _CREDENTIAL),
+        (f"Bearer   {_CREDENTIAL}", _CREDENTIAL),
+    ],
+    ids=["canonical", "lowercase-scheme", "uppercase-scheme", "extra-spaces"],
+)
+async def test_the_token_survives_every_legal_bearer_framing(
+    header: str, expected: str
+) -> None:
+    # RFC 6750 makes the scheme case-insensitive and allows more than one space before the
+    # token, so
+    # all four of these carry the SAME credential. What Req 32.8 protects is the TOKEN being
+    # forwarded unmodified, not the framing bytes.
+    seen: list[str] = []
+
+    def capture(request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(request.credential.get_secret_value())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post(
+            "/invocations", json=_payload(), headers={"Authorization": header}
+        )
+    assert seen == [expected]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [f"Token {_CREDENTIAL}", _CREDENTIAL, "Basic dXNlcjpwdw==", ""],
+    ids=["other-scheme", "no-scheme", "basic", "empty"],
+)
+async def test_a_non_bearer_header_is_refused_rather_than_double_framed(
+    header: str,
+) -> None:
+    # THE Req 32.8 finding. The first version returned the raw header when it was not Bearer-
+    # framed,
+    # and `HttpServingClient` wraps whatever it gets in `Bearer ` — so `Token abc` went out as
+    # `Bearer Token abc` and a bare `abc` as `Bearer abc`. The credential Service 2 evaluated
+    # was not
+    # the one the caller sent. Refusing beats corrupting: a mangled forward is rejected
+    # downstream for
+    # a reason invisible from here.
+    seen: list[str] = []
+
+    def capture(request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(request.credential.get_secret_value())
+        return _response()
+
+    headers = {"Authorization": header} if header else {}
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post("/invocations", json=_payload(), headers=headers)
+    assert seen == [""], f"a non-Bearer header was forwarded as {seen!r}"
+
+
+@pytest.mark.parametrize(
+    "body", [[1, 2], "hello", 42, True], ids=["list", "string", "int", "bool"]
+)
+async def test_a_non_object_body_is_an_invalid_request_not_an_internal_error(
+    body: object,
+) -> None:
+    # A JSON list or string reached `payload.items()` and raised AttributeError, which the broad
+    # catch
+    # rendered as "something went wrong on my side" — a SERVER-side story for a client-side
+    # mistake.
+    async with _client(_app()) as client:
+        reply = await client.post("/invocations", json=body)
+    assert reply.status_code == 200, reply.text
+    body_out = reply.json()
+    assert body_out["degraded"] is True
+    assert "my side" not in (body_out.get("guidance") or "").casefold(), body_out

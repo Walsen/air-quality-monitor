@@ -50,12 +50,20 @@ def _service2_audience_variable() -> str:
 
     Parsed from the AST rather than grepped, so a mention in a comment or a docstring cannot be
     mistaken for the wiring. Looks for the `client_id=` keyword on the call that builds the
-    verifier:
-    for a Cognito JWT the accepted audience IS the app client id, which is why that one value is
-    both
-    Req 32.7's "permitted client identifier" and its "permitted audience".
+    verifier: for a Cognito JWT the accepted audience IS the app client id, which is why that
+    one value is both Req 32.7's "permitted client identifier" and its "permitted audience".
+
+    COLLECTS EVERY CANDIDATE AND REFUSES AN AMBIGUOUS ONE. A review found the first version
+    returning the FIRST `ast.walk` match, which is source order rather than meaning. Service 2
+    has a second `client_id=` today (the MQTT one), excluded because its variable lacks
+    `COGNITO` — but if a second Cognito-ish client id were added, say for an admin app client,
+    first-match would silently pick whichever appeared earlier. Worse: if the advisor happened
+    to point at that same wrong variable, the equality assertion would still PASS and certify a
+    mis-wiring. Failing on ambiguity forces a human to retarget, which is what this module's
+    own docstring says it wants.
     """
     tree = ast.parse(_SERVICE2_COMPOSITION.read_text(encoding="utf-8"))
+    found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -69,11 +77,20 @@ def _service2_audience_variable() -> str:
                     and inner.value.startswith("AQM_")
                     and "COGNITO" in inner.value
                 ):
-                    return inner.value
-    pytest.fail(
-        f"could not find Service 2's Cognito audience variable in {_SERVICE2_COMPOSITION}; "
-        "if its wiring moved, this test must be retargeted rather than deleted"
-    )
+                    found.add(inner.value)
+    if len(found) > 1:
+        pytest.fail(
+            f"ambiguous: {len(found)} candidate Cognito audience variables in "
+            f"{_SERVICE2_COMPOSITION} ({sorted(found)}); retarget this test at the one the "
+            "SERVING authorizer uses rather than guessing by source order"
+        )
+    if not found:
+        pytest.fail(
+            f"could not find Service 2's Cognito audience variable in "
+            f"{_SERVICE2_COMPOSITION}; if its wiring moved, retarget this test rather than "
+            "deleting it"
+        )
+    return found.pop()
 
 
 def test_service_2s_audience_variable_is_discoverable() -> None:

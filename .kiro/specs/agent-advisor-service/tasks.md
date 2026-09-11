@@ -1349,7 +1349,50 @@ directory.
       selecting zero tests. 17.4 does not -- Req 26.5a puts the deployment contract in the OFFLINE
       suite because the SDK serves those endpoints with no AWS, so these tests are unmarked. The first
       `integration`-marked advisor test arrives with task 19.3
-    - _Requirements: 26.5a, 32.4b, 32.14_
+    - REVIEW ROUND (5 subagents on PR #21). Advisor 1582 -> 1597 tests. Findings and fixes:
+    - Req 32.8 VIOLATION FOUND: `_credential_from` fell back to returning the RAW header, and the HTTP
+      client wraps whatever it gets in `Bearer `. So `Token abc` went out as `Bearer Token abc` and a
+      bare `abc` as `Bearer abc` — the credential Service 2 evaluated was NOT the one the caller sent.
+      Only canonical Bearer framing is accepted now; anything else is refused rather than corrupted,
+      because a mangled forward is rejected downstream for a reason invisible from here. Note what is
+      NOT a violation: RFC 6750 makes the scheme case-insensitive and permits several spaces, so
+      accepting `bearer` and collapsing the separator leaves the TOKEN byte-identical, which is what
+      Req 32.8 protects
+    - THE BROAD CATCH SKIPPED `fault_for`, which is wider than the reviewer's own finding. Every
+      expected exception — including a caller's pydantic ValidationError — was answered "something went
+      wrong on my side", telling users a SERVER-side story about their own malformed body. `fault_for`
+      now runs first, exactly as its docstring describes, with `handle_at_top_level` for the surprise
+    - A non-object `/invocations` body reached `payload.items()` and raised AttributeError. Guarded, so
+      a list or string is an invalid-request answer rather than an internal-error one
+    - THE BUDGET EXPIRY IS NOW ITS OWN BRANCH WITH ITS OWN LOG. It was folded into the broad catch,
+      which logs only the exception type, so an operator could not tell an expiry from a model error.
+      They are not equivalent: only the expiry leaves a WORKER THREAD RUNNING, because
+      `asyncio.timeout` cancels the await and Python cannot kill a thread
+    - MY OWN FINDING, from reasoning about that interaction: a turn budget SHORTER than one
+      `request_timeout_seconds` guarantees the budget expires while a retrieval is still running, so
+      every such turn abandons a thread. Repeated abandonment fills the default executor (about 6
+      workers on a 2-vCPU container) and later turns then answer degraded WITHOUT EVER EXECUTING while
+      the container still reports healthy — a silent liveness collapse no health check notices. Both
+      values validated fine alone; nothing looked at their RELATIONSHIP. A cross-field rule now refuses
+      it, with a test that the shipped defaults satisfy it (60 >= 30)
+    - The audience parse returned the FIRST `ast.walk` match, which is source order rather than
+      meaning. It now collects every candidate and FAILS on ambiguity: a future second Cognito client
+      id would otherwise be picked silently, and if the advisor pointed at that same wrong variable the
+      equality assertion would still PASS and certify a mis-wiring
+    - TEST HYGIENE from the review: the named concurrency test asserted only that HealthyBusy APPEARED,
+      so it passed against an implementation that registered the task and never completed it — it now
+      also asserts the return to Healthy. The budget test releases its worker INSIDE the client context
+      so the pool slot is reclaimed before the next test, with a 2s rather than 10s fallback
+    - WHAT THE REVIEW COULD NOT BREAK: no reachable path lets an `Exception`-class failure escape to the
+      SDK's 500/424 handler. `add_async_task`, `clock.now()`, `resolve_envelope` and
+      `model_dump(mode="json")` were each traced and cannot raise for first-party inputs; the `finally`
+      runs even on `BaseException`, so the task is never leaked. `/ping` cannot block on the task lock —
+      `get_current_ping_status` does not even take it, and the critical sections are O(1) dict work
+      outside any await. All three AST fences were verified non-vacuous, scanning 57 real modules
+    - `CancelledError` does escape, and that is CORRECT: a cancellation is not a turn outcome, and
+      manufacturing a cheerful degraded answer for an abandoned request would be a lie. The claim is
+      therefore scoped to "every handled TURN failure answers 200", not "every failure"
+    - _Requirements: 5.2, 5.5, 5.6, 26.5a, 32.4b, 32.8, 32.13, 32.14_
 
   - [x]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**
