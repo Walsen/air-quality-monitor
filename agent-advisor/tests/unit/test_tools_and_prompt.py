@@ -33,9 +33,12 @@ from aqm_advisor.agent.tools import (
     build_retrieval_tools,
 )
 from aqm_advisor.domain.grounding import permitted_values, ungrounded
+from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.snapshot import NO_CURRENT_READING_TEXT
 from aqm_advisor.ports.clock import FixedClock
 from aqm_advisor.ports.protocols import ServingFailureKind
+
+_IDENTITY = TurnIdentity(user_id="u1", session_id="s" * 33)
 
 _NOW = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
 _CREDENTIAL = "eyJhbGciOi.THIS-IS-THE-CREDENTIAL.signature"
@@ -46,6 +49,7 @@ def _build(
 ) -> tuple[tuple[DecoratedFunctionTool[Any, Any], ...], RetrievalRecorder]:
     recorder = RetrievalRecorder()
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=client or ScriptedServingClient(),
         credential=_CREDENTIAL,
         recorder=recorder,

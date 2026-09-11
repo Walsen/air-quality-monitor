@@ -40,6 +40,7 @@ from aqm_advisor.domain.disclosure import required_texts, reveals_configuration
 from aqm_advisor.domain.envelope import resolve_envelope
 from aqm_advisor.domain.forbidden import forbidden_matches, unlisted_medications
 from aqm_advisor.domain.grounding import permitted_values, ungrounded
+from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import AdvisoryRequest, GuardrailEnvelope
 from aqm_advisor.domain.records import RetrievedValues
 from aqm_advisor.observability.logging import (
@@ -52,6 +53,8 @@ from aqm_advisor.observability.logging import (
 )
 from aqm_advisor.ports.clock import FixedClock
 from aqm_advisor.ports.protocols import ServingClientError, ServingFailureKind
+
+_IDENTITY = TurnIdentity(user_id="u1", session_id="s" * 33)
 
 _AT = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
 _CONFIGURED = "If you are severely breathless, seek emergency care now."
@@ -159,6 +162,7 @@ def test_the_credential_never_appears_in_a_tool_spec(credential: str) -> None:
     # be visible
     # to the model — which is why it is captured in a closure rather than taken as a parameter.
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=ScriptedServingClient(),
         credential=credential,
         recorder=RetrievalRecorder(),
@@ -174,6 +178,7 @@ def test_the_credential_never_appears_in_a_tool_result(credential: str) -> None:
     # it comes
     # back through the result the model reads.
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=ScriptedServingClient(),
         credential=credential,
         recorder=RetrievalRecorder(),
@@ -206,7 +211,7 @@ def test_the_credential_never_appears_in_an_audit_record(credential: str) -> Non
 
     assert "credential" not in inspect.signature(build_advice_record).parameters
     record = build_advice_record(
-        user_id="user-1",
+        identity=TurnIdentity(user_id="user-1", session_id="s" * 33),
         turn_at=_AT,
         route="/invocations",
         escalation=None,
@@ -479,6 +484,7 @@ def test_an_injection_in_a_retrieved_field_cannot_break_the_json_envelope(
     # cannot present itself as a turn boundary.
     body = {"nearestSensors": [{"siteCode": "AQM1", "siteName": injection}]}
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=ScriptedServingClient(air_quality_body=body),
         credential="a-credential",
         recorder=RetrievalRecorder(),

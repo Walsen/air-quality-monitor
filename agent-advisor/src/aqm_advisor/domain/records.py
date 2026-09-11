@@ -21,13 +21,10 @@ key would defeat Req 32.4c by making every delivery look new.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 from dataclasses import dataclass
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from aqm_advisor.domain.instants import iso_z
 
 
 class _StrictModel(BaseModel):
@@ -135,23 +132,6 @@ class SymptomEntryDraft(_StrictModel):
         return body
 
 
-def advice_idempotency_key(*, user_id: str, turn_at: dt.datetime, route: str) -> str:
-    """Derive the key that collapses a duplicate Advice_Record write (Req 32.4c).
-
-    A re-invoked entrypoint delivers the same turn twice, so the key is derived from the turn's
-    own identity — never from a random value or the current time, either of which would make
-    every delivery look new and defeat the deduplication this exists for.
-
-    The instant is normalised through `iso_z` first, so the same instant expressed in another
-    offset yields the same key: without that, a retry could be recorded twice.
-
-    Returns a digest rather than a concatenation, because the key is stored and may be logged,
-    and a key embedding the raw identity would put it somewhere Req 5.3 does not sanction.
-    """
-    material = f"{user_id}|{iso_z(turn_at)}|{route}".encode()
-    return hashlib.sha256(material).hexdigest()
-
-
 class AdviceRecord(_StrictModel):
     """Req 20's audit entry: what was advised, on what retrieved data, at what instant.
 
@@ -187,5 +167,4 @@ __all__ = [
     "RetrievedValues",
     "SymptomEntryDraft",
     "ToolCall",
-    "advice_idempotency_key",
 ]

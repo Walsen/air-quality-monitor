@@ -35,6 +35,7 @@ from aqm_advisor.agent.boundary import handle_at_top_level
 from aqm_advisor.agent.tools import RetrievalRecorder, build_retrieval_tools
 from aqm_advisor.domain.degradation import DriftWatcher, degraded_response
 from aqm_advisor.domain.envelope import resolve_envelope
+from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import AdvisoryRequest, GuardrailEnvelope, PriorTurn
 from aqm_advisor.observability.logging import (
     PERMITTED_IDENTITY_KEYS,
@@ -42,6 +43,8 @@ from aqm_advisor.observability.logging import (
     _JsonFormatter,
 )
 from aqm_advisor.ports.clock import FixedClock
+
+_IDENTITY = TurnIdentity(user_id="u1", session_id="s" * 33)
 
 _AT = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
 _CONFIGURED = "If you are severely breathless, seek emergency care now."
@@ -165,6 +168,7 @@ def _run_lifecycle(logger: EventLogger) -> None:
     client = ScriptedServingClient(profile_body=_sentinel_profile())
     recorder = RetrievalRecorder()
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=client,
         credential=request.credential.get_secret_value(),
         recorder=recorder,
@@ -205,7 +209,7 @@ def _run_lifecycle(logger: EventLogger) -> None:
 
     AuditWriter(store=_FailingStore(), logger=logger).write(
         build_advice_record(
-            user_id=_USER_ID,
+            identity=TurnIdentity(user_id=_USER_ID, session_id="s" * 33),
             turn_at=_AT,
             route="/invocations",
             escalation=None,
@@ -330,6 +334,7 @@ def test_the_retrieved_profile_is_never_logged_by_the_tools(
     caplog.set_level(logging.DEBUG)
     client = ScriptedServingClient(profile_body=_sentinel_profile())
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=client,
         credential="a-credential",
         recorder=RetrievalRecorder(),
@@ -350,6 +355,7 @@ def test_the_snapshot_body_is_never_logged_by_the_tools(
     assert isinstance(personalized, dict)
     personalized["condition"] = SENTINELS["condition"]
     tools = build_retrieval_tools(
+        identity=_IDENTITY,
         client=ScriptedServingClient(air_quality_body=body),
         credential="a-credential",
         recorder=RetrievalRecorder(),

@@ -643,7 +643,7 @@ directory.
     - **Property 18: Injection does not move the guardrails**
     - **Validates: Requirements 18.1, 18.2, 18.3, 18.4**
 
-- [ ] 14. Conversational writes to Service 2
+- [x] 14. Conversational writes to Service 2
   - [x] 14.1 Implement health profile elicitation
     - `domain/elicitation.py`. Reqs 27.3 and 27.4 both end with "SHALL NOT echo the offered value", and
       that is STRUCTURAL: `decline_message` takes a KIND, not the offered text, so there is no parameter
@@ -738,14 +738,62 @@ directory.
       "association", so it is exactly the kind of text a tightened pattern set could start rejecting
     - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7_
 
-  - [ ] 14.4 Implement idempotent write keys
-    - Key every `ServingClient` write so a redelivered turn does not double-apply; record why a diary write
-      is already safe by Service 2's replace-per-date rule while an audit and a profile write are not
+  - [x] 14.4 Implement idempotent write keys
+    - `domain/idempotency.py`. ONE derivation (`write_idempotency_key`) behind two named keys, so the two
+      cannot drift apart
+    - DEFECT FOUND AND FIXED: the existing `advice_idempotency_key` keyed on `user_id | turn_at | route`
+      and COULD NOT SURVIVE THE REDELIVERY IT EXISTED FOR. `turn_at` is a clock reading taken when the turn
+      is handled, so a re-invoked entrypoint produces a different key and writes a SECOND audit row for one
+      turn — which Req 20 would then present as two separate pieces of advice. It had a test asserting the
+      key was stable across the instant's *representation*, which passed and proved nothing about a
+      re-read clock
+    - The fix is `TurnIdentity` = `user_id` + `session_id`, with NO instant field, because a field able to
+      hold one is a place a later author would key on it. Req 33.11 supplies the stable component: the
+      `runtimeSessionId` must be derived from a stable property of the triggering execution rather than
+      generated fresh, and states its own reason — that this "is also what makes Requirement 33 criterion
+      4's idempotency achievable rather than merely asserted". The record still carries `turn_at` as DATA;
+      when a turn happened is an audit fact, it is simply not what identifies the turn
+    - The BODY is excluded too. A profile write's body is authored by the MODEL and a re-invoked entrypoint
+      re-runs the model, so a redelivery can carry a patch meaning the same thing while differing in field
+      order or phrasing. A body-derived key changes with it and the duplicate applies. (My first
+      implementation included the body; the second still included the instant. Both are recorded in the
+      module docstring so neither is re-attempted)
+    - The key is CLOSURE-CAPTURED in `build_retrieval_tools`, never a tool parameter, for the credential's
+      reason plus one of its own: a tool's `inputSchema` is part of the prompt, so a key the model authored
+      would be freshly invented on each delivery. A test asserts no tool exposes `idempotency_key`
+    - `idempotency_key` is a REQUIRED parameter on `ServingClient.profile_put`, so a new adapter cannot
+      omit it and silently lose the protection — mypy refused 78 call sites, which is the forcing function
+      working. It is transport metadata and never profile content: putting it in `patch` would store it as
+      one of the user's own fields, where the Advice_Record carries its key as a FIELD precisely because
+      that row IS the audit artefact
+    - The local adapter COLLAPSES a repeated key rather than merely accepting it, so an offline test can
+      observe the deduplication. An adapter that took the key and ignored it would let every idempotency
+      test pass while the real protection existed nowhere. The collapsed call is still recorded, because a
+      test needs to see the second delivery ARRIVED and was suppressed
+    - Two profile writes in ONE turn now collapse to the first. Deliberate: `profile_put` replaces the
+      confirmed state and `ProfileDraft` holds all of it, so a turn needs exactly one write — and
+      collapsing the second removes the read-modify-write accumulation hazard outright
+    - A key is NOT sufficient. `write_body()` on both drafts takes no argument beyond `self`, asserted by
+      signature, so it has nowhere to receive current state and a read-modify-write cannot appear without
+      changing a signature
+    - The diary write stays UNKEYED, per Req 32.4c, and Service 2's Req 31.7 was read to confirm the claim
+      rather than taken on faith. But "already safe" has a DEPENDENCY: the date must come from the
+      confirmed draft, or a retry crossing midnight writes a second entry on a second date and
+      replace-per-date collapses nothing. That precondition is now a test
     - _Requirements: 32.4c_
 
-  - [ ]* 14.5 Write property test for idempotent writes under redelivery
+  - [x]* 14.5 Write property test for idempotent writes under redelivery
     - **Property 17: Writes are idempotent under redelivery**
     - **Validates: Requirement 32.4c**
+    - Both directions, because a key that never collided would satisfy idempotence by being useless: a
+      redelivery yields the same key AND body, and distinct sessions/users/write-kinds yield distinct keys
+      (asserted as `keys_differ == (left != right)` rather than one-sided)
+    - Redelivery is simulated the way the fault happens — the identity and the draft are REBUILT from the
+      same content, as a re-invoked entrypoint rebuilds them. Reusing one instance would prove only that
+      the methods hold no internal state
+    - One property goes end to end through the port and asserts the adapter applied the write ONCE, so the
+      keys agreeing cannot be mistaken for the deduplication happening
+    - Passes at the nightly 1000 examples/property
 
 - [ ] 15. Configuration
   - [ ] 15.1 Implement the fail-fast configuration loader

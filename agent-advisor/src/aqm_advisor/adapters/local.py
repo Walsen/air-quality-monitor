@@ -217,6 +217,14 @@ class ScriptedServingClient:
     calls: list[tuple[str, tuple[object, ...]]] = field(default_factory=list)
     """Every call in order — the trajectory Requirement 35.4 asserts over."""
 
+    _applied_write_keys: set[str] = field(default_factory=set)
+    """Keys already applied, so a redelivered write is collapsed rather than merely accepted.
+
+    The call is still recorded in `calls` when it is collapsed — an offline test needs to see
+    that the second delivery ARRIVED and was suppressed, which is different from it never
+    happening.
+    """
+
     def _answer(
         self, name: str, body: Mapping[str, object] | ServingFailureKind, *args: object
     ) -> Mapping[str, object]:
@@ -245,9 +253,21 @@ class ScriptedServingClient:
         return self._answer("profile_get", self.profile_body)
 
     def profile_put(
-        self, credential: str, patch: Mapping[str, object]
+        self,
+        credential: str,
+        patch: Mapping[str, object],
+        idempotency_key: str,
     ) -> Mapping[str, object]:
-        """Record a profile write and echo it back."""
+        """Record a profile write and echo it back, collapsing a repeated key (Req 32.4c).
+
+        The local adapter COLLAPSES rather than merely accepting the key, so an offline test can
+        observe the deduplication instead of trusting that Service 2 will perform it. An adapter
+        that took the key and ignored it would let every idempotency test pass while the real
+        protection existed nowhere.
+        """
+        if idempotency_key in self._applied_write_keys:
+            return self._answer("profile_put", self.profile_body)
+        self._applied_write_keys.add(idempotency_key)
         return self._answer("profile_put", self.profile_body, patch)
 
     def profile_delete(self, credential: str) -> Mapping[str, object]:
