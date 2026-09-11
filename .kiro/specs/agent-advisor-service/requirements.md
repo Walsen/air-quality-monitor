@@ -1143,6 +1143,22 @@ the non-diagnostic constraint does not rest solely on the model's willingness to
    `ApplyGuardrail` operation with `source` set to `OUTPUT`. That operation is decoupled from model
    invocation, so it verifies text the service already holds — which is what makes it a check on the
    output rather than a hope about the generation.
+2a. THE Service SHALL treat guidance that is empty or whitespace-only as PASSED WITHOUT calling
+   `ApplyGuardrail`, because there is no content to deny and the call would otherwise spend a request to
+   learn nothing. The decisive reason is not cost: `GuardrailTextBlock.text` carries no minimum length in
+   the service model, so botocore does NOT reject an empty string client-side and the rejection, if any,
+   arrives from the service as a `ValidationException` — which an adapter's error handling would most
+   naturally map to unavailable. Emptiness would then MASQUERADE AS UNAVAILABILITY and trigger criterion
+   6's fail-closed path for a text that is trivially clean. An empty generation is a Requirement 6
+   criterion 5 problem, not a guardrail verdict.
+2b. THE Service SHALL map the guardrail response by matching the SUCCESS value explicitly — `action` equal
+   to `NONE` yields passed — and SHALL treat every other value, including one this service does not
+   recognise, as an intervention. `GuardrailAction` carries exactly two values today, `NONE` and
+   `GUARDRAIL_INTERVENED`, so the inverted test would be equivalent now and would FAIL OPEN the day AWS
+   adds a third: an unrecognised action read as passed would emit unverified health-adjacent text. There is
+   no response value meaning "could not evaluate", so an unavailable verdict can only originate from an
+   exception and never from a response.
+
 3. THE Service SHALL configure Denied Topics covering diagnosis, medication administration, and dosing,
    because Denied Topics enforced on output is the control that most directly expresses Requirement 8's
    prohibition.

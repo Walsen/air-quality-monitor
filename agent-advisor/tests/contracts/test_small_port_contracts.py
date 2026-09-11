@@ -78,18 +78,38 @@ def test_a_clean_text_passes(checker: GuardrailChecker) -> None:
     assert result.verdict is GuardrailVerdict.PASSED
 
 
-def test_an_intervention_is_returned_not_raised(checker: GuardrailChecker) -> None:
+_CLINICAL = "You are having an asthma attack. SENTINEL-GEN-Q7X. Take two puffs now."
+
+
+def _intervening(case: AdapterCase) -> GuardrailChecker:
+    """The adapter rigged to intervene, or a hard FAILURE when it declares no seam.
+
+    WHAT MAKES AN ADAPTER INTERVENE IS ADAPTER-SPECIFIC — the local checker decides from its own
+    patterns, the Bedrock one from what the service replied — so the trigger belongs on the
+    case,
+    while only the SHAPE of an intervention belongs in this shared suite. Found by this suite
+    failing the moment the second guardrail adapter joined, which is the suite doing its job.
+    """
+    if case.build_intervening is None:
+        pytest.fail(
+            f"{case.port}:{case.name} declares no build_intervening seam, so Req 34.4 "
+            "cannot be checked for it — add one to its AdapterCase"
+        )
+    return case.build_intervening()  # type: ignore[no-any-return]
+
+
+def test_an_intervention_is_returned_not_raised(case: AdapterCase) -> None:
     # THE clause for this port. Req 34.4 wants a verdict a caller can act on; an exception would
     # make an intervention indistinguishable from the checker being broken, and Req 34.6
     # requires
     # those two be treated differently — unavailability fails closed, an intervention is a
     # rejection.
-    result = checker.check("You are having an asthma attack.")
+    result = _intervening(case).check(_CLINICAL)
     assert isinstance(result, GuardrailResult)
-    assert result.verdict is not GuardrailVerdict.PASSED
+    assert result.verdict is GuardrailVerdict.INTERVENED
 
 
-def test_an_intervention_names_categories_and_not_the_text(checker: GuardrailChecker) -> None:
+def test_an_intervention_names_categories_and_not_the_text(case: AdapterCase) -> None:
     # Req 8.6: the rejected text is the thing that must not be recorded, so the result carries
     # categories. Plural, as the field is named — a single category would lose the second
     # reason.
@@ -97,9 +117,7 @@ def test_an_intervention_names_categories_and_not_the_text(checker: GuardrailChe
     # contain. A review pointed out that phrase-coupled absence checks only SAMPLE the property:
     # an adapter echoing a different substring of the offending text would pass. The sentinel
     # makes the assertion about echoing at all.
-    result = checker.check(
-        "You are having an asthma attack. SENTINEL-GEN-Q7X. Take two puffs now."
-    )
+    result = _intervening(case).check(_CLINICAL)
     assert result.categories, result
     for category in result.categories:
         assert "SENTINEL-GEN-Q7X" not in category, category

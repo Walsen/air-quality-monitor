@@ -1043,12 +1043,46 @@ directory.
       authentication failure with no refresh attempt
     - _Requirements: 5.2, 5.4, 21.1, 32.8a_
 
-  - [ ] 16.4 Implement the `ApplyGuardrail` adapter
+  - [x] 16.4 Implement the `ApplyGuardrail` adapter
     - `ApplyGuardrail` with `source` OUTPUT against a configured guardrail identifier and version; denied
       topics covering diagnosis, medication administration and dosing; an intervention treated as a
       rejection counted by category; unavailability failing closed for anything the local checks cannot
       clear
-    - _Requirements: 34.2, 34.3, 34.4, 34.6, 34.9_
+    - `adapters/guardrail/bedrock.py`. Advisor 1407 -> 1444 tests. Taken BEFORE 16.2 and 16.3 because Req
+      30.2's regex fast path is documented as insufficient with Req 34.5's managed guardrail as the
+      AUTHORITY, so until this adapter existed Req 30.2 had no real enforcement on generated text
+    - EVERY API FACT WAS READ FROM BOTOCORE'S SERVICE MODEL, not assumed — and doing so CORRECTED the
+      premise I started from. A review had said `ApplyGuardrail` rejects empty content; the model puts NO
+      minimum on `GuardrailTextBlock.text`, so botocore does not reject it client-side at all
+    - NEW REQ 34.2a: empty or whitespace-only guidance is PASSED WITHOUT calling the API. The reason is not
+      cost. The service's own rejection would arrive as an exception, the adapter would map it to
+      UNAVAILABLE, and Req 34.6's fail-closed path would fire for a text that is trivially clean —
+      emptiness would MASQUERADE AS UNAVAILABILITY. An empty generation is Req 6.5's problem
+    - NEW REQ 34.2b, the sharper find: `GuardrailAction` has exactly TWO values, so `action == "NONE"` and
+      `action != "GUARDRAIL_INTERVENED"` are equivalent TODAY and fail in OPPOSITE directions the day AWS
+      adds a third. The inverted test would read an unrecognised action as PASSED and emit unverified
+      health-adjacent text. The success value is matched explicitly; anything else, including a differently
+      cased or absent action, is an intervention. For a safety control the only acceptable default is closed
+    - Req 34.6's fail-closed is CONDITIONAL — "for any generation the local check cannot clear" — so the
+      decision belongs to the caller that knows both results. This adapter therefore returns an UNAVAILABLE
+      verdict and never raises; an adapter that raised would take the decision away by crashing the turn.
+      The catch is broad but bounded at `Exception`, so `KeyboardInterrupt` still propagates
+    - THE CONTRACT SUITE FROM 16.1 IMMEDIATELY EARNED ITSELF. Registering this adapter made two shared tests
+      FAIL, and they were right to: WHAT MAKES AN ADAPTER INTERVENE IS ADAPTER-SPECIFIC — the local checker
+      decides from patterns, this one from what the service replied — so a shared test feeding clinical text
+      and expecting an intervention was testing the DECISION, not the port's contract. Added a
+      `build_intervening` seam, the same shape as `build_failing`, which was the same lesson
+    - Registered as an OFFLINE contract case with an injected stub client, so the shared suite covers BOTH
+      guardrail adapters with no AWS account. What that verifies is the part that can be wrong in this
+      adapter's own code — the action mapping, the category extraction, the fail-closed default. What it
+      does NOT verify is that a real response has the shape parsed here, and no offline test can: that
+      belongs behind Req 26.6's integration fence, and saying so is the difference between a scoped
+      guarantee and an overclaim
+    - `DENIED_TOPIC_NAMES` lives as data so the provisioning step and the category mapping cannot disagree;
+      a topic renamed in one place only would produce interventions this service could not categorise, and
+      Req 34.4 requires the rejection be counted by category. An intervention that named none falls back to
+      a single uncategorised entry rather than an empty tuple, which would be invisible to that count
+    - _Requirements: 34.2, 34.2a, 34.2b, 34.3, 34.4, 34.6, 34.9_
 
   - [ ] 16.5 Implement the audit store adapter and erasure
     - Append and `forget_user`; erasure deletes rather than de-identifies where the record carries clinical
