@@ -36,9 +36,11 @@ import threading
 import httpx
 import pytest
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from bedrock_agentcore.runtime.models import SESSION_HEADER
 
 from aqm_advisor.agentcore.app import build_app
 from aqm_advisor.domain.models import AdvisoryRequest, AdvisoryResponse, GuardrailEnvelope
+from aqm_advisor.observability.correlation import current_session_id, new_session_id
 from aqm_advisor.ports.clock import FixedClock
 
 _AT = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
@@ -408,3 +410,97 @@ async def test_a_non_object_body_is_an_invalid_request_not_an_internal_error(
     body_out = reply.json()
     assert body_out["degraded"] is True
     assert "my side" not in (body_out.get("guidance") or "").casefold(), body_out
+
+
+# --- Req 32.11: the session id reaches baggage -------------------------
+
+
+async def test_the_platform_session_id_is_the_one_published_to_baggage() -> None:
+    # Req 32.11. A review found the entrypoint IGNORING `context.session_id`, so no baggage was
+    # set
+    # and a session's spans were not attributable to it — while `observability/correlation.py`
+    # sat
+    # unused, having been built for exactly this.
+    #
+    # Asserts the SUPPLIED id specifically, not merely that something is in baggage: the
+    # entrypoint
+    # originates a fallback, so a weaker assertion would pass even if the platform's id were
+    # dropped.
+    # The header name is imported from the SDK rather than written here, so a rename there fails
+    # this
+    # test instead of quietly making it vacuous.
+    supplied = "s" * 40
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post(
+            "/invocations", json=_payload(), headers={SESSION_HEADER: supplied}
+        )
+    assert seen == [supplied], seen
+
+
+async def test_a_turn_always_runs_inside_a_session_scope() -> None:
+    # With no id supplied the turn must still be correlated: an unlabelled span is as
+    # unattributable
+    # as a mislabelled one, so the entrypoint originates one rather than leaving baggage empty.
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post("/invocations", json=_payload())
+    assert seen and seen[0], "the turn ran outside any session scope"
+    assert len(seen[0] or "") >= 33, "Req 32.11's 33-character floor was not met"
+
+
+async def test_a_session_id_below_the_platform_floor_is_replaced() -> None:
+    # Req 32.11 sets a 33-character floor and `session_scope` validates BEFORE attaching, so
+    # passing a
+    # short id through would raise inside the turn. Refusing the turn over a correlation label
+    # would
+    # be the wrong trade — the answer matters more than its tag — so a short id is substituted.
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        reply = await client.post(
+            "/invocations", json=_payload(), headers={SESSION_HEADER: "too-short"}
+        )
+    assert reply.status_code == 200
+    assert seen and seen[0] != "too-short"
+    assert len(seen[0] or "") >= 33
+
+
+def test_an_originated_session_id_clears_the_platform_floor() -> None:
+    assert len(new_session_id()) >= 33
+
+
+# --- Req 32.12: streaming is refused, not silently ignored -------------
+
+
+def test_enabling_streaming_is_refused_rather_than_ignored() -> None:
+    # A review caught `streaming_enabled` being read by NOTHING here — the same "configured and
+    # read
+    # by nothing" trap this PR fixed for `turn_budget_seconds`, left in place for streaming. Req
+    # 32.12
+    # requires a streamed turn to emit no Guidance token before Req 34's checks pass on the
+    # COMPLETE
+    # generation, so streaming is a feature with a safety constraint, not a flag to flip.
+    # Ignoring it
+    # would tell an operator they had enabled streaming when they had not.
+    with pytest.raises(ValueError, match="streaming"):
+        _app(streaming_enabled=True)
+
+
+def test_streaming_disabled_builds_normally() -> None:
+    # The other direction, so the refusal cannot be satisfied by refusing everything.
+    assert _app(streaming_enabled=False) is not None

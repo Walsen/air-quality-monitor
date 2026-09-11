@@ -1392,7 +1392,33 @@ directory.
     - `CancelledError` does escape, and that is CORRECT: a cancellation is not a turn outcome, and
       manufacturing a cheerful degraded answer for an abandoned request would be a lie. The claim is
       therefore scoped to "every handled TURN failure answers 200", not "every failure"
-    - _Requirements: 5.2, 5.5, 5.6, 26.5a, 32.4b, 32.8, 32.13, 32.14_
+    - SPEC-AUDIT ROUND (the 5th subagent). It found three Req 32 clauses NOT in task 17's citation
+      list, all unimplemented at the entrypoint AND unrecorded as deferred. Its sharpest point: a
+      `streaming_enabled` flag read by nothing is "the same configured-and-read-by-nothing trap this
+      PR proudly fixed for `turn_budget_seconds`, but left in place for streaming"
+    - Req 32.11 FIXED, not deferred. The entrypoint IGNORED `context.session_id` while
+      `observability/correlation.py` -- `session_scope`, `new_session_id`, `validate_session_id`,
+      `SESSION_ID_MIN_LENGTH = 33` -- sat unused, having been built in an earlier task for exactly
+      this. So no baggage was set and one session's spans were not attributable to it. The turn now
+      runs inside a `session_scope`: the platform's id is preferred, one is originated when absent
+      (a fresh id per turn would split a session across as many ids as it had turns), and an id below
+      the 33-character floor is substituted rather than passed to a scope that validates before
+      attaching. The header name is imported from the SDK in the test, so a rename there fails the
+      test rather than quietly making it vacuous
+    - Req 32.12 MADE LOUD rather than implemented. SSE is a feature with a safety constraint -- a
+      streamed turn must emit no Guidance token before Req 34's checks pass on the COMPLETE
+      generation -- so it is genuinely out of scope here. But silently ignoring the flag would tell an
+      operator they had enabled streaming when they had not, so `streaming_enabled=True` is now
+      REFUSED at build time with the reason. Implementing SSE remains deferred
+    - Req 32.10 DEFERRED, now recorded: the entrypoint emits no per-invocation span or metric.
+      `observability/` reads the ambient OTel meter and installs no collector, which honours 32.10's
+      "configure no collector on AgentCore" half; attaching per-turn instrumentation belongs with task
+      21's composition root, where the metrics recorder is constructed
+    - LATENT TRAP RECORDED: `AQM_ADVISOR_JWT_ALLOWED_AUDIENCE` is now inert. Nothing in the repo sets
+      it -- no compose file, no CI workflow, no script -- so nothing is silently ignored today. The
+      forward risk is that an operator infers the `AQM_ADVISOR_` name every other setting uses and sets
+      a dead variable. The prefix-exception test guards the CODE, not a deployment
+    - _Requirements: 5.2, 5.5, 5.6, 26.5a, 32.4b, 32.8, 32.11, 32.13, 32.14 (32.10, 32.12 DEFERRED -- see above)_
 
   - [x]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**

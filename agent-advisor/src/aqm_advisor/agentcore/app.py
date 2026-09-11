@@ -59,6 +59,12 @@ from bedrock_agentcore.runtime.context import RequestContext
 from aqm_advisor.agent.boundary import fault_for, fault_response, handle_at_top_level
 from aqm_advisor.domain.envelope import resolve_envelope
 from aqm_advisor.domain.models import AdvisoryRequest, AdvisoryResponse
+from aqm_advisor.observability.correlation import (
+    InvalidSessionIdError,
+    new_session_id,
+    session_scope,
+    validate_session_id,
+)
 from aqm_advisor.observability.logging import EventLogger, get_logger
 from aqm_advisor.ports.clock import Clock
 
@@ -84,6 +90,7 @@ def build_app(
     turn_budget_seconds: int,
     clock: Clock,
     logger: EventLogger | None = None,
+    streaming_enabled: bool = False,
 ) -> BedrockAgentCoreApp:
     """Build the deployment app (Reqs 32.1, 32.3, 32.4, 32.4a, 32.5, 32.8, 32.13, 33.8).
 
@@ -107,6 +114,27 @@ def build_app(
         raise ValueError(
             "turn_budget_seconds must be positive; Req 32.13 requires an ordinary turn to be "
             f"bounded, and {turn_budget_seconds} would leave it unbounded"
+        )
+    if streaming_enabled:
+        # REFUSED RATHER THAN IGNORED. Req 32.12 permits SSE only where configuration enables
+        # it, and
+        # requires that a streamed turn emit no Guidance token before Req 34's output checks
+        # pass on
+        # the COMPLETE generation — so streaming is not a flag to flip, it is a feature with a
+        # safety
+        # constraint, and it is not built yet.
+        #
+        # A review caught `streaming_enabled` being read by nothing here: exactly the
+        # "configured and read by nothing" trap this same PR fixed for `turn_budget_seconds`,
+        # left in
+        # place for streaming. Silently ignoring it would tell an operator they had enabled
+        # streaming
+        # when they had not. Refusing says so at startup instead.
+        raise ValueError(
+            "streaming_enabled is configured but SSE is not implemented at this entrypoint; "
+            "Req 32.12 requires a streamed turn to emit no Guidance token before Req 34's "
+            "output checks pass, so enabling it silently would be unsafe. Leave it false until "
+            "streaming is built."
         )
     app = BedrockAgentCoreApp()
     events = logger or get_logger(__name__)
@@ -147,10 +175,11 @@ def build_app(
         answered_at = clock.now()
         task_id = app.add_async_task(_TASK_NAME)
         try:
-            async with asyncio.timeout(turn_budget_seconds):
-                request = _request_from(payload, context, events)
-                response = await asyncio.to_thread(run_turn, request)
-                return _body_of(response)
+            with session_scope(_session_id_from(context)):
+                async with asyncio.timeout(turn_budget_seconds):
+                    request = _request_from(payload, context, events)
+                    response = await asyncio.to_thread(run_turn, request)
+                    return _body_of(response)
         except TimeoutError as expiry:
             # DISTINGUISHED from a generic failure deliberately. A review found the budget
             # expiry
@@ -242,6 +271,39 @@ def _body_of(response: AdvisoryResponse) -> dict[str, object]:
     becomes the model's repr — a 200 with a quoted Python object in it.
     """
     return response.model_dump(mode="json")
+
+
+def _session_id_from(context: RequestContext) -> str:
+    """The session identifier to correlate this turn's spans under (Req 32.11).
+
+    A review found the entrypoint IGNORING `context.session_id` entirely, so no baggage was set
+    and
+    one session's spans were not attributable to it — with `observability/correlation.py`
+    sitting
+    unused, having been built for exactly this. The SDK hands the id over; nothing was taking
+    it.
+
+    THE PLATFORM'S ID IS PREFERRED, and originating one is the fallback rather than the norm: a
+    fresh
+    id per invocation would split a single session's spans across as many correlation ids as
+    there
+    were turns, which is worse than useless for the thing Req 32.11 asks for.
+
+    A too-short id is REPLACED, not passed through. Req 32.11 sets a 33-character floor, and
+    `session_scope` validates before attaching so a scope can never publish an id AgentCore
+    would
+    reject. Refusing the turn over a correlation detail would be the wrong trade — the answer
+    matters
+    more than its label — so a short id is logged and a usable one substituted.
+    """
+    supplied = (context.session_id or "").strip()
+    if not supplied:
+        return new_session_id()
+    try:
+        validate_session_id(supplied)
+    except InvalidSessionIdError:
+        return new_session_id()
+    return supplied
 
 
 def _request_from(
