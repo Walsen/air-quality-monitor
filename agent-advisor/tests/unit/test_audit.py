@@ -23,6 +23,7 @@ import logging
 import pytest
 
 from aqm_advisor.agent.audit import AuditWriter, build_advice_record
+from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import (
     BasisSummary,
     Escalation,
@@ -99,7 +100,7 @@ def _basis() -> BasisSummary:
 
 def _record(**kwargs: object) -> AdviceRecord:
     return build_advice_record(
-        user_id="user-1",
+        identity=TurnIdentity(user_id="user-1", session_id="s" * 33),
         turn_at=_AT,
         route="/invocations",
         **{  # type: ignore[arg-type]
@@ -174,7 +175,7 @@ def test_the_record_derives_its_own_idempotency_key() -> None:
 
 def test_two_different_turns_get_different_keys() -> None:
     other = build_advice_record(
-        user_id="user-2",
+        identity=TurnIdentity(user_id="user-2", session_id="s" * 33),
         turn_at=_AT,
         route="/invocations",
         escalation=None,

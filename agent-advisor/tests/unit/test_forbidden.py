@@ -156,9 +156,28 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     # days",
     # and a bare `you have` diagnosis pattern rejected it — the pattern was keyed on the WORDS
     # rather than the CLAIM, and only a guard over all required texts finds that.
+    import datetime as dt
+
+    from aqm_advisor.domain.association import (
+        PRECEDENCE_TEXT,
+        explain_learned_threshold,
+        insufficient_history_text,
+        learned_threshold_view,
+    )
     from aqm_advisor.domain.attribution import unavailable_text
     from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
     from aqm_advisor.domain.degradation import missing_data_note
+    from aqm_advisor.domain.diary import (
+        NOTE_PURPOSE_TEXT,
+        replacement_warning,
+        restate_entry_for_confirmation,
+    )
+    from aqm_advisor.domain.elicitation import (
+        DeclinedKind,
+        decline_message,
+        limit_rejection_message,
+    )
+    from aqm_advisor.domain.records import SymptomEntryDraft
     from aqm_advisor.domain.reporting import (
         GASEOUS_SAME_DAY_TEXT,
         PARTICULATE_LAG_TEXT,
@@ -181,6 +200,41 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
         # and a degraded turn is exactly when the service can least afford a withheld response.
         missing_data_note(("the pollen count",)),
         missing_data_note(("PM2.5", "tomorrow's outlook")),
+        # Reqs 27.3, 27.4 and 27.6. The highest-risk additions to this sweep so far: the dose
+        # decline TALKS ABOUT doses ("never a dose or how often you take it"), which is exactly
+        # the shape the dosing patterns look for. They pass because those patterns require a
+        # medication object nearby and a message about what is NOT recorded names none — but
+        # that
+        # is a property of the current patterns, so it is pinned here rather than assumed.
+        *(decline_message(kind) for kind in DeclinedKind),
+        limit_rejection_message(field="medications", limit=5),
+        # Req 28.4 and 28.5. The restatement is the interesting one: it says "you used your
+        # reliever", which NAMES a medication role, and it passes only because
+        # `administration_near_medication` distinguishes reporting a past action from
+        # instructing
+        # one. Req 29.1 permits naming a medication as preparedness, and reporting what the user
+        # already did is neither an instruction nor a dose — pinned here so that stays true.
+        NOTE_PURPOSE_TEXT,
+        replacement_warning(dt.date(2026, 7, 1)),
+        # Reqs 30.1, 30.4 and 30.6. The learned-threshold explanation carries four numerals and
+        # the word "association", so it is exactly the kind of text a tightened pattern set
+        # could
+        # start rejecting.
+        explain_learned_threshold(
+            learned_threshold_view(
+                {"species": "PM25", "subIndex": 4, "lagDays": 3, "observations": 24}
+            )
+        ),
+        insufficient_history_text(observations=6, minimum=20),
+        PRECEDENCE_TEXT,
+        restate_entry_for_confirmation(
+            SymptomEntryDraft(
+                date=dt.date(2026, 7, 1),
+                severity=3,
+                markers=("cough", "wheeze"),
+                reliever_used=True,
+            )
+        ),
         *TIMING_TEMPLATES,
     )
     for text in required:

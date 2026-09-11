@@ -23,7 +23,6 @@ from aqm_advisor.domain.records import (
     RetrievedValues,
     SymptomEntryDraft,
     ToolCall,
-    advice_idempotency_key,
 )
 
 _AT = dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)
@@ -180,58 +179,13 @@ def test_the_audit_record_rejects_an_unknown_field() -> None:
         _record(utterance="my chest was tight")
 
 
-# --- Req 32.4c: idempotency ---------------------------------------------
-
-def test_the_same_turn_yields_the_same_idempotency_key() -> None:
-    # A re-invoked entrypoint delivers the same turn twice (Req 32.4c). The key must collapse
-    # the
-    # duplicate, so it has to be derived from the turn and not from anything per-attempt.
-    first = advice_idempotency_key(user_id="user-1", turn_at=_AT, route="/invocations")
-    second = advice_idempotency_key(user_id="user-1", turn_at=_AT, route="/invocations")
-    assert first == second
-
-
-@pytest.mark.parametrize(
-    "changed",
-    [
-        {"user_id": "user-2"},
-        {"turn_at": _AT + dt.timedelta(seconds=1)},
-        {"route": "/ping"},
-    ],
-    ids=["user", "instant", "route"],
-)
-def test_a_different_turn_yields_a_different_key(changed: dict[str, object]) -> None:
-    base: dict[str, object] = {"user_id": "user-1", "turn_at": _AT, "route": "/invocations"}
-    other: dict[str, object] = {**base, **changed}
-    assert advice_idempotency_key(
-        user_id=str(base["user_id"]),
-        turn_at=_as_instant(base["turn_at"]),
-        route=str(base["route"]),
-    ) != advice_idempotency_key(
-        user_id=str(other["user_id"]),
-        turn_at=_as_instant(other["turn_at"]),
-        route=str(other["route"]),
-    )
-
-
-def test_the_key_discloses_neither_the_identity_nor_the_instant() -> None:
-    # The key is stored and may be logged. A key that embedded the raw identity would put it
-    # somewhere
-    # Req 5.3 does not sanction, so it is a digest rather than a concatenation.
-    key = advice_idempotency_key(user_id="user-1", turn_at=_AT, route="/invocations")
-    assert "user-1" not in key
-    assert "2026" not in key
-
-
-def test_the_key_is_stable_across_the_instants_representation() -> None:
-    # The same instant in another offset is the same turn. If the key differed, a retry would be
-    # recorded twice — the exact double-apply Req 32.4c exists to prevent.
-    offset = dt.timezone(dt.timedelta(hours=2))
-    assert advice_idempotency_key(
-        user_id="user-1", turn_at=_AT, route="/invocations"
-    ) == advice_idempotency_key(
-        user_id="user-1", turn_at=_AT.astimezone(offset), route="/invocations"
-    )
+# --- Req 32.4c: idempotency --------------------------------------------
+#
+# MOVED to tests/unit/test_idempotency.py, which owns the key derivation now that both keyed
+# writes share one. The tests that lived here also tested a property that NO LONGER EXISTS: that
+# the key is stable across the instant's representation. It is stable across it because the
+# instant is not key material at all — a strictly stronger position than normalising it, since a
+# re-invoked entrypoint reads a later clock and no amount of normalising fixes that.
 
 
 # --- Req 28: the symptom draft -----------------------------------------

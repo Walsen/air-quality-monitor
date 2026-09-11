@@ -29,15 +29,15 @@ from __future__ import annotations
 
 import datetime as dt
 
+from aqm_advisor.domain.idempotency import TurnIdentity, advice_idempotency_key
 from aqm_advisor.domain.models import BasisSummary, Escalation
-from aqm_advisor.domain.records import advice_idempotency_key
 from aqm_advisor.observability.logging import EventLogger
 from aqm_advisor.ports.protocols import AdviceAuditStore, AdviceRecord
 
 
 def build_advice_record(
     *,
-    user_id: str,
+    identity: TurnIdentity,
     turn_at: dt.datetime,
     route: str,
     escalation: Escalation | None,
@@ -58,12 +58,15 @@ def build_advice_record(
     A turn with NO basis still produces a record, carrying no identifiers. Refusing to build one
     would lose the audit for exactly the degraded turns most worth auditing.
 
-    The idempotency key is derived from the turn's own identity (Req 32.4c), so a re-delivered
-    turn yields the same key rather than a second row.
+    The idempotency key is derived from the turn's STABLE identity (Req 32.4c), so a
+    re-delivered turn yields the same key rather than a second row. `turn_at` is deliberately
+    NOT part of it: an earlier version keyed on it and could not survive the redelivery it
+    existed for, because a re-invoked entrypoint reads a later clock. When a turn happened is an
+    audit fact; it is not what identifies the turn.
     """
     references = basis.record_identifiers() if basis is not None else ()
     return AdviceRecord(
-        user_id=user_id,
+        user_id=identity.user_id,
         turn_at=turn_at,
         route=route,
         escalated=escalation is not None,
@@ -72,9 +75,7 @@ def build_advice_record(
         record_references=references,
         guardrail_rejected=guardrail_rejected,
         rejection_category=rejection_category,
-        idempotency_key=advice_idempotency_key(
-            user_id=user_id, turn_at=turn_at, route=route
-        ),
+        idempotency_key=advice_idempotency_key(identity=identity),
     )
 
 

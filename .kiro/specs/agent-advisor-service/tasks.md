@@ -643,39 +643,198 @@ directory.
     - **Property 18: Injection does not move the guardrails**
     - **Validates: Requirements 18.1, 18.2, 18.3, 18.4**
 
-- [ ] 14. Conversational writes to Service 2
-  - [ ] 14.1 Implement health profile elicitation
-    - Elicit condition, sensitivity, medication entries, routine entries and locations conversationally;
-      restate the structured interpretation and obtain explicit confirmation before any write; decline an
-      offered dose, frequency, route or schedule without echoing it; decline a diagnosis narrative, date
-      of birth, name or contact detail without echoing it; store nothing locally; report a limit rejection
-      without reporting the change as applied
+- [x] 14. Conversational writes to Service 2
+  - [x] 14.1 Implement health profile elicitation
+    - `domain/elicitation.py`. Reqs 27.3 and 27.4 both end with "SHALL NOT echo the offered value", and
+      that is STRUCTURAL: `decline_message` takes a KIND, not the offered text, so there is no parameter
+      through which a dose or a date of birth could reach the reply. A function that received the text and
+      promised not to use it would be a promise; one that cannot see it is a guarantee. A signature test
+      asserts no text-carrying parameter exists, and no decline message contains a numeral either — a dose
+      and a date of birth are both numeric, so that would be the echo arriving by another route
+    - `MedicationEntry` carries exactly `name` and `role` with `extra="forbid"`, so an attempt to record a
+      dose RAISES rather than being silently dropped — a dropped field looks identical to one never
+      offered, and this service must be able to say truthfully that it did not record it
+    - The name is also checked for an embedded strength. "salbutamol 100mcg" puts the dose IN the name,
+      which a field check alone would wave through, and a name with a strength in it is not only the name
+    - Req 27.2's confirmation is a GATE: a draft starts unconfirmed and `write_body` raises, the same
+      fail-closed shape as the verification ledger. The restatement names every field the write would
+      apply, because one that omitted a field would obtain consent for less than the write does. An empty
+      draft is refused — asking someone to confirm nothing obtains a confirmation authorising nothing
+    - Req 27.5 keeps values for the turn only, so the draft is FROZEN and `confirm()` returns a new value.
+      A mutable draft is a place to accumulate values across turns, which is how "for the turn" quietly
+      becomes "for the session". It also has nowhere to put a name, date of birth, contact detail or
+      diagnosis narrative: declining at the boundary is necessary but not sufficient, since a field able to
+      hold one is a place a later author could put it
+    - Reqs 27.6 and 4.5: the rejection message names the field and the limit, and is swept for every word
+      that would read as success. Reporting an unapplied change as applied leaves someone believing their
+      profile is something it is not, which then shapes advice they think was personalised
+    - The decline messages joined task 6.3's required-texts sweep, and they are the highest-risk additions
+      so far: the dose decline TALKS ABOUT doses ("never a dose or how often you take it"), exactly the
+      shape the dosing patterns look for. They pass because those patterns require a medication object
+      nearby and a message about what is NOT recorded names none — a property of the current patterns, so
+      it is pinned rather than assumed
     - _Requirements: 4.2, 4.3, 4.4, 4.5, 27.1, 27.2, 27.3, 27.4, 27.5, 27.6_
 
-  - [ ] 14.2 Implement symptom diary capture
-    - Construct a `SymptomEntryDraft` from the user's description; restate the inferred severity and marker
-      set and obtain confirmation, applying the user's correction over its own reading; never write without
-      an explicit instruction in the same turn; include a note only when asked and say it computes nothing;
-      warn before replacing an existing entry for a date; apply the red-flag check to a diary description
-      and escalate first; never characterise an entry clinically; store nothing
+  - [x] 14.2 Implement symptom diary capture
+    - `domain/diary.py`, plus `write_body` on the existing `SymptomEntryDraft`. Req 28.6 shapes the module
+      and is enforced by CONTROL FLOW: the red-flag check runs on the description first, and when it fires
+      the outcome carries the escalation with no confirmation request and `may_write` false. The write is
+      UNREACHABLE on that path rather than something a caller must remember to skip — the same
+      short-circuit as `TurnPipeline.run`, because a guarantee every caller must remember is not one
+    - The urgency is not diminished by the framing: someone filing "my lips look blue today" as history is
+      describing the same emergency as someone asking about it
+    - Req 28.7 is enforced by ABSENCE: no arithmetic, no comparison, no aggregation, by AST test. A
+      pre-merge review DEFEATED the first version of these guards and they were widened. It found that
+      checking only `<`/`<=`/`>`/`>=` let `"changed" if this != last else "same"` through — a real
+      deterioration classifier — so EQUALITY now counts too; that inspecting only bare-name calls never
+      examined `statistics.mean(xs)` or `np.diff(xs)` at all, so ATTRIBUTE calls are now collected; and
+      that `order.index(this) != order.index(last)` turned a severity into an ordinal to evade both, so
+      `index`, `diff` and the ordering dunders are in the forbidden call set. The self-check is now
+      PARAMETRISED over all eight known evasions — a self-check planting only `a > b` proves the detector
+      catches the one thing nobody would write. Membership and identity stay permitted deliberately: they
+      ask whether a thing is present, not how it relates to an earlier value
+    - DEFECT FOUND BY REVIEW AND FIXED: `plan_diary_turn` passed `prior_turns=()`, dropping them. Req 10.7
+      requires the recognition set be applied "to the utterance AND to any supplied prior turns in the
+      same request", and dropping them broke exactly the case `match_request_red_flags` exists for — a
+      user who says "my lips look blue" and THEN asks to log the day has described the emergency in the
+      first message. The description alone is benign, so the entry would have been recorded and the blue
+      lips never mentioned: Req 28.6's displacement, reached from the one direction a description-only
+      test cannot see. My own tests all drove the description. Both directions are now tested
+    - Every produced text is also swept for clinical wording
+    - Req 28.2's restatement names the severity, every marker AND the reliever flag, since one that omitted
+      a field would obtain confirmation for a different entry than the write applies — and the reliever
+      flag is the field most easily inferred wrongly from prose. A test asserts the restatement of a
+      CORRECTED draft shows the correction, or the second confirmation would restate the reading the user
+      had just rejected
+    - Req 28.4: an absent note is OMITTED from the write body rather than sent as null. Sending an explicit
+      null would be this service asserting there is no note, where declining to send the field says only
+      that it has none. `NOTE_PURPOSE_TEXT` says both halves — for recall, and computes nothing — because
+      someone who believes their words feed a calculation words them for the machine rather than for
+      themselves, which makes the diary worse at the one thing it is for
+    - Req 28.5's warning names the DATE; "an entry will be replaced" leaves the user unsure which day they
+      are overwriting, and a diary's value is that yesterday's entry is still yesterday's. It is absent
+      when there is nothing to replace, because warning every time trains the user to click through it
+    - Req 28.8: the outcome has nowhere to put the description, and a test asserts a distinctive marker in
+      the description does not appear in its `repr`
+    - All three new texts joined task 6.3's sweep. The restatement is the interesting one: it says "you
+      used your reliever", NAMING a medication role, and passes only because
+      `administration_near_medication` distinguishes reporting a past action from instructing one
     - _Requirements: 28.1, 28.2, 28.3, 28.4, 28.5, 28.6, 28.7, 28.8_
 
-  - [ ] 14.3 Implement learned-association reporting
-    - Explain that an escalation point came from the user's own diary, naming species, lag and observation
-      count; describe it as an association or pattern and never a cause, trigger, diagnosis or prediction;
-      say when there is not yet enough history rather than presenting a weak association; name a learned
-      source in the basis; state that a declared threshold takes precedence over a learned one; confine
-      the consequence to exposure reduction and the alerting point
-    - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7_
+  - [x] 14.3 Implement learned-association reporting
+    - `domain/association.py`. Nothing here derives an association: Service 2's `LearnedThreshold` carries
+      species, lag and observation count with it, and its own docstring says why — "so Requirement 30's
+      reporting obligation can be met without a second lookup, and so a threshold can never be surfaced
+      without the basis it rests on". This module reads that and relays it. Checked Service 2's real shape
+      rather than assuming field names
+    - Req 30.2's TRAP is the word "trigger". It is the most natural word in the asthma vocabulary — people
+      say "my triggers" — and it is exactly the word forbidden here, because a trigger is a causal claim
+      about someone's body derived from a correlation in their diary. `CAUSAL_WORDS` is swept over EVERY
+      text the module produces, not only the one that felt risky, and a test pins the set against Req
+      30.2's own list. A separate sweep covers PREDICTION, which arrives through tense rather than a noun
+    - Req 30.4 must name two numbers WITHOUT subtracting them. "You need 14 more observations" is a
+      computation, and Req 30.3 forbids computing anything about an association — so both numbers are
+      stated and the reader does the arithmetic. An AST test asserts the module performs none, which makes
+      that phrasing a structural consequence rather than a stylistic choice
+    - A PARTIAL learned block yields no view. Reporting a partial association would be worse than reporting
+      none: the user would see a pattern whose derivation this service could not state, and Req 30.1 wants
+      all three parts precisely so a threshold is never surfaced without its basis
+    - Req 30.7's sweep covers medication, inhaler, reliever, preventer, dose and "see your doctor". A
+      correlation in a diary is the weakest evidence in the system and the last thing that should move a
+      clinical behaviour
+    - TEST CORRECTED: the precedence test first asserted the literal word "learned" and failed. It was
+      wrong, not the text — "learned threshold" is SPEC vocabulary, not user vocabulary, and Req 30.6's
+      stated purpose is that the user UNDERSTANDS their instruction was not overridden. "A pattern from
+      your diary does not replace it" carries that where the jargon would not, so the assertion now checks
+      the substance rather than the spec's own wording
+    - All three texts joined task 6.3's sweep; the explanation carries four numerals and the word
+      "association", so it is exactly the kind of text a tightened pattern set could start rejecting
+    - SCOPE LIMIT found by review, recorded rather than papered over: `CAUSAL_WORDS` is swept over the
+      texts THIS MODULE produces, and those are all hand-written. It is NOT a runtime filter on
+      model-generated prose — nothing in `src/` imports it — and the Req 8 `forbidden_matches` set carries
+      no association-causality patterns. So Req 30.2 is met for the service's own texts and NOT yet
+      enforced on generated guidance. That belongs with output verification (task 18's guardrail wiring),
+      not here, and it needs care rather than a blanket ban: "trigger" is legitimate in
+      preparedness advice under Req 29.1, so a filter that rejected the word everywhere would block text
+      the service is obliged to produce. Req 30.2 stays OPEN against generated output
+    - The review also noted `CAUSAL_WORDS` omits `worsen`, `aggravate`, `set off`, `brings on`, `due to`,
+      `reason for`, `provoke`, `induce`, `driving` and `contribute to`. Left as-is deliberately while the
+      set guards only fixed strings this service authors; widen it when it becomes a runtime filter, and
+      prefer token matching then, since substring matching would fire on "predictable"
+    - _Requirements: 30.1, 30.3, 30.4, 30.5, 30.6, 30.7; 30.2 PARTIAL (own texts only)_
 
-  - [ ] 14.4 Implement idempotent write keys
-    - Key every `ServingClient` write so a redelivered turn does not double-apply; record why a diary write
-      is already safe by Service 2's replace-per-date rule while an audit and a profile write are not
+  - NOTE spanning 14.1 and 14.2, from the pre-merge review: the `ProfileDraft` / `SymptomEntryDraft`
+    confirmation gates are correct in isolation, but the wired `profile_put` / `symptom_entry_put` tools
+    forward model-authored JSON and do not route through `write_body()`. So Reqs 27.2 and 28.3 are enforced
+    only for a caller that uses the draft objects; nothing yet REQUIRES it. Closing that is the composition
+    root's job (task 21.1), which must make the draft the only path to a write. Recorded here so the
+    end-to-end guarantee is not assumed to exist already
+
+  - [x] 14.4 Implement idempotent write keys
+    - `domain/idempotency.py`. ONE derivation (`write_idempotency_key`) behind two named keys, so the two
+      cannot drift apart
+    - DEFECT FOUND AND FIXED: the existing `advice_idempotency_key` keyed on `user_id | turn_at | route`
+      and COULD NOT SURVIVE THE REDELIVERY IT EXISTED FOR. `turn_at` is a clock reading taken when the turn
+      is handled, so a re-invoked entrypoint produces a different key and writes a SECOND audit row for one
+      turn — which Req 20 would then present as two separate pieces of advice. It had a test asserting the
+      key was stable across the instant's *representation*, which passed and proved nothing about a
+      re-read clock
+    - The fix is `TurnIdentity` = `user_id` + `session_id`, with NO instant field, because a field able to
+      hold one is a place a later author would key on it. Req 33.11 supplies the stable component: the
+      `runtimeSessionId` must be derived from a stable property of the triggering execution rather than
+      generated fresh, and states its own reason — that this "is also what makes Requirement 33 criterion
+      4's idempotency achievable rather than merely asserted". The record still carries `turn_at` as DATA;
+      when a turn happened is an audit fact, it is simply not what identifies the turn
+    - The BODY is excluded too. A profile write's body is authored by the MODEL and a re-invoked entrypoint
+      re-runs the model, so a redelivery can carry a patch meaning the same thing while differing in field
+      order or phrasing. A body-derived key changes with it and the duplicate applies. (My first
+      implementation included the body; the second still included the instant. Both are recorded in the
+      module docstring so neither is re-attempted)
+    - The key is CLOSURE-CAPTURED in `build_retrieval_tools`, never a tool parameter, for the credential's
+      reason plus one of its own: a tool's `inputSchema` is part of the prompt, so a key the model authored
+      would be freshly invented on each delivery. A test asserts no tool exposes `idempotency_key`
+    - `idempotency_key` is a REQUIRED parameter on `ServingClient.profile_put`, so a new adapter cannot
+      omit it and silently lose the protection — mypy refused 78 call sites, which is the forcing function
+      working. It is transport metadata and never profile content: putting it in `patch` would store it as
+      one of the user's own fields, where the Advice_Record carries its key as a FIELD precisely because
+      that row IS the audit artefact
+    - The local adapter COLLAPSES a repeated key rather than merely accepting it, so an offline test can
+      observe the deduplication. An adapter that took the key and ignored it would let every idempotency
+      test pass while the real protection existed nowhere. The collapsed call is still recorded, because a
+      test needs to see the second delivery ARRIVED and was suppressed
+    - Two profile writes in ONE turn now collapse to the first. Deliberate: `profile_put` replaces the
+      confirmed state and `ProfileDraft` holds all of it, so a turn needs exactly one write — and
+      collapsing the second removes the read-modify-write accumulation hazard outright
+    - A key is NOT sufficient. `write_body()` on both drafts takes no argument beyond `self`, asserted by
+      signature, so it has nowhere to receive current state and a read-modify-write cannot appear without
+      changing a signature
+    - The diary write stays UNKEYED, per Req 32.4c, and Service 2's Req 31.7 was read to confirm the claim
+      rather than taken on faith. But "already safe" has a DEPENDENCY: the date must come from the
+      confirmed draft, or a retry crossing midnight writes a second entry on a second date and
+      replace-per-date collapses nothing. That precondition is now a test
+    - DEFECT FOUND BY REVIEW AND FIXED: the key joined its components on a raw `|`, so
+      `("alice", "|bob…")` and `("alice|", "bob…")` both rendered `alice||bob…` and produced the SAME
+      digest — two DIFFERENT turns colliding onto one key, which reads as an already-applied duplicate and
+      silently discards a real write to someone's health profile. Neither component is constrained to
+      exclude `|`: a `runtimeSessionId` may arrive from the platform, where validation checks only length
+      and non-blankness, and `user_id` comes from a federated identity whose character set this service
+      does not choose. Components are now LENGTH-PREFIXED, which removes the class rather than banning one
+      character, and the test compares the whole set of adversarial identities PAIRWISE — including two
+      that imitate the length prefix itself
     - _Requirements: 32.4c_
 
-  - [ ]* 14.5 Write property test for idempotent writes under redelivery
+  - [x]* 14.5 Write property test for idempotent writes under redelivery
     - **Property 17: Writes are idempotent under redelivery**
     - **Validates: Requirement 32.4c**
+    - Both directions, because a key that never collided would satisfy idempotence by being useless: a
+      redelivery yields the same key AND body, and distinct sessions/users/write-kinds yield distinct keys
+      (asserted as `keys_differ == (left != right)` rather than one-sided)
+    - Redelivery is simulated the way the fault happens — the identity and the draft are REBUILT from the
+      same content, as a re-invoked entrypoint rebuilds them. Reusing one instance would prove only that
+      the methods hold no internal state
+    - One property goes end to end through the port and asserts the adapter applied the write ONCE, so the
+      keys agreeing cannot be mistaken for the deduplication happening
+    - Passes at the nightly 1000 examples/property
 
 - [ ] 15. Configuration
   - [ ] 15.1 Implement the fail-fast configuration loader

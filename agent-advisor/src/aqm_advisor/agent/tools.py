@@ -34,6 +34,7 @@ from strands.tools.decorator import DecoratedFunctionTool
 
 from aqm_advisor.domain.grounding import numerals
 from aqm_advisor.domain.history import history_view
+from aqm_advisor.domain.idempotency import TurnIdentity, profile_idempotency_key
 from aqm_advisor.domain.records import RetrievedValues, ToolCall
 from aqm_advisor.domain.snapshot import DEFAULT_PROFILE_TEXT, snapshot_sites
 from aqm_advisor.ports.clock import Clock
@@ -126,14 +127,22 @@ def build_retrieval_tools(
     credential: str,
     recorder: RetrievalRecorder,
     clock: Clock,
+    identity: TurnIdentity,
 ) -> tuple[DecoratedFunctionTool[Any, Any], ...]:
     """Build the five tools for ONE turn, closed over that turn's credential and recorder.
 
     Built per turn rather than once per process, because the credential and the accumulator are
     per turn. A process-wide tool would need the credential as a parameter, which is exactly
     what must not happen.
+
+    `identity` is closed over for the same reason the credential is, plus one of its own: a
+    tool's `inputSchema` is part of the prompt, so an idempotency key exposed as a parameter
+    would be authored by the MODEL — and a re-invoked entrypoint re-runs the model, which would
+    invent a fresh key and defeat Req 32.4c entirely. The key must come from something the model
+    cannot reach.
     """
     air_quality_calls = 0
+    profile_write_key = profile_idempotency_key(identity=identity)
 
     @tool
     def air_quality() -> str:
@@ -225,7 +234,9 @@ def build_retrieval_tools(
         """
         recorder.record_call("profile_put")
         try:
-            body = client.profile_put(credential, json.loads(patch))
+            body = client.profile_put(
+                credential, json.loads(patch), profile_write_key
+            )
         except ServingClientError as error:
             return _failure_note("profile_put", error)
         except json.JSONDecodeError:

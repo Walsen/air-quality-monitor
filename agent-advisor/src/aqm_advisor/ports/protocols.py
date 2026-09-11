@@ -136,9 +136,20 @@ class ServingClient(Protocol):
         ...
 
     def profile_put(
-        self, credential: str, patch: Mapping[str, object]
+        self,
+        credential: str,
+        patch: Mapping[str, object],
+        idempotency_key: str,
     ) -> Mapping[str, object]:
-        """Replace the user's profile after explicit confirmation (Requirement 27.2)."""
+        """Replace the user's profile after explicit confirmation (Requirement 27.2).
+
+        `idempotency_key` is a REQUIRED parameter rather than an optional one, so a new adapter
+        cannot omit it and silently lose Req 32.4c's protection. It is transport metadata and
+        never profile content: putting it in `patch` would store it as one of the user's own
+        fields, which Req 27.4's field discipline forbids — and the Advice_Record carries its
+        key as a field precisely because that row IS the audit artefact, where a profile is the
+        user's.
+        """
         ...
 
     def profile_delete(self, credential: str) -> Mapping[str, object]:

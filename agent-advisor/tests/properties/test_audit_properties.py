@@ -30,6 +30,7 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from aqm_advisor.agent.audit import AuditWriter, build_advice_record
+from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import (
     BasisSummary,
     Escalation,
@@ -138,7 +139,7 @@ def _record(
     user_id: str = "user-1",
 ) -> AdviceRecord:
     return build_advice_record(
-        user_id=user_id,
+        identity=TurnIdentity(user_id=user_id, session_id="s" * 33),
         turn_at=_AT,
         route="/invocations",
         escalation=escalation,

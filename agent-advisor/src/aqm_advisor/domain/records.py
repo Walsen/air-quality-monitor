@@ -21,13 +21,10 @@ key would defeat Req 32.4c by making every delivery look new.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 from dataclasses import dataclass
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-
-from aqm_advisor.domain.instants import iso_z
 
 
 class _StrictModel(BaseModel):
@@ -106,22 +103,33 @@ class SymptomEntryDraft(_StrictModel):
             update["note"] = note
         return self.model_copy(update=update)
 
+    def write_body(self) -> dict[str, object]:
+        """The body to send to Service 2, or raise if unconfirmed (Req 28.3).
 
-def advice_idempotency_key(*, user_id: str, turn_at: dt.datetime, route: str) -> str:
-    """Derive the key that collapses a duplicate Advice_Record write (Req 32.4c).
+        An ABSENT note is omitted rather than sent as null (Req 28.4). Sending an explicit null
+        would be this service asserting there is no note, where declining to send the field says
+        only that it has none to send — and Req 28.4 permits a note solely where the user asked
+        for one.
 
-    A re-invoked entrypoint delivers the same turn twice, so the key is derived from the turn's
-    own identity — never from a random value or the current time, either of which would make
-    every delivery look new and defeat the deduplication this exists for.
-
-    The instant is normalised through `iso_z` first, so the same instant expressed in another
-    offset yields the same key: without that, a retry could be recorded twice.
-
-    Returns a digest rather than a concatenation, because the key is stored and may be logged,
-    and a key embedding the raw identity would put it somewhere Req 5.3 does not sanction.
-    """
-    material = f"{user_id}|{iso_z(turn_at)}|{route}".encode()
-    return hashlib.sha256(material).hexdigest()
+        Raises:
+            RuntimeError: when the user has not confirmed. Fail-closed, like the verification
+            ledger: the
+                caller gets an exception rather than an unconfirmed body, which is a bug report
+                rather than a silent write to somebody's health diary.
+        """
+        if not self.confirmed:
+            raise RuntimeError(
+                "refusing to build a diary write the user has not confirmed"
+            )
+        body: dict[str, object] = {
+            "date": self.date.isoformat(),
+            "severity": self.severity,
+            "markers": list(self.markers),
+            "reliever_used": self.reliever_used,
+        }
+        if self.note is not None:
+            body["note"] = self.note
+        return body
 
 
 class AdviceRecord(_StrictModel):
@@ -159,5 +167,4 @@ __all__ = [
     "RetrievedValues",
     "SymptomEntryDraft",
     "ToolCall",
-    "advice_idempotency_key",
 ]
