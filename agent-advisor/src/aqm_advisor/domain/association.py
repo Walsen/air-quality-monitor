@@ -49,7 +49,14 @@ CAUSAL_WORDS: frozenset[str] = frozenset(
         "responsible for",
     }
 )
-"""The vocabulary Req 30.2 forbids.
+"""The vocabulary this MODULE's own texts avoid.
+
+NOT the runtime filter. Req 30.2's enforcement on model-generated prose lives in
+`forbidden.ATTRIBUTION_PATTERNS`, inside the Forbidden_Claim set Req 8.2 checks before returning
+a generation. This set is narrower on purpose: it is a self-consistency sweep over the fixed
+strings this module authors, where a bare noun IS avoidable. A generated sentence is different —
+the noun is often correct there, and only the ATTRIBUTION is forbidden, which is why the runtime
+rule matches a claim rather than a word.
 
 `trigger` is the important entry. It is the word a user would use themselves, which is exactly
 why an agent reaching for natural phrasing would use it — and a trigger is a causal claim, where

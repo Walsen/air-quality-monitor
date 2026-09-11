@@ -72,12 +72,61 @@ DOSING_PATTERNS: tuple[str, ...] = (
     r"\byou (?:should|need to|ought to) (?:take|use|puff|inhale)\b",
 )
 
+ATTRIBUTION_PATTERNS: tuple[str, ...] = (
+    # Req 30.2 and Req 21.5. Every pattern binds a causal word TO THE USER, because that is the
+    # claim the requirements forbid — not the noun. `domain/actions.py` ships a required
+    # template
+    # reading "Both irritant and allergic triggers can matter on the same day, so it is worth
+    # watching how you respond rather than assuming one cause", which uses both nouns and is
+    # ANTI-causal; a word ban would delete the text that does the right thing.
+    #
+    # A trigger, possessive or attributed.
+    r"\bis\s+(?:your|the)\s+(?:\w+\s+){0,2}?trigger\b",
+    r"\b(?:your|the)\s+trigger\s+for\s+your\b",
+    r"\btrigger(?:s|ed)\s+your\b",
+    r"\b(?:are|is)\s+your\s+(?:\w+\s+){0,2}?trigger\b",
+    # A cause, attributed to the user's symptoms.
+    r"\bcaus(?:e|es|ed|ing)\s+your\b",
+    r"\bbecause\s+of\s+the\s+\w+\b[^.?!]{0,20}?\byour\s+(?:symptoms?|cough|wheeze)\b",
+    r"\byour\s+(?:symptoms?|cough|wheeze|breathlessness)\b[^.?!]{0,20}?"
+    r"\b(?:are|is|were|was)\s+because\s+of\b",
+    r"\bresponsible\s+for\s+your\b",
+    r"\bmakes?\s+you\s+(?:worse|wheeze|cough|ill|breathless)\b",
+    # A prediction about the user's future symptoms.
+    r"\bwill\s+make\s+you\s+(?:worse|wheeze|cough|ill|breathless)\b",
+    r"\byou\s+will\s+(?:have|get|experience|feel)\b",
+    r"\bexpect\s+(?:your\s+)?symptoms?\s+to\b",
+    r"\bpredicts?\s+your\b",
+)
+"""Req 30.2's generated-output enforcement, and Req 21.5's allergen clause.
+
+THIS IS A CLAIM CHECK, NOT A WORD CHECK. Req 30.2 forbids describing an Exposure_Association "as
+a cause, a trigger, a diagnosis, or a prediction about the user's future symptoms"; Req 21.5
+forbids naming "a specific allergen as the user's trigger". Both offend on the ATTRIBUTION — the
+possessive that turns a correlation in someone's diary into a statement about their body.
+
+The distinction is load-bearing rather than stylistic. `domain/association.py` is obliged by Req
+30.1 to explain a learned threshold, and a service that could not say the word "pattern" near
+the word "your" would have no way to meet it. Meanwhile the guidance a user most needs — that
+several kinds of trigger exist and they should watch their own response rather than assume one
+cause — uses both forbidden nouns to say something the requirement wants said.
+
+Placed in the Forbidden_Claim set because Req 8.2 already checks generated Guidance against that
+set before returning it and Req 8.7 makes it configuration. Req 30.2 needed entries, not a new
+mechanism.
+"""
+
 _CATEGORY_BY_PATTERN: dict[str, str] = {
     **{pattern: "diagnosis" for pattern in DIAGNOSIS_PATTERNS},
     **{pattern: "dosing" for pattern in DOSING_PATTERNS},
+    **{pattern: "causal_attribution" for pattern in ATTRIBUTION_PATTERNS},
 }
 
-DEFAULT_FORBIDDEN_PATTERNS: tuple[str, ...] = (*DIAGNOSIS_PATTERNS, *DOSING_PATTERNS)
+DEFAULT_FORBIDDEN_PATTERNS: tuple[str, ...] = (
+    *DIAGNOSIS_PATTERNS,
+    *DOSING_PATTERNS,
+    *ATTRIBUTION_PATTERNS,
+)
 """The default Forbidden_Claim set. A configured set REPLACES this (Req 8.7)."""
 
 KNOWN_MEDICATION_TOKENS: frozenset[str] = frozenset(
@@ -191,6 +240,7 @@ def administration_near_medication(text: str) -> bool:
 
 
 __all__ = [
+    "ATTRIBUTION_PATTERNS",
     "DEFAULT_FORBIDDEN_PATTERNS",
     "DIAGNOSIS_PATTERNS",
     "DOSING_PATTERNS",
