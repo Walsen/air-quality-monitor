@@ -24,13 +24,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
+
+from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
 from aqm_advisor.adapters.guardrail.bedrock import ApplyGuardrailChecker
 from aqm_advisor.adapters.local import (
     InMemoryAdviceAuditStore,
     LocalGuardrailChecker,
     RecordingAssociationTrigger,
     ScriptedServingClient,
+    canned_air_quality,
 )
+from aqm_advisor.adapters.serving.http import HttpServingClient
 from aqm_advisor.ports.protocols import (
     AdviceAuditStore,
     AssociationTrigger,
@@ -175,6 +180,58 @@ def _bedrock_checker(
     )
 
 
+def _http_serving(*, failing: bool = False) -> HttpServingClient:
+    """The real HTTP adapter on a mock transport, so it stays a contract case offline.
+
+    The payoff of the transport being injectable: the routing, the per-call credential handling
+    and
+    the whole status-to-kind mapping are this adapter's own code and are checkable with no
+    account
+    and no network. What it does NOT prove is that Service 2 answers these shapes — that is Req
+    26.6's integration fence, and the honest boundary of what this case certifies.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failing:
+            raise httpx.ConnectError("refused")
+        return httpx.Response(200, json=dict(canned_air_quality()))
+
+    return HttpServingClient(
+        base_url="https://serving.invalid",
+        timeout_seconds=30,
+        transport=httpx.MockTransport(handler),
+    )
+
+
+class _StubTable:
+    """An in-process stand-in for a DynamoDB table, so the persistent store is a contract case.
+
+    Models query-then-delete faithfully, because that is what the erasure count depends on. What
+    this proves is the store's own logic — the count semantics, the per-user isolation, that
+    erasure
+    deletes rather than rewrites. What it does NOT prove is that DynamoDB answers these shapes,
+    which
+    is Req 26.6's integration fence.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[dict[str, object]] = []
+
+    def put_item(self, *, Item: dict[str, object]) -> None:  # noqa: N803 - boto3 wire name
+        self.items.append(Item)
+
+    def query(self, *, KeyConditionExpression: str) -> dict[str, object]:  # noqa: N803
+        wanted = KeyConditionExpression
+        return {"Items": [i for i in self.items if i["userId"] == wanted]}
+
+    def delete_item(self, *, Key: dict[str, object]) -> None:  # noqa: N803
+        self.items = [
+            i
+            for i in self.items
+            if not (i["userId"] == Key["userId"] and i["turnKey"] == Key["turnKey"])
+        ]
+
+
 ADAPTER_CASES: tuple[AdapterCase, ...] = (
     AdapterCase(
         "serving_client",
@@ -183,6 +240,12 @@ ADAPTER_CASES: tuple[AdapterCase, ...] = (
         build_failing=lambda: ScriptedServingClient(
             air_quality_body=ServingFailureKind.UNREACHABLE
         ),
+    ),
+    AdapterCase(
+        "serving_client",
+        "http",
+        _http_serving,
+        build_failing=lambda: _http_serving(failing=True),
     ),
     AdapterCase(
         "guardrail_checker",
@@ -199,6 +262,11 @@ ADAPTER_CASES: tuple[AdapterCase, ...] = (
         build_intervening=lambda: _bedrock_checker(intervenes=True),
     ),
     AdapterCase("advice_audit_store", "memory", InMemoryAdviceAuditStore),
+    AdapterCase(
+        "advice_audit_store",
+        "dynamodb",
+        lambda: DynamoDbAdviceAuditStore(table=_StubTable()),
+    ),
     AdapterCase("association_trigger", "recording", RecordingAssociationTrigger),
 )
 """Every adapter of every port.

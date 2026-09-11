@@ -960,7 +960,7 @@ directory.
     - _Requirements: 23.2, 23.3, 23.4, 23.5, 23.6, 34.9; 23.1 PARTIAL (payload provided, emission deferred
       to task 21.1)_
 
-- [ ] 16. Real adapters and shared port contract suites
+- [x] 16. Real adapters and shared port contract suites
   - [x] 16.1 Write the shared behavioural test suite per port
     - `tests/contracts/`: a `registry.py` holding every adapter of every port, plus one behavioural suite per
       port parameterised over that port's adapters. Advisor 1372 -> 1404 tests. New recipe
@@ -1030,18 +1030,64 @@ directory.
       integration-only, and a vacuous suite is worse than none because it certifies
     - _Requirements: 26.8_
 
-  - [ ] 16.2 Implement the `BedrockModel` adapter configuration
+  - [x] 16.2 Implement the `BedrockModel` adapter configuration
     - Model identifier and region from configuration and never a literal; `temperature` 0 by default with
       any sampling parameter as configuration; the request timeout and maximum output length applied; the
       model credential resolved only from the environment or a runtime path and never logged
+    - `adapters/model/bedrock.py`. No wrapper class, per DD2: the Strands `Model` ABC IS the port, so
+      this is a CONFIGURED `BedrockModel` and nothing more
+    - THE FINDING IS A FAIL-OPEN IN THE FRAMEWORK. `strands-agents==1.55.1` bakes in
+      `DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"` and
+      `DEFAULT_BEDROCK_REGION = "us-west-2"`, and `BedrockModel.__init__` substitutes them with only a
+      `warning` when none is supplied. Req 6.1b says the identifier and region come from configuration and
+      "never from a literal in code" — A FRAMEWORK LITERAL IS STILL A LITERAL. Without a refusal an
+      unconfigured deployment answers on a model nobody chose, in a region nobody chose, having logged a
+      warning nobody read. `build_bedrock_model` refuses, accumulating BOTH missing values like the loader
+    - Req 6.4's timeout is NOT a `BedrockConfig` field — it belongs to `boto_client_config`, read from the
+      installed strands source. Assuming otherwise would have set a key the SDK ignores and left Req 6.4
+      unenforced WHILE LOOKING CONFIGURED, which no test asserting `get_config()` would have caught. The
+      test therefore asserts through `model.client.meta.config`
+    - `max_tokens` is OMITTED, not passed as None, when unconfigured: Req 6.5 treats a truncated generation
+      as a failure, so inventing a ceiling would manufacture the very failure the requirement detects
+    - Req 6.6 takes NO credential parameter — boto3's own chain resolves from the environment or a runtime
+      path, which is exactly what the requirement permits. A parameter would be a second path and a value
+      that can reach a repr, a log line or a traceback
+    - The two token keys stay distinct, confirmed rather than merged: `max_output_tokens` is Req 22's loop
+      budget via `InvocationBounds`, `model_max_output_tokens` is Req 6.5's per-request ceiling
     - _Requirements: 6.1b, 6.4, 6.5, 6.6, 25.4_
 
-  - [ ] 16.3 Implement the HTTP `ServingClient` adapter
+  - [x] 16.3 Implement the HTTP `ServingClient` adapter
     - `httpx` client over Service 2's routes forwarding the credential in the header; the credential folded
       into the client and not retained as an attribute; failures translated to typed errors naming the
       failure kind and never the credential; a token rejected for remaining lifetime reported as an
       authentication failure with no refresh attempt
-    - _Requirements: 5.2, 5.4, 21.1, 32.8a_
+    - `adapters/serving/http.py`, registered as `http`. Driven through `httpx.MockTransport`, which ships
+      with the pinned `httpx==0.28.1` — no new dependency, and the whole adapter is offline-testable
+    - FOUND A REAL CROSS-SERVICE CONTRACT DEFECT, and it needed a REQUIREMENTS fix first (new Req 3.1a).
+      Service 2's Req 19.3 makes `siteCode` a REQUIRED parameter of `/v1/air-quality/history`, and the
+      advisor's requirements did not mention `siteCode` ANYWHERE. The port's
+      `history(credential, start, end, species)` therefore could not build a valid request at all. The
+      scripted adapter had masked it completely by answering from a canned body — the defect would have
+      surfaced first at deployment
+    - Req 3.1a resolves it: the site comes from the Air_Quality_Snapshot retrieved in the SAME turn, never
+      configured and never invented. A deployment-wide configured site would serve one user another
+      location's readings as if they were their own, which is a correctness fault before it is a privacy
+      one; and a guessed site is answered 404 by Service 2, so a guess would surface as a service fault
+      rather than the mistake it is. History now REQUIRES a snapshot first and reports the period
+      unavailable otherwise. The tool exposes no site parameter, asserted against the model-facing
+      `inputSchema` so the model cannot supply one
+    - THE CREDENTIAL IS BUILT PER CALL, NEVER FOLDED INTO A CLIENT. An `httpx.Client(headers={...})` is the
+      obvious shape and it is wrong: the client is held as an attribute, so the credential becomes
+      reachable and lands in any repr, log line or traceback. The contract suite's `_deep_render` walks
+      three hops looking for exactly that, and the adapter passes it
+    - 401 AND 403 map to UNAUTHORIZED and are NOT retried (Req 32.8a): a forwarded token keeps ageing, so
+      it can be accepted at the front door and be near expiry by a later call in the same turn. Asserted by
+      counting requests, because a retry is invisible to a kind assertion alone
+    - `from None` on every raise: chaining would attach the original `httpx` error, whose message and
+      request object can name the URL and carry the Authorization header — what Reqs 5.2 and 21.4 forbid
+    - Status mapping is EXPLICIT rather than a range test, so 401/403 cannot fall into 400's bucket; a
+      non-JSON body and a JSON body that is not an object both map to UNUSABLE_BODY
+    - _Requirements: 3.1a, 5.2, 5.4, 21.1, 32.8a_
 
   - [x] 16.4 Implement the `ApplyGuardrail` adapter
     - `ApplyGuardrail` with `source` OUTPUT against a configured guardrail identifier and version; denied
@@ -1084,10 +1130,34 @@ directory.
       a single uncategorised entry rather than an empty tuple, which would be invisible to that count
     - _Requirements: 34.2, 34.2a, 34.2b, 34.3, 34.4, 34.6, 34.9_
 
-  - [ ] 16.5 Implement the audit store adapter and erasure
+  - [x] 16.5 Implement the audit store adapter and erasure
     - Append and `forget_user`; erasure deletes rather than de-identifies where the record carries clinical
       content, and reports the count
-    - _Requirements: 20.1, 20.2_
+    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. AgentCore Memory was EVALUATED FIRST and
+      rejected with reasons: it is built for conversational context a model reads back, where Req 20's
+      trail is an OPERATOR record — queried by identity and date, never fed to a model, and required to
+      outlive the session. Req 20.3 also strips it of exactly the content Memory exists to carry
+    - THE TASK'S "where the record carries clinical content" IS VACUOUS BY DESIGN, and that is the finding.
+      Req 20.3 forbids the record from holding an utterance, guidance, a condition, a sensitivity, a
+      threshold or a coordinate, "so the trail carries no health-adjacent content and erasure has only an
+      identity to remove". `AdviceRecord` has nowhere to put any of it, so there is no
+      de-identify-versus-delete choice to make — the row goes. A test pins the ABSENCE of every clinical
+      key on the persisted item, so the day someone adds one the question must be answered deliberately
+      rather than silently inherited
+    - NOTE THE ASYMMETRY WITH SERVICE 2, which de-identifies: its `/v1/profile/me` DELETE reports
+      `auditRecordsDeIdentified` because its audit rows carry servable content worth keeping. This service
+      has none, which is why the same word means a different action in each
+    - COUNT SEMANTICS STATED, as task 16.1's review directed: the count is rows that EXISTED and were
+      REMOVED BY THIS CALL. It comes from what the query FOUND, not from delete requests issued — a request
+      count would report a second deletion on a repeat and double-count an audited erasure. Requirement 20
+      is silent on the return value, so this is recorded as a design decision, not quoted as a requirement
+    - The sort key is the idempotency key, NOT the turn instant: two deliveries of one turn carry the same
+      key and must collapse to one row, where a timestamp key would write a second (Req 32.4c)
+    - `append` RAISES rather than swallowing. Req 20.5 puts the still-answer decision at the CALL SITE; a
+      store that swallowed the failure would make an audit gap invisible to the log Req 20.5 requires
+    - The item mapping is EXPLICIT, not a `model_dump()` splat, so a new `AdviceRecord` field fails the
+      persistence test loudly instead of arriving under a name nothing queries
+    - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
 - [ ] 17. AgentCore entrypoint and the deployment contract
   - [ ] 17.1 Implement the entrypoint and health endpoint

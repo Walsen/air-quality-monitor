@@ -344,6 +344,15 @@ connect how I have been feeling to what I have been breathing.
 
 1. WHEN the turn requires readings over a past window, THE Service SHALL retrieve them through the
    Serving_Client by calling Service 2's `/v1/air-quality/history` with an explicit start and end.
+1a. THE Service SHALL take the `siteCode` that call requires from the Air_Quality_Snapshot already
+   retrieved in the same turn, and SHALL NOT configure one, derive one from a coordinate, or invent
+   one. Service 2's Requirement 19 criterion 3 makes `siteCode` a required parameter and its
+   criterion 7 answers 404 for a site absent from the Sensor_Registry, so a history call has no
+   valid form without one. The site is resolved per user from their stored location, which means a
+   deployment-wide configured value would serve one user another location's readings as if they
+   were their own — a correctness fault before it is a privacy one. THEREFORE a history retrieval
+   REQUIRES a snapshot first, and IF none was retrieved THEN THE Service SHALL report the period as
+   unavailable rather than guessing a site.
 2. THE Service SHALL derive the requested window from the utterance and the injected Clock, and SHALL
    NOT request a span exceeding the maximum Service 2 permits.
 3. IF Service 2 rejects the window, THEN THE Service SHALL report that the requested period is not

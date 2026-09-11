@@ -241,12 +241,13 @@ class ScriptedServingClient:
     def history(
         self,
         credential: str,
+        site_code: str,
         start: dt.datetime,
         end: dt.datetime,
         species: frozenset[str] | None = None,
     ) -> Mapping[str, object]:
-        """Return the canned history body, recording the window asked for."""
-        return self._answer("history", self.history_body, start, end, species)
+        """Return the canned history body, recording the site and window asked for."""
+        return self._answer("history", self.history_body, site_code, start, end, species)
 
     def profile_get(self, credential: str) -> Mapping[str, object]:
         """Return the canned profile."""

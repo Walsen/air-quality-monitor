@@ -62,6 +62,31 @@ def _snapshot_notes(body: object) -> list[str]:
     return notes
 
 
+def _site_code_of(body: object) -> str | None:
+    """The nearest sensor's `siteCode` from a snapshot, for Req 3.1a's history call.
+
+    Takes the FIRST entry of `nearestSensors`, which is the nearest one: Service 2 orders that
+    list
+    by distance, and a history window is asked about where the user is. Returns None rather than
+    a
+    fallback when the body has no usable site, so the history tool reports the period
+    unavailable
+    instead of calling Service 2 with a site it guessed — which Req 3.1a forbids and which
+    Service 2
+    would answer 404 for, making a guess look like a service fault.
+    """
+    if not isinstance(body, dict):
+        return None
+    sensors = body.get("nearestSensors")
+    if not isinstance(sensors, list) or not sensors:
+        return None
+    nearest = sensors[0]
+    if not isinstance(nearest, dict):
+        return None
+    code = nearest.get("siteCode")
+    return code if isinstance(code, str) and code.strip() else None
+
+
 @dataclass
 class RetrievalRecorder:
     """Accumulates what a turn retrieved, for grounding and for the trajectory.
@@ -142,6 +167,15 @@ def build_retrieval_tools(
     cannot reach.
     """
     air_quality_calls = 0
+    retrieved_site_code: str | None = None
+    """The site the snapshot named, for Req 3.1a's history call.
+
+    Held in the closure rather than asked of the model, because Req 3.1a forbids inventing or
+    configuring a site: it must be the one Service 2 resolved for THIS user. A site the model
+    supplied would be a site the model could get wrong, and Service 2 answers 404 for a site
+    absent from its registry — so a wrong guess reads as a service fault rather than the mistake
+    it is.
+    """
     profile_write_key = profile_idempotency_key(identity=identity)
 
     @tool
@@ -155,7 +189,7 @@ def build_retrieval_tools(
         Returns:
             The air-quality snapshot as JSON, or a note naming why it was unavailable.
         """
-        nonlocal air_quality_calls
+        nonlocal air_quality_calls, retrieved_site_code
         recorder.record_call("air_quality")
         if air_quality_calls >= 1:
             return (
@@ -168,6 +202,7 @@ def build_retrieval_tools(
         except ServingClientError as error:
             return _failure_note("air_quality", error)
         recorder.record_body(body)
+        retrieved_site_code = _site_code_of(body)
         return json.dumps({"snapshot": body, "notes": _snapshot_notes(body)}, default=str)
 
     @tool
@@ -193,8 +228,19 @@ def build_retrieval_tools(
         end = clock.now()
         start = end - dt.timedelta(days=days)
         selected = frozenset({species}) if species else None
+        if retrieved_site_code is None:
+            # Req 3.1a: the site must come from a snapshot retrieved this turn. Reported as
+            # unavailable rather than guessed, because Service 2 answers 404 for a site absent
+            # from its registry — a guess would surface as a service fault instead of the
+            # mistake it is.
+            return (
+                "history unavailable: current air quality has not been retrieved this turn, so "
+                "the site to read history for is not known. Retrieve air quality first, then "
+                "ask "
+                "for history. Report the period as unavailable if that is not possible."
+            )
         try:
-            body = client.history(credential, start, end, selected)
+            body = client.history(credential, retrieved_site_code, start, end, selected)
         except ServingClientError as error:
             return _failure_note("history", error)
         recorder.record_body(body)
