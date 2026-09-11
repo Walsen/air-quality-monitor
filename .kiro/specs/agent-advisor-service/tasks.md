@@ -1054,6 +1054,24 @@ directory.
       that can reach a repr, a log line or a traceback
     - The two token keys stay distinct, confirmed rather than merged: `max_output_tokens` is Req 22's loop
       budget via `InvocationBounds`, `model_max_output_tokens` is Req 6.5's per-request ceiling
+    - REVIEW FIX — `model_credential_path` was REQUIRED by the loader whenever the bedrock adapter is
+      selected and CONSUMED BY NOTHING, so an operator had to supply a path to a real file that
+      changed no behaviour, and omitting it refused startup for no reason. Req 6.6 permits the
+      environment OR "a runtime-supplied path", so the path is now honoured: a low-level session with
+      its shared-credentials-file variable set to that path, wrapped in a `boto3.Session`
+    - THE TRAP THAT CAME WITH IT — `BedrockModel.__init__` RAISES `ValueError` when handed both
+      `region_name` and `boto_session`, and derives the region from `session.region_name` instead. So
+      consuming the path required moving the region onto the session; without that, selecting a
+      credential path would have raised at construction. Read from the installed strands source
+    - The path is HANDED OVER, never opened. Resolution is lazy — it happens when a call is first
+      signed — so a nonexistent path still builds, which is asserted, and no secret material enters
+      this process's frames. `session_for_credential_path` is its own function because testing it
+      through a built model meant reaching into `model.client` internals, which do not retain the
+      session; a test that cannot see what it claims to check is a shape a review already caught here
+    - `max_tokens` is now passed even when None, after reading `format_request`: it builds
+      `inferenceConfig` with an `if value is not None` filter, so a None never reaches the wire. An
+      earlier comment here asserted omitted and None were different requests, which is FALSE for this
+      SDK — verifying it collapsed four call forms into two
     - _Requirements: 6.1b, 6.4, 6.5, 6.6, 25.4_
 
   - [x] 16.3 Implement the HTTP `ServingClient` adapter
@@ -1179,7 +1197,7 @@ directory.
   - [x] 16.5 Implement the audit store adapter and erasure
     - Append and `forget_user`; erasure deletes rather than de-identifies where the record carries clinical
       content, and reports the count
-    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. Advisor 1444 -> 1546 tests after the review round. AgentCore Memory was EVALUATED FIRST and
+    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. Advisor 1444 -> 1551 tests after the review round. AgentCore Memory was EVALUATED FIRST and
       rejected with reasons: it is built for conversational context a model reads back, where Req 20's
       trail is an OPERATOR record — queried by identity and date, never fed to a model, and required to
       outlive the session. Req 20.3 also strips it of exactly the content Memory exists to carry

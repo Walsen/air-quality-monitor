@@ -27,6 +27,8 @@ reach a repr, a log line or a traceback.
 
 from __future__ import annotations
 
+import boto3
+import botocore.session
 from botocore.config import Config as BotocoreConfig
 from strands.models import BedrockModel
 
@@ -49,6 +51,34 @@ class ModelConfigurationError(Exception):
     """
 
 
+def session_for_credential_path(
+    *, credential_path: str, region: str
+) -> boto3.Session:
+    """A session that resolves credentials from `credential_path` (Req 6.6).
+
+    Its own function so the wiring is DIRECTLY assertable. Testing it through a built model
+    meant
+    reaching into `model.client`'s internals, which do not retain the session — a test that
+    cannot
+    see the thing it claims to check is the shape a review already caught here once.
+
+    THE PATH IS HANDED OVER, NEVER OPENED. botocore resolves it lazily when a call is first
+    signed,
+    so this function does no I/O and a nonexistent path builds fine. A builder that read the
+    file
+    would pull secret material into its own frame for no gain, and Req 6.6 forbids logging it.
+
+    THE REGION GOES ON THE SESSION, not alongside it. `BedrockModel.__init__` raises
+    `ValueError`
+    when handed both `region_name` and `boto_session`, and derives the region from
+    `session.region_name` in that case.
+    """
+    low_level = botocore.session.Session()
+    low_level.set_config_variable("credentials_file", credential_path)
+    low_level.set_config_variable("region", region)
+    return boto3.Session(botocore_session=low_level)
+
+
 def build_bedrock_model(
     *,
     model_id: str | None,
@@ -56,6 +86,7 @@ def build_bedrock_model(
     model_temperature: float = 0.0,
     model_max_output_tokens: int | None = None,
     request_timeout_seconds: int = 30,
+    model_credential_path: str | None = None,
 ) -> BedrockModel:
     """Build the production model from configuration (Reqs 6.1b, 6.4, 6.5, 6.6, 25.4).
 
@@ -92,25 +123,51 @@ def build_bedrock_model(
         connect_timeout=request_timeout_seconds,
     )
 
-    # `max_tokens` is OMITTED, not passed as None, when unconfigured. Req 6.5 wants a
-    # configured maximum and treats a truncated generation as a failure, so inventing a
-    # ceiling would manufacture the very failure the requirement exists to detect. The
-    # two call forms are spelled out rather than splatted from a dict because omitted
-    # and None are different requests, and a splat hides which one is being made.
-    if model_max_output_tokens is not None:
+    # `max_tokens` is passed even when None. An earlier comment here claimed omitted and
+    # None were different requests; the SDK shows otherwise — `format_request` builds
+    # `inferenceConfig` with an `if value is not None` filter, so a None never reaches the wire.
+    # That collapses what would be four call forms into two. Req 6.5 still holds: nothing
+    # invents a ceiling, and an unconfigured maximum simply is not sent.
+    if model_credential_path:
+        # Req 6.6's "runtime-supplied path" branch. A review found the loader REQUIRING this key
+        # whenever the bedrock adapter is selected while NOTHING consumed it, so an operator had
+        # to
+        # supply a path to a real file that changed no behaviour.
+        #
+        # The path is HANDED to botocore, never opened here: the SDK resolves it lazily at call
+        # time, and a builder that read the file would pull secret material into its own frame
+        # for
+        # no gain at all.
+        #
+        # THE REGION MOVES ONTO THE SESSION. `BedrockModel.__init__` raises `ValueError` when
+        # given
+        # both `region_name` and `boto_session`, and derives the region from
+        # `session.region_name`
+        # in that case. Read from the installed strands source; without this, selecting a
+        # credential
+        # path would raise at construction rather than work.
         return BedrockModel(
             model_id=model_id,
-            region_name=model_region,
+            boto_session=session_for_credential_path(
+                credential_path=model_credential_path, region=model_region
+            ),
             temperature=model_temperature,
-            max_tokens=model_max_output_tokens,
             boto_client_config=client_config,
+            max_tokens=model_max_output_tokens,
         )
+    # No path configured: boto3's own chain resolves from the environment, which Req 6.6 equally
+    # permits. The region is passed directly, there being no session to carry it.
     return BedrockModel(
         model_id=model_id,
         region_name=model_region,
         temperature=model_temperature,
         boto_client_config=client_config,
+        max_tokens=model_max_output_tokens,
     )
 
 
-__all__ = ["ModelConfigurationError", "build_bedrock_model"]
+__all__ = [
+    "ModelConfigurationError",
+    "build_bedrock_model",
+    "session_for_credential_path",
+]

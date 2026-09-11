@@ -26,20 +26,23 @@ resolves no credentials and makes no call, which is why an explicit region is pa
 from __future__ import annotations
 
 import pytest
+from strands.models import BedrockModel
 
 from aqm_advisor.adapters.model.bedrock import (
     ModelConfigurationError,
     build_bedrock_model,
+    session_for_credential_path,
 )
 
 
-def _built(**overrides: object) -> object:
+def _built(**overrides: object) -> BedrockModel:
     settings: dict[str, object] = {
         "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
         "model_region": "eu-west-2",
         "model_temperature": 0.0,
         "model_max_output_tokens": 1024,
         "request_timeout_seconds": 30,
+        "model_credential_path": None,
     }
     settings.update(overrides)
     return build_bedrock_model(**settings)  # type: ignore[arg-type]
@@ -50,7 +53,7 @@ def _built(**overrides: object) -> object:
 
 def test_the_configured_identifier_and_region_are_used() -> None:
     model = _built()
-    config = model.get_config()  # type: ignore[attr-defined]
+    config = model.get_config()
     assert config["model_id"] == "anthropic.claude-3-5-sonnet-20241022-v2:0"
 
 
@@ -82,7 +85,7 @@ def test_the_framework_default_model_id_never_appears_in_a_built_model() -> None
     # Guards the fail-open directly rather than by proxy: if a future refactor drops the
     # refusal,
     # this fails even when the refusal test is deleted along with it.
-    config = _built().get_config()  # type: ignore[attr-defined]
+    config = _built().get_config()
     assert config["model_id"] != "global.anthropic.claude-sonnet-4-6"
 
 
@@ -92,20 +95,20 @@ def test_the_framework_default_model_id_never_appears_in_a_built_model() -> None
 def test_temperature_defaults_to_zero() -> None:
     # Req 25.4. Zero is the DEFAULT rather than a hardcode — the same clause makes any sampling
     # parameter configuration, so it must remain settable.
-    assert _built().get_config()["temperature"] == 0.0  # type: ignore[attr-defined]
+    assert _built().get_config()["temperature"] == 0.0
 
 
 def test_temperature_is_configurable_away_from_zero() -> None:
     # The other half of Req 25.4. A builder that pinned 0 would satisfy the default and violate
     # "SHALL treat any sampling parameter as configuration".
-    assert _built(model_temperature=0.7).get_config()["temperature"] == 0.7  # type: ignore[attr-defined]
+    assert _built(model_temperature=0.7).get_config()["temperature"] == 0.7
 
 
 # --- Req 6.5: the maximum output length is applied --------------------
 
 
 def test_the_maximum_output_length_is_applied() -> None:
-    assert _built().get_config()["max_tokens"] == 1024  # type: ignore[attr-defined]
+    assert _built().get_config()["max_tokens"] == 1024
 
 
 def test_an_unset_maximum_output_length_is_omitted_rather_than_guessed() -> None:
@@ -115,7 +118,7 @@ def test_an_unset_maximum_output_length_is_omitted_rather_than_guessed() -> None
     # a failure rather than partial Guidance — so a wrong guess manufactures the exact failure
     # the
     # requirement is trying to detect.
-    assert _built(model_max_output_tokens=None).get_config().get("max_tokens") is None  # type: ignore[attr-defined]
+    assert _built(model_max_output_tokens=None).get_config().get("max_tokens") is None
 
 
 # --- Req 6.4: the request timeout is applied --------------------------
@@ -127,7 +130,7 @@ def test_the_request_timeout_reaches_the_botocore_client() -> None:
     # which is why this asserts through the client rather than through `get_config()`. Verified
     # against the installed strands source rather than assumed.
     model = _built(request_timeout_seconds=17)
-    config = model.client.meta.config  # type: ignore[attr-defined]
+    config = model.client.meta.config
     assert config.read_timeout == 17
     assert config.connect_timeout == 17
 
@@ -135,36 +138,34 @@ def test_the_request_timeout_reaches_the_botocore_client() -> None:
 # --- Req 6.6: the credential is never held or logged ------------------
 
 
-def test_the_builder_takes_no_credential_argument() -> None:
-    # Req 6.6 resolves the credential from the environment or a runtime path, which is exactly
-    # what
-    # boto3's own chain does. A credential PARAMETER would create a second path, and a value
-    # passed
-    # in is a value that can be logged, put in a repr, or captured in a traceback.
+def test_the_builder_takes_a_path_but_never_a_secret_value() -> None:
+    # THIS TEST'S PREMISE CHANGED, and the change is the point. The first version asserted the
+    # builder took no credential argument at all. That was true, and it hid a defect: the loader
+    # REQUIRED `model_credential_path` while nothing consumed it, so an operator had to supply a
+    # path to a real file that changed no behaviour. Req 6.6 permits "a runtime-supplied path",
+    # so
+    # the builder now takes the PATH.
     #
-    # The markers are BOUND to credential shapes rather than matching the bare word "token":
-    # `model_max_output_tokens` is a token COUNT, and a loose marker rejected it — the same
-    # false-positive class the Req 30.2 pattern review found, where an unbound match discarded
-    # legitimate text.
+    # What must still never appear is a parameter carrying secret MATERIAL — a key, a token, a
+    # session credential. A path names where a secret lives; it is not the secret, the file is
+    # never opened here, and the redactor catches `credential` anywhere in a logged key name.
     import inspect
 
-    markers = ("credential", "secret", "password", "auth_token", "access_token", "api_key")
-    offenders = [
-        name
-        for name in inspect.signature(build_bedrock_model).parameters
-        if any(marker in name for marker in markers)
-    ]
+    material = ("secret", "password", "access_key", "session_token", "api_key")
+    names = list(inspect.signature(build_bedrock_model).parameters)
+    offenders = [n for n in names if any(m in n for m in material)]
     assert not offenders, offenders
+    assert "model_credential_path" in names, names
 
 
-def test_the_builder_signature_check_is_not_vacuous() -> None:
-    # Self-check: proves the markers above would actually fire, so the test cannot pass merely
-    # by
-    # having a marker list that matches nothing.
-    markers = ("credential", "secret", "password", "auth_token", "access_token", "api_key")
-    planted = ("model_credential_path", "aws_secret", "api_key")
-    for name in planted:
-        assert any(marker in name for marker in markers), name
+def test_the_material_markers_are_not_vacuous() -> None:
+    # Self-check, so the test above cannot pass merely by matching nothing. Note what is
+    # deliberately NOT caught: `model_max_output_tokens` is a token COUNT, and an earlier looser
+    # marker rejected it — the same false-positive class the Req 30.2 pattern review found.
+    material = ("secret", "password", "access_key", "session_token", "api_key")
+    for planted in ("aws_secret", "session_token", "api_key"):
+        assert any(m in planted for m in material), planted
+    assert not any(m in "model_max_output_tokens" for m in material)
 
 
 def test_the_built_model_holds_nothing_credential_shaped() -> None:
@@ -172,3 +173,62 @@ def test_the_built_model_holds_nothing_credential_shaped() -> None:
     rendered = repr(vars(model)).casefold()
     for marker in ("aws_secret", "session_token", "secret_access"):
         assert marker not in rendered, rendered
+
+
+# --- Req 6.6's runtime-supplied path, now actually consumed --------------
+
+
+def test_a_configured_credential_path_reaches_the_session() -> None:
+    # A review found this key REQUIRED by the loader whenever the bedrock adapter is selected,
+    # and
+    # consumed by nothing: an operator had to supply a path to a real file that changed no
+    # behaviour.
+    # Req 6.6 permits the environment OR "a runtime-supplied path", so the path is the branch
+    # the key
+    # exists for, and it is honoured now.
+    #
+    # Asserted on the SESSION rather than on a resolved credential: what matters is that the
+    # path was
+    # handed to botocore, not that a secret was read.
+    session = session_for_credential_path(
+        credential_path="/run/secrets/aws-creds", region="eu-west-2"
+    )
+    low_level = session._session
+    assert low_level.get_config_variable("credentials_file") == "/run/secrets/aws-creds"
+
+
+def test_the_session_carries_the_region() -> None:
+    # THE TRAP. `BedrockModel.__init__` raises ValueError when given both `region_name` and
+    # `boto_session`, so consuming the path means the region must travel ON the session. Read
+    # from
+    # the strands source, not assumed; without it the credential-path branch would raise.
+    session = session_for_credential_path(
+        credential_path="/run/secrets/aws-creds", region="eu-west-2"
+    )
+    assert session.region_name == "eu-west-2"
+
+
+def test_the_region_still_applies_when_a_credential_path_is_used() -> None:
+    # The same trap, end to end through the builder, so the two cannot drift apart.
+    model = _built(
+        model_credential_path="/run/secrets/aws-creds", model_region="eu-west-2"
+    )
+    assert model.client.meta.region_name == "eu-west-2"
+
+
+def test_no_credential_path_still_builds_and_uses_the_region() -> None:
+    # The other branch: with no path configured, boto3's own chain resolves from the
+    # environment,
+    # which Req 6.6 equally permits. The region is passed directly in that case.
+    model = _built(model_credential_path=None)
+    assert model.client.meta.region_name == "eu-west-2"
+
+
+def test_the_credential_path_is_not_read_by_the_builder() -> None:
+    # The builder HANDS OVER the path and never opens it. A nonexistent path must therefore
+    # build
+    # fine: botocore resolves lazily when a call is first signed, and a builder that read the
+    # file
+    # would put secret material in its own frame.
+    model = _built(model_credential_path="/nonexistent/path/to/creds")
+    assert model.client.meta.region_name == "eu-west-2"
