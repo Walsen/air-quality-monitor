@@ -961,10 +961,35 @@ directory.
       to task 21.1)_
 
 - [ ] 16. Real adapters and shared port contract suites
-  - [ ] 16.1 Write the shared behavioural test suite per port
-    - One suite per port parameterised over every adapter of that port, so an adapter swap cannot change
-      behaviour; cloud parameters skip when no endpoint is reachable and the skip must be provable, with
-      a fenced assertion that no parameter skips when an endpoint IS present
+  - [x] 16.1 Write the shared behavioural test suite per port
+    - `tests/contracts/`: a `registry.py` holding every adapter of every port, plus one behavioural suite per
+      port parameterised over that port's adapters. Advisor 1372 -> 1404 tests. New recipe
+      `just test-contracts-advisor` runs them alone, which is what you want while ADDING an adapter, since a
+      new adapter's first duty is to pass these
+    - A SKIP IS INDISTINGUISHABLE FROM A PASS, which is the whole problem this task names. A cloud parameter
+      whose endpoint is never configured leaves the suite green while that adapter has never executed once
+    - ONE PREDICATE decides a skip and the fence asserts over the SAME one. `would_skip` is called by the
+      suites to skip and by the fence to assert nothing skips when an endpoint is present. Two copies could
+      disagree and the copy that drifted would be the one excusing a cloud adapter — the two-definitions
+      trap that let `AdviceRecord` exist twice
+    - THE MECHANISM IS PROVEN ON SYNTHETIC CASES because it would otherwise be VACUOUS today: every real
+      adapter is offline, so a fence over the real registry alone holds by having nothing to check. A
+      mechanism whose first real use is also its first exercise is one nobody has tested. `_SYNTHETIC_CASES`
+      drives both branches now, and a blank endpoint counts as absent
+    - The registry is held against `port_protocols()` rather than a hand-written count, so a port added later
+      fails BY DEFAULT instead of being silently uncovered. Each case is also checked to build something
+      that satisfies the port it claims, since a case wired to the wrong port would run that port's whole
+      suite against the wrong shape and the failures would read as behavioural
+    - `test_every_case_is_offline_today_and_says_so` pins the CURRENT state deliberately: when task 16.2 adds
+      a cloud case it FAILS, which is the prompt to confirm the skip path is honoured for it rather than
+      discovering later that it never ran
+    - Every assertion is the PORT's contract, never one adapter's implementation — a test true of the
+      scripted client but not an HTTP one would fail when 16.3 lands and get "fixed" by weakening it, at
+      which point the suite protects nothing. HOW an adapter is made to fail is adapter-specific, so that
+      one seam is isolated in a `_failing_variant` helper
+    - mypy caught a VACUOUS assertion I had written: `assert trigger.request(...) is None` is a tautology
+      when the protocol already declares `-> None`, so it passed for every conforming adapter while checking
+      nothing. Replaced with an assertion on the declared annotation, which is the actual contract
     - _Requirements: 26.8_
 
   - [ ] 16.2 Implement the `BedrockModel` adapter configuration
