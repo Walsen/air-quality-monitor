@@ -44,6 +44,7 @@ from aqm_advisor.ports.protocols import (
     ServingFailureKind,
     port_protocols,
 )
+from tests.support.fake_dynamodb import FakeTable
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,35 +204,6 @@ def _http_serving(*, failing: bool = False) -> HttpServingClient:
     )
 
 
-class _StubTable:
-    """An in-process stand-in for a DynamoDB table, so the persistent store is a contract case.
-
-    Models query-then-delete faithfully, because that is what the erasure count depends on. What
-    this proves is the store's own logic — the count semantics, the per-user isolation, that
-    erasure
-    deletes rather than rewrites. What it does NOT prove is that DynamoDB answers these shapes,
-    which
-    is Req 26.6's integration fence.
-    """
-
-    def __init__(self) -> None:
-        self.items: list[dict[str, object]] = []
-
-    def put_item(self, *, Item: dict[str, object]) -> None:  # noqa: N803 - boto3 wire name
-        self.items.append(Item)
-
-    def query(self, *, KeyConditionExpression: str) -> dict[str, object]:  # noqa: N803
-        wanted = KeyConditionExpression
-        return {"Items": [i for i in self.items if i["userId"] == wanted]}
-
-    def delete_item(self, *, Key: dict[str, object]) -> None:  # noqa: N803
-        self.items = [
-            i
-            for i in self.items
-            if not (i["userId"] == Key["userId"] and i["turnKey"] == Key["turnKey"])
-        ]
-
-
 ADAPTER_CASES: tuple[AdapterCase, ...] = (
     AdapterCase(
         "serving_client",
@@ -265,7 +237,7 @@ ADAPTER_CASES: tuple[AdapterCase, ...] = (
     AdapterCase(
         "advice_audit_store",
         "dynamodb",
-        lambda: DynamoDbAdviceAuditStore(table=_StubTable()),
+        lambda: DynamoDbAdviceAuditStore(table=FakeTable()),
     ),
     AdapterCase("association_trigger", "recording", RecordingAssociationTrigger),
 )

@@ -353,6 +353,13 @@ connect how I have been feeling to what I have been breathing.
    were their own — a correctness fault before it is a privacy one. THEREFORE a history retrieval
    REQUIRES a snapshot first, and IF none was retrieved THEN THE Service SHALL report the period as
    unavailable rather than guessing a site.
+1b. THE Service SHALL use the NEAREST site the snapshot names, and this is a STATED LIMITATION rather
+   than a resolved design: Service 2 merges every stored location into one distance-sorted list, so
+   for a user with several locations the nearest site overall may not be the one their question was
+   about, and the history tool offers no way to say which location they meant. A review raised this;
+   it is recorded here so the limit is visible rather than implied. Per-location history would need a
+   selector that maps a location to a site drawn FROM THE SNAPSHOT, which criterion 1a already
+   requires, and is out of scope until a requirement asks for it.
 2. THE Service SHALL derive the requested window from the utterance and the injected Clock, and SHALL
    NOT request a span exceeding the maximum Service 2 permits.
 3. IF Service 2 rejects the window, THEN THE Service SHALL report that the requested period is not

@@ -26,12 +26,13 @@ Driven against a fake DynamoDB table, so the suite stays offline (Req 26.5).
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any
 
 import pytest
+from boto3.dynamodb.conditions import ConditionBase
 
 from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
 from aqm_advisor.ports.protocols import AdviceAuditStore, AdviceRecord
+from tests.support.fake_dynamodb import FakeTable
 
 
 def _record(user_id: str = "user-1", *, key: str | None = None) -> AdviceRecord:
@@ -49,50 +50,23 @@ def _record(user_id: str = "user-1", *, key: str | None = None) -> AdviceRecord:
     )
 
 
-class _FakeTable:
-    """A stand-in for a DynamoDB table resource, recording the calls it received.
-
-    Models the two behaviours that matter for erasure: `query` returns only the items whose
-    partition key matches, and `delete_item` removes one item. Deliberately NOT a Mock — the
-    count
-    semantics depend on what the store does with what the query returned, which a Mock would
-    accept
-    without modelling.
-    """
-
-    def __init__(self, *, fail_on_put: bool = False) -> None:
-        self.items: list[dict[str, Any]] = []
-        self.fail_on_put = fail_on_put
-        self.deleted_keys: list[dict[str, Any]] = []
-        self.queries = 0
-
-    def put_item(self, *, Item: dict[str, Any]) -> None:  # noqa: N803 - the boto3 wire name
-        if self.fail_on_put:
-            raise OSError("the table is unavailable")
-        self.items.append(Item)
-
-    def query(self, *, KeyConditionExpression: str) -> dict[str, Any]:  # noqa: N803
-        self.queries += 1
-        wanted = KeyConditionExpression
-        return {"Items": [i for i in self.items if i["userId"] == wanted]}
-
-    def delete_item(self, *, Key: dict[str, Any]) -> None:  # noqa: N803
-        self.deleted_keys.append(Key)
-        self.items = [
-            i
-            for i in self.items
-            if not (i["userId"] == Key["userId"] and i["turnKey"] == Key["turnKey"])
-        ]
-
-
-def _store(*, fail_on_put: bool = False) -> tuple[DynamoDbAdviceAuditStore, _FakeTable]:
+def _store(
+    *,
+    fail_on_put: bool = False,
+    page_size: int | None = None,
+    fail_delete_after: int | None = None,
+) -> tuple[DynamoDbAdviceAuditStore, FakeTable]:
     """The store and its table, returned as a pair.
 
     The table is handed back explicitly rather than reached through the store's private
     attribute: the assertions here are about what landed in the table, and reading a
     private field to get at it made every one of them a type error as well as a smell.
     """
-    table = _FakeTable(fail_on_put=fail_on_put)
+    table = FakeTable(
+        fail_on_put=fail_on_put,
+        page_size=page_size,
+        fail_delete_after=fail_delete_after,
+    )
     return DynamoDbAdviceAuditStore(table=table), table
 
 
@@ -224,3 +198,58 @@ def test_erasure_counts_rows_not_delete_calls() -> None:
     store.append(_record("user-2", key="c" * 64))
     assert store.forget_user("user-1") == 2
     assert len(table.deleted_keys) == 2
+
+
+# --- regressions from the mutation review ------------------------------
+
+
+def test_the_query_uses_a_real_key_condition_not_a_bare_string() -> None:
+    # THE critical finding. boto3 compiles a `ConditionBase` into an expression plus
+    # placeholders but
+    # forwards a bare string VERBATIM as the wire expression, so
+    # `KeyConditionExpression="user-1"`
+    # asked DynamoDB to evaluate the expression `user-1` with no attribute values. The shared
+    # fake
+    # now raises TypeError on a bare string, so this test fails if the adapter regresses.
+    store, table = _store()
+    store.append(_record())
+    store.forget_user("user-1")
+    condition = table.queries[0]["KeyConditionExpression"]
+    assert isinstance(condition, ConditionBase), type(condition)
+
+
+def test_erasure_deletes_every_page_and_counts_them_all() -> None:
+    # Pagination. A single-page read under-deleted AND under-reported, which for an erasure
+    # control
+    # means telling a data subject a number smaller than what was left behind.
+    store, table = _store(page_size=2)
+    for n in range(5):
+        store.append(_record(key=f"{n:064d}"))
+    assert store.forget_user("user-1") == 5
+    assert table.items == [], table.items
+    assert len(table.queries) > 1, "one page was read; pagination was not exercised"
+
+
+def test_a_partial_delete_failure_reports_only_what_was_removed() -> None:
+    # The count is rows REMOVED by this call. Under a mid-loop failure the exception propagates,
+    # and
+    # what matters is that the rows already gone are gone and the store never claimed a total it
+    # did
+    # not achieve. Asserted through the table, since the raise means no return value.
+    store, table = _store(fail_delete_after=2)
+    for n in range(4):
+        store.append(_record(key=f"{n:064d}"))
+    with pytest.raises(OSError, match="refused"):
+        store.forget_user("user-1")
+    assert len(table.deleted_keys) == 2
+    assert len(table.items) == 2, "rows beyond the failure point were touched"
+
+
+def test_the_shared_fake_rejects_the_bare_string_form() -> None:
+    # SELF-CHECK, without which the critical regression test above is vacuous: if the fake
+    # accepted a
+    # bare string the way the two old fakes did, the broken adapter would still pass. This
+    # proves the
+    # fake refuses the exact call boto3 would forward verbatim to DynamoDB.
+    with pytest.raises(TypeError, match="ConditionBase"):
+        FakeTable().query(KeyConditionExpression="user-1")

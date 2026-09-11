@@ -1087,7 +1087,35 @@ directory.
       request object can name the URL and carry the Authorization header — what Reqs 5.2 and 21.4 forbid
     - Status mapping is EXPLICIT rather than a range test, so 401/403 cannot fall into 400's bucket; a
       non-JSON body and a JSON body that is not an object both map to UNUSABLE_BODY
-    - _Requirements: 3.1a, 5.2, 5.4, 21.1, 32.8a_
+    - REVIEW FIX — the air-quality call counter incremented BEFORE the request, so one transient
+      serving failure spent the turn's only retrieval: the model's retry was refused with "already
+      retrieved" (false), and Req 3.1a then left history unavailable for the rest of the turn. Req 2.6
+      bounds SUCCESSFUL snapshots — its reason is that a second snapshot could differ from the basis,
+      and an attempt that returned nothing cannot differ from anything
+    - REVIEW FIX — Req 3.3 requires a rejected window be reported "and the permitted bound", and the
+      bound could never reach the model: it exists only in Service 2's body, which Req 21.4 forbids
+      forwarding, so the note carried the bare kind `bad_request`. `_failure_note` now restates the
+      bound from THIS service's own constant, so no Service 2 text crosses the boundary
+    - REVIEW FIX — a 3xx fell through every status branch to `.json()`, so a redirect carrying a JSON
+      body was returned AS SUCCESS. Also `httpx.InvalidURL`, `CookieConflict` and `StreamError` are
+      NOT `HTTPError` subclasses, so they escaped the adapter and broke the port's contract that a
+      failure arrives as `ServingClientError` — the caller catches only that, so one would have
+      crashed the turn instead of degrading it. Neither carries a `.request`, so no credential was at
+      risk; the contract was still untrue
+    - REVIEW FIX — multiple species were comma-joined, but Service 2's route takes ONE species, so the
+      request asked for a species literally named "NO2,PM25" and matched nothing: an EMPTY window
+      returned as success, which is worse than an error because nothing reports it. Now refused as a
+      request Service 2 cannot serve
+    - A SECURITY REVIEW TRIED TO BREAK THE CREDENTIAL CLAIM AND COULD NOT. It traced the returned
+      `Response` (which does hold a `Request` carrying the header), exception chaining, traceback
+      locals, the non-`HTTPError` escapes, the idempotency key and the patch body. Every path breaks
+      before a log, for two independent reasons worth keeping: standard traceback formatting does not
+      render frame locals, and `handle_at_top_level` logs `type(error).__name__` ONLY
+    - CARRIED TO TASK 17 — `retrieved_site_code` lives in a per-turn closure, and nothing production
+      reuses it yet. If task 17's entrypoint ever builds the tool tuple ONCE and reuses it, the site
+      code leaks across turns and, with one closure serving two users, across users. Task 17 should
+      assert per-turn construction structurally
+    - _Requirements: 3.1a, 3.1b, 3.3, 5.2, 5.4, 21.1, 32.8a_
 
   - [x] 16.4 Implement the `ApplyGuardrail` adapter
     - `ApplyGuardrail` with `source` OUTPUT against a configured guardrail identifier and version; denied
@@ -1128,12 +1156,30 @@ directory.
       a topic renamed in one place only would produce interventions this service could not categorise, and
       Req 34.4 requires the rejection be counted by category. An intervention that named none falls back to
       a single uncategorised entry rather than an empty tuple, which would be invisible to that count
-    - _Requirements: 34.2, 34.2a, 34.2b, 34.3, 34.4, 34.6, 34.9_
+    - REVIEW CORRECTION — Req 34.3 IS NOT MET BY THIS TASK, and an earlier version of this line
+      claimed it. `DENIED_TOPIC_NAMES` is a tuple of names; it CONFIGURES NOTHING in Bedrock. Req
+      34.3 says the Service SHALL CONFIGURE Denied Topics, which needs a `CreateGuardrail` call or a
+      provisioning template, and neither exists yet. The constant's real job is to stop the future
+      provisioning step and the category mapping disagreeing about the names. 34.3 is DEFERRED to the
+      deployment work, and is no longer claimed here
+    - REVIEW FIX — the category extraction read only `topicPolicy`, one of SIX policy members on
+      `GuardrailAssessment`. An intervention from a content filter, a word list, a PII rule or
+      contextual grounding therefore produced no category and fell back to
+      `uncategorised_intervention`: Req 34.4's total survived while its by-category breakdown silently
+      collapsed, so an operator could not tell a prompt-injection block from a diagnosis block. All
+      six are now read, with a prefix per policy so two cannot collide on one name
+    - REVIEW FIX — only BLOCKED entries are counted now. `GuardrailTopicPolicyAction` is an enum of
+      `BLOCKED` and `NONE`, so an assessment can name a topic it EVALUATED and did not block; counting
+      those inflated the rejection count with reasons that never fired
+    - A `match` FIELD IS NEVER HARVESTED. `customWords[].match` and `piiEntities[].match` hold the
+      offending text itself, so putting one in a category label would breach Req 8.6 — a custom word
+      contributes a fixed label instead. This was not in the review; the schema made it visible
+    - _Requirements: 34.2, 34.2a, 34.2b, 34.4, 34.6, 34.9 (34.3 DEFERRED — see the correction above)_
 
   - [x] 16.5 Implement the audit store adapter and erasure
     - Append and `forget_user`; erasure deletes rather than de-identifies where the record carries clinical
       content, and reports the count
-    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. AgentCore Memory was EVALUATED FIRST and
+    - `adapters/audit/dynamodb.py`, registered as `dynamodb`. Advisor 1444 -> 1546 tests after the review round. AgentCore Memory was EVALUATED FIRST and
       rejected with reasons: it is built for conversational context a model reads back, where Req 20's
       trail is an OPERATOR record — queried by identity and date, never fed to a model, and required to
       outlive the session. Req 20.3 also strips it of exactly the content Memory exists to carry
@@ -1157,6 +1203,29 @@ directory.
       store that swallowed the failure would make an audit gap invisible to the log Req 20.5 requires
     - The item mapping is EXPLICIT, not a `model_dump()` splat, so a new `AdviceRecord` field fails the
       persistence test loudly instead of arriving under a name nothing queries
+    - REVIEW FIX, CRITICAL — `forget_user` passed a BARE STRING as `KeyConditionExpression`. boto3
+      compiles a `ConditionBase` into an expression plus placeholders but forwards a bare `str`
+      VERBATIM as the wire expression, so DynamoDB was asked to evaluate the expression `user-1` with
+      no attribute values, which it rejects. The erasure path could not have worked in production —
+      and EVERY TEST PASSED, because both fakes had independently reimplemented `query` as "match
+      `userId` against this string", the one reading the real API does not apply. Now
+      `Key("userId").eq(user_id)`
+    - THAT IS THE FAILURE THE CONTRACT SUITE EXISTS TO PREVENT, and it did not: a stub faithful to a
+      nonexistent API certifies falsely, which is worse than no stub. There is now ONE fake, in
+      `tests/support/fake_dynamodb.py`, imported by both the unit suite and the registry, and it
+      RAISES on a bare string — with a self-check test proving it does, so the regression test cannot
+      go vacuous
+    - REVIEW FIX — erasure read ONE page. `Query` returns at most 1 MB and signals more through
+      `LastEvaluatedKey`, so for a user with many rows it silently under-deleted AND under-reported:
+      the worst shape for an erasure control, because the caller is told a number smaller than what
+      was left behind. Now paginates, and the fake models paging so the loop is exercised
+    - REVIEW FIX — the count is now incremented after each delete RETURNS, so a partial failure
+      propagates having counted only what genuinely went rather than a total never achieved
+    - REVIEW FIX — the module docstring claimed the record is "queried by identity and date", which
+      the key schema cannot serve: the sort key is the idempotency key, so a date-range query is not
+      supported. Req 20's user story asks about a specific piece of advice rather than a window, so the
+      schema is right and the CLAIM was wrong. A GSI on `(userId, turnAt)` is the change if that is
+      ever wanted
     - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
 - [ ] 17. AgentCore entrypoint and the deployment contract

@@ -181,25 +181,120 @@ def _verdict_for(response: dict[str, Any]) -> GuardrailResult:
 
 
 def _categories_for(response: dict[str, Any]) -> tuple[str, ...]:
-    """The topic names an intervention fired on, deduplicated and ordered (Req 34.4).
+    """The categories an intervention fired on, deduplicated and ordered (Req 34.4).
 
-    Sorted and deduplicated so a log line is stable across runs and a repeated topic cannot
-    inflate a count.
-    Falls back to a single uncategorised entry rather than an empty tuple, because an
-    intervention that reported
-    no category would be invisible to the metric Req 34.4 exists to feed.
+    READS ALL SIX POLICY TYPES, not just topics. A review found the first version reading only
+    `topicPolicy`, so an intervention from a content filter, a word list, a PII rule or
+    contextual
+    grounding produced no category and fell back to `uncategorised_intervention`: the Req 34.4
+    count survived, but its by-category breakdown silently collapsed and an operator could not
+    tell
+    a prompt-injection block from a diagnosis block. The six member names were read from
+    botocore's
+    service model, not guessed.
+
+    NEVER HARVESTS A `match` FIELD. `customWords[].match` and `piiEntities[].match` hold THE
+    OFFENDING TEXT, so recording one would put rejected content into a category label and breach
+    Req 8.6. Types and operator-configured names only.
+
+    Sorted and deduplicated so a log line is stable across runs and a repeated category cannot
+    inflate a count. Falls back to a single uncategorised entry rather than an empty tuple,
+    because
+    an intervention reporting no category would be invisible to the metric Req 34.4 feeds.
     """
     found: set[str] = set()
     for assessment in response.get("assessments") or ():
         if not isinstance(assessment, dict):
             continue
-        policy = assessment.get("topicPolicy")
-        if not isinstance(policy, dict):
-            continue
-        for topic in policy.get("topics") or ():
-            if isinstance(topic, dict) and isinstance(topic.get("name"), str):
-                found.add(topic["name"])
+        found.update(_harvest(assessment))
     return tuple(sorted(found)) or (_UNCATEGORISED,)
+
+
+def _blocked(entry: object) -> bool:
+    """Whether one policy entry actually FIRED, rather than merely being evaluated.
+
+    `action == "BLOCKED"` is the positive test. `detected` alone is not enough: every policy
+    entry
+    carries both, and `GuardrailTopicPolicyAction` is an enum of `BLOCKED` and `NONE`, so an
+    assessment can name a topic it evaluated and did not block. Counting those inflated the Req
+    34.4
+    rejection count with reasons that never fired.
+    """
+    return isinstance(entry, dict) and entry.get("action") == "BLOCKED"
+
+
+def _entries(assessment: dict[str, Any], policy: str, field: str) -> list[object]:
+    """One policy's entry list, or empty when the response does not carry it."""
+    holder = assessment.get(policy)
+    if not isinstance(holder, dict):
+        return []
+    entries = holder.get(field)
+    return list(entries) if isinstance(entries, list) else []
+
+
+def _labels(
+    assessment: dict[str, Any], policy: str, field: str, *, key: str, prefix: str
+) -> list[str]:
+    """Blocked entries' `key` values, prefixed so two policies cannot collide on one name."""
+    out: list[str] = []
+    for entry in _entries(assessment, policy, field):
+        if not _blocked(entry) or not isinstance(entry, dict):
+            continue
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            out.append(f"{prefix}{value}")
+    return out
+
+
+def _harvest(assessment: dict[str, Any]) -> list[str]:
+    """Every blocked category in one assessment, across all six policy types."""
+    out: list[str] = []
+    out.extend(_labels(assessment, "topicPolicy", "topics", key="name", prefix=""))
+    out.extend(
+        _labels(assessment, "contentPolicy", "filters", key="type", prefix="content_")
+    )
+    out.extend(
+        _labels(
+            assessment, "wordPolicy", "managedWordLists", key="type", prefix="word_"
+        )
+    )
+    # `customWords` entries expose only `match`, which IS the offending text, so they contribute
+    # a
+    # FIXED label rather than anything drawn from the entry (Req 8.6).
+    out.extend(
+        "word_custom"
+        for entry in _entries(assessment, "wordPolicy", "customWords")
+        if _blocked(entry)
+    )
+    out.extend(
+        _labels(
+            assessment,
+            "sensitiveInformationPolicy",
+            "piiEntities",
+            key="type",
+            prefix="pii_",
+        )
+    )
+    # A regex rule's `name` is operator-configured, so it is a category; its `match` is not.
+    out.extend(
+        _labels(
+            assessment,
+            "sensitiveInformationPolicy",
+            "regexes",
+            key="name",
+            prefix="regex_",
+        )
+    )
+    out.extend(
+        _labels(
+            assessment,
+            "contextualGroundingPolicy",
+            "filters",
+            key="type",
+            prefix="grounding_",
+        )
+    )
+    return out
 
 
 __all__ = [

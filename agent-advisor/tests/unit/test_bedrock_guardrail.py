@@ -278,3 +278,107 @@ def test_the_adapter_stores_no_credential() -> None:
     assert not any(
         "credential" in name or "token" in name for name in vars(checker)
     ), vars(checker)
+
+
+# --- Req 34.4 across all six policy types (mutation-review findings) ---
+
+
+def _intervened(assessment: dict[str, Any]) -> _FakeRuntime:
+    return _FakeRuntime({"action": "GUARDRAIL_INTERVENED", "assessments": [assessment]})
+
+
+@pytest.mark.parametrize(
+    ("assessment", "expected"),
+    [
+        ({"topicPolicy": {"topics": [{"name": "dosing", "action": "BLOCKED"}]}}, "dosing"),
+        (
+            {"contentPolicy": {"filters": [{"type": "PROMPT_ATTACK", "action": "BLOCKED"}]}},
+            "content_PROMPT_ATTACK",
+        ),
+        (
+            {"wordPolicy": {"managedWordLists": [{"type": "PROFANITY", "action": "BLOCKED"}]}},
+            "word_PROFANITY",
+        ),
+        (
+            {
+                "sensitiveInformationPolicy": {
+                    "piiEntities": [
+                        {"type": "UK_NATIONAL_HEALTH_SERVICE_NUMBER", "action": "BLOCKED"}
+                    ]
+                }
+            },
+            "pii_UK_NATIONAL_HEALTH_SERVICE_NUMBER",
+        ),
+        (
+            {
+                "contextualGroundingPolicy": {
+                    "filters": [{"type": "GROUNDING", "action": "BLOCKED"}]
+                }
+            },
+            "grounding_GROUNDING",
+        ),
+    ],
+    ids=["topic", "content", "managed-word", "pii", "grounding"],
+)
+def test_every_policy_type_yields_its_own_category(
+    assessment: dict[str, Any], expected: str
+) -> None:
+    # A review found only `topicPolicy` being read, so an intervention from any of the other
+    # five
+    # policies reported NO category and fell back to `uncategorised_intervention`. Req 34.4's
+    # total
+    # survived but its by-category breakdown collapsed — an operator could not tell a
+    # prompt-injection block from a diagnosis block. The six member names come from botocore's
+    # service model.
+    result = _checker(_intervened(assessment)).check("text")
+    assert result.verdict is GuardrailVerdict.INTERVENED
+    assert expected in result.categories, result.categories
+
+
+def test_a_topic_that_was_evaluated_but_not_blocked_is_not_counted() -> None:
+    # `GuardrailTopicPolicyAction` is an enum of BLOCKED and NONE, so an assessment can name a
+    # topic
+    # it evaluated and did not block. Counting those inflated the rejection count with reasons
+    # that
+    # never fired.
+    runtime = _intervened(
+        {
+            "topicPolicy": {
+                "topics": [
+                    {"name": "diagnosis", "action": "BLOCKED"},
+                    {"name": "dosing", "action": "NONE"},
+                ]
+            }
+        }
+    )
+    assert _checker(runtime).check("text").categories == ("diagnosis",)
+
+
+def test_a_custom_word_never_puts_the_matched_text_in_a_category() -> None:
+    # `customWords[].match` IS the offending text, so harvesting it would breach Req 8.6 by
+    # putting
+    # rejected content into a category label. The entry contributes a fixed label instead.
+    runtime = _intervened(
+        {"wordPolicy": {"customWords": [{"match": "SENTINEL-WORD-Q7X", "action": "BLOCKED"}]}}
+    )
+    categories = _checker(runtime).check("text").categories
+    assert "word_custom" in categories
+    for category in categories:
+        assert "SENTINEL-WORD-Q7X" not in category, categories
+
+
+def test_a_pii_entity_never_puts_the_matched_text_in_a_category() -> None:
+    # Same rule for `piiEntities[].match`, which for a PII hit is the personal data itself.
+    runtime = _intervened(
+        {
+            "sensitiveInformationPolicy": {
+                "piiEntities": [
+                    {"type": "EMAIL", "match": "SENTINEL-PII-Q7X", "action": "BLOCKED"}
+                ]
+            }
+        }
+    )
+    categories = _checker(runtime).check("text").categories
+    assert "pii_EMAIL" in categories
+    for category in categories:
+        assert "SENTINEL-PII-Q7X" not in category, categories

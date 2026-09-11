@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -291,3 +292,118 @@ def test_the_error_message_is_not_empty() -> None:
 def test_a_successful_read_returns_the_parsed_body() -> None:
     body = {"user": "u1", "nearestSensors": []}
     assert _client(_ok(body)).air_quality(_CREDENTIAL) == body
+
+
+# --- regressions from the correctness review ---------------------------
+
+
+def test_a_redirect_is_not_returned_as_a_successful_body() -> None:
+    # A 3xx fell through every status branch to `.json()`, so a redirect carrying a JSON body
+    # was
+    # RETURNED AS SUCCESS. Service 2 issues no redirects, which makes one a misconfiguration
+    # signal.
+    with pytest.raises(ServingClientError) as caught:
+        _client(_status(302, {"location": "elsewhere"})).air_quality(_CREDENTIAL)
+    assert caught.value.kind is ServingFailureKind.SERVER_ERROR
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.InvalidURL("bad"), httpx.CookieConflict("dup"), httpx.StreamError("stream")],
+    ids=["InvalidURL", "CookieConflict", "StreamError"],
+)
+def test_an_httpx_error_outside_the_httperror_tree_still_becomes_a_verdict(
+    error: Exception,
+) -> None:
+    # None of these is an `HTTPError` subclass, so they escaped the adapter and broke the port's
+    # contract that a failure arrives as `ServingClientError`. The caller in `agent/tools.py`
+    # catches
+    # only that, so one of these crashed the turn instead of degrading it.
+    with pytest.raises(ServingClientError) as caught:
+        _client(_raising(error)).air_quality(_CREDENTIAL)
+    assert caught.value.kind is ServingFailureKind.UNREACHABLE
+
+
+def test_more_than_one_species_is_refused_rather_than_silently_wrong() -> None:
+    # Service 2's route takes ONE species. Comma-joining the set produced a request for a
+    # species
+    # literally named "NO2,PM25", which matches nothing — an empty window returned as success,
+    # which
+    # is worse than an error because nothing reports it.
+    recorder = _Recorder()
+    with pytest.raises(ServingClientError) as caught:
+        _client(recorder).history(
+            _CREDENTIAL, "AQM1", _START, _END, frozenset({"NO2", "PM25"})
+        )
+    assert caught.value.kind is ServingFailureKind.BAD_REQUEST
+    assert recorder.requests == [], "a request Service 2 cannot serve was still sent"
+
+
+def test_the_configured_timeout_reaches_httpx() -> None:
+    # The timeout was never proven to reach httpx: every failure test injects a timeout
+    # EXCEPTION, so
+    # dropping `timeout=` from the client would have shipped green on httpx's own 5s default.
+    seen: dict[str, object] = {}
+    real = httpx.Client
+
+    class _Capturing(httpx.Client):
+        def __init__(self, **kwargs: Any) -> None:  # noqa: ANN401 - httpx's own shape
+            seen.update(kwargs)
+            super().__init__(**kwargs)
+
+    httpx.Client = _Capturing  # type: ignore[misc]
+    try:
+        _client(_ok()).air_quality(_CREDENTIAL)
+    finally:
+        httpx.Client = real  # type: ignore[misc]
+    assert seen["timeout"] == 30
+
+
+def test_the_adapter_issues_exactly_one_request_per_call() -> None:
+    # Renamed from a test that claimed to prove Req 32.8a's no-retry rule. It could not: the
+    # mock
+    # transport has no retry path and the adapter has no loop, so it passed for reasons
+    # unrelated to
+    # the requirement. What it honestly proves is the request count. The no-retry guarantee
+    # rests on
+    # the adapter holding no credential to refresh and httpx's `HTTPTransport(retries=0)`
+    # default,
+    # which the test below pins.
+    recorder = _Recorder()
+    _client(recorder).air_quality(_CREDENTIAL)
+    assert len(recorder.requests) == 1
+
+
+def test_the_default_transport_does_not_retry() -> None:
+    # Req 32.8a forbids re-sending a rejected credential. The adapter holds no credential to
+    # refresh,
+    # and httpx's own transport default is `retries=0`; this pins that default so an upstream
+    # change,
+    # or a future `retries=` argument added here, is caught rather than assumed.
+    with httpx.Client(base_url=_BASE, timeout=30) as probe:
+        transport = probe._transport
+        assert isinstance(transport, httpx.HTTPTransport)
+        pool = transport._pool
+        assert pool._retries == 0, pool._retries
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: c.profile_get(_CREDENTIAL),
+        lambda c: c.profile_delete(_CREDENTIAL),
+        lambda c: c.symptom_entry_put(_CREDENTIAL, {"date": "2026-07-01"}),
+        lambda c: c.profile_put(_CREDENTIAL, {"a": 1}, "k" * 64),
+        lambda c: c.history(_CREDENTIAL, "AQM1", _START, _END),
+        lambda c: c.air_quality(_CREDENTIAL),
+    ],
+)
+def test_every_method_maps_a_failure_through_the_same_funnel(
+    call: Callable[[HttpServingClient], object],
+) -> None:
+    # The status matrix was only ever exercised through `air_quality`. That every method funnels
+    # through one `_request`/`_body_of` was an inspection fact, not a tested one — so a future
+    # special-case on one method would have been guarded by nothing.
+    with pytest.raises(ServingClientError) as caught:
+        call(_client(_status(401)))
+    assert caught.value.kind is ServingFailureKind.UNAUTHORIZED

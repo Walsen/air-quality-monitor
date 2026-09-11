@@ -103,7 +103,17 @@ class HttpServingClient:
             "endTime": end.isoformat(),
         }
         if species:
-            params["species"] = ",".join(sorted(species))
+            if len(species) > 1:
+                # Service 2's route takes `species: str | None` — ONE species. An earlier
+                # version
+                # comma-joined the set, which Service 2 would have read as a single species
+                # literally
+                # named "NO2,PM25" and matched nothing: a silently EMPTY window rather than an
+                # error,
+                # which is the worst outcome available. Refused as a request Service 2 cannot
+                # serve.
+                raise ServingClientError(ServingFailureKind.BAD_REQUEST)
+            params["species"] = next(iter(species))
         return self._request("GET", _HISTORY_PATH, credential, params=params)
 
     def profile_get(self, credential: str) -> Mapping[str, object]:
@@ -180,6 +190,15 @@ class HttpServingClient:
             # Its own kind, not UNREACHABLE: Req 21.1 logs the failure kind, and an operator
             # reading "timeout" learns something different from "unreachable".
             raise ServingClientError(ServingFailureKind.TIMEOUT) from None
+        except (httpx.InvalidURL, httpx.CookieConflict, httpx.StreamError):
+            # These are NOT HTTPError subclasses, so they escaped this adapter entirely and
+            # broke the
+            # port's contract that a failure arrives as ServingClientError — the caller in
+            # `agent/tools.py` catches only that, so one of these would have crashed the turn. A
+            # review enumerated the hierarchy; none of them carries a `.request`, so no
+            # credential
+            # was ever at risk, but the contract was still untrue.
+            raise ServingClientError(ServingFailureKind.UNREACHABLE) from None
         except httpx.HTTPError:
             # `from None` throughout: chaining would attach the original exception, whose
             # message
@@ -204,6 +223,12 @@ def _body_of(response: httpx.Response) -> Mapping[str, object]:
         # cannot
         # succeed and would put it on the wire a second time.
         raise ServingClientError(ServingFailureKind.UNAUTHORIZED)
+    if 300 <= status < 400:
+        # A redirect is not a body. Without this, a 3xx fell through every branch to `.json()`,
+        # so a
+        # redirect carrying a JSON body would have been RETURNED AS SUCCESS. Service 2 issues no
+        # redirects, which makes this a misconfiguration signal rather than a normal path.
+        raise ServingClientError(ServingFailureKind.SERVER_ERROR)
     if status >= 500:
         raise ServingClientError(ServingFailureKind.SERVER_ERROR)
     if status >= 400:

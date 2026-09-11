@@ -37,6 +37,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from boto3.dynamodb.conditions import Key
+
 from aqm_advisor.ports.protocols import AdviceRecord
 
 _PARTITION_KEY = "userId"
@@ -62,8 +64,8 @@ class _Table(Protocol):
         """Write one item."""
         ...
 
-    def query(self, *, KeyConditionExpression: str) -> dict[str, Any]:  # noqa: N803
-        """Return the items for one partition key."""
+    def query(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401 - boto3's own shape
+        """Return one page of items for a key condition."""
         ...
 
     def delete_item(self, *, Key: dict[str, Any]) -> None:  # noqa: N803
@@ -95,18 +97,54 @@ class DynamoDbAdviceAuditStore:
         self._table.put_item(Item=_item_for(record))
 
     def forget_user(self, user_id: str) -> int:
-        """Erase this user's records and return how many were removed.
+        """Erase this user's records and return how many were REMOVED.
 
-        Queries first, then deletes what it found, and counts THAT — so a repeat returns zero.
-        The
-        query is the source of the count for the reason in this module's docstring.
+        THE KEY CONDITION IS A `ConditionBase`, NOT A STRING, and a review caught the first
+        version
+        getting this wrong in a way every test still passed. boto3 compiles a `ConditionBase`
+        into an
+        expression plus attribute placeholders, but passes a bare `str` through VERBATIM as the
+        wire-level `KeyConditionExpression` — so `query(KeyConditionExpression="user-1")` sent
+        DynamoDB the literal expression `user-1` with no attribute values, which the service
+        rejects.
+        Both fakes had reimplemented `query` as "match `userId` against this string", so they
+        were
+        faithful to an API that does not exist and the erasure path could not have worked at
+        all.
+
+        PAGINATES. `Query` returns at most 1 MB per call and signals more through
+        `LastEvaluatedKey`;
+        the low-level call does not paginate. Reading one page silently under-deleted AND
+        under-reported for a user with many rows — the worst shape for an erasure control,
+        because
+        the caller is told a number smaller than what was left behind.
+
+        COUNTS CONFIRMED DELETES, incremented after each delete returns. Under a partial failure
+        the
+        exception propagates having counted only what genuinely went, rather than a total that
+        was
+        never achieved.
         """
-        found = self._table.query(KeyConditionExpression=user_id).get("Items") or []
-        for item in found:
-            self._table.delete_item(
-                Key={_PARTITION_KEY: item[_PARTITION_KEY], _SORT_KEY: item[_SORT_KEY]}
-            )
-        return len(found)
+        removed = 0
+        start_key: dict[str, Any] | None = None
+        while True:
+            request: dict[str, Any] = {
+                "KeyConditionExpression": Key(_PARTITION_KEY).eq(user_id)
+            }
+            if start_key is not None:
+                request["ExclusiveStartKey"] = start_key
+            page = self._table.query(**request)
+            for item in page.get("Items") or ():
+                self._table.delete_item(
+                    Key={
+                        _PARTITION_KEY: item[_PARTITION_KEY],
+                        _SORT_KEY: item[_SORT_KEY],
+                    }
+                )
+                removed += 1
+            start_key = page.get("LastEvaluatedKey")
+            if not start_key:
+                return removed
 
 
 def _item_for(record: AdviceRecord) -> dict[str, Any]:

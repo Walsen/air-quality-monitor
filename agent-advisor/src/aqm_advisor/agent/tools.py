@@ -38,7 +38,11 @@ from aqm_advisor.domain.idempotency import TurnIdentity, profile_idempotency_key
 from aqm_advisor.domain.records import RetrievedValues, ToolCall
 from aqm_advisor.domain.snapshot import DEFAULT_PROFILE_TEXT, snapshot_sites
 from aqm_advisor.ports.clock import Clock
-from aqm_advisor.ports.protocols import ServingClient, ServingClientError
+from aqm_advisor.ports.protocols import (
+    ServingClient,
+    ServingClientError,
+    ServingFailureKind,
+)
 
 _MAX_HISTORY_DAYS = 30
 """Service 2's default maximum history span. A drift guard pins it against that
@@ -142,8 +146,24 @@ def _failure_note(name: str, error: ServingClientError) -> str:
 
     Never a raw exception, a stack trace or Service 2's error body: Req 21.4 forbids returning
     any of those, and a kind is what a degraded response can honestly name.
+
+    ONE EXCEPTION, for Req 3.3. A rejected history window must be reported "and the permitted
+    bound",
+    and a review found the bound could never reach the model: Service 2 names it only in the
+    response
+    body, which Req 21.4 forbids forwarding, so the note carried the bare kind `bad_request`.
+    The
+    bound is restated here from THIS SERVICE'S OWN constant instead — no Service 2 text crosses
+    the
+    boundary, and the model gets the fact Req 3.3 requires.
     """
-    return f"{name} unavailable: {error.kind.value}. Do not state any condition value for it."
+    note = f"{name} unavailable: {error.kind.value}."
+    if name == "history" and error.kind is ServingFailureKind.BAD_REQUEST:
+        note += (
+            f" The permitted window is 1 to {_MAX_HISTORY_DAYS} days. Report the period as "
+            "unavailable and do not retry with a different window."
+        )
+    return f"{note} Do not state any condition value for it."
 
 
 def build_retrieval_tools(
@@ -196,11 +216,20 @@ def build_retrieval_tools(
                 "Air quality was already retrieved for this turn. Use the snapshot you have; "
                 "retrieving again could return a different reading than the basis describes."
             )
-        air_quality_calls += 1
         try:
             body = client.air_quality(credential)
         except ServingClientError as error:
             return _failure_note("air_quality", error)
+        # Incremented only AFTER a successful retrieval. A review found the increment above the
+        # `try`, so a transient serving failure consumed the turn's one air-quality call: the
+        # model's
+        # retry was then refused with "already retrieved" — which was false — and Req 3.1a left
+        # history permanently unavailable for the turn. Req 2.6 bounds SUCCESSFUL snapshots,
+        # because
+        # its reason is that a second snapshot could differ from the basis; an attempt that
+        # returned
+        # nothing cannot differ from anything.
+        air_quality_calls += 1
         recorder.record_body(body)
         retrieved_site_code = _site_code_of(body)
         return json.dumps({"snapshot": body, "notes": _snapshot_notes(body)}, default=str)

@@ -457,3 +457,35 @@ def test_the_history_tool_delivers_a_labelled_summary() -> None:
     _by_name(tools)["air_quality"]()  # Req 3.1a supplies the site code
     result = str(_by_name(tools)["history"](days=7)).casefold()
     assert "summar" in result
+
+
+def test_a_failed_air_quality_call_does_not_consume_the_turn_s_one_retrieval() -> None:
+    # A review found the call counter incremented BEFORE the request, so one transient serving
+    # failure spent the turn's only air-quality call. The retry was then refused with "already
+    # retrieved" — false — and Req 3.1a left history unavailable for the rest of the turn. Req
+    # 2.6
+    # bounds SUCCESSFUL snapshots: its reason is that a second snapshot could differ from the
+    # basis,
+    # and an attempt that returned nothing cannot differ from anything.
+    client = ScriptedServingClient(air_quality_body=ServingFailureKind.TIMEOUT)
+    tools, _ = _build(client)
+    first = str(_by_name(tools)["air_quality"]())
+    assert "unavailable" in first.casefold()
+    second = str(_by_name(tools)["air_quality"]())
+    assert "already retrieved" not in second.casefold(), second
+
+
+def test_a_rejected_history_window_reports_the_permitted_bound() -> None:
+    # Req 3.3 requires the period be reported unavailable AND the permitted bound named. The
+    # bound
+    # exists only in Service 2's body, which Req 21.4 forbids forwarding, so the note carried a
+    # bare
+    # kind and the clause was unmet. It is restated from this service's own constant instead.
+    client = ScriptedServingClient(
+        history_body=ServingFailureKind.BAD_REQUEST,
+    )
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    note = str(_by_name(tools)["history"](days=7)).casefold()
+    assert "30 days" in note, note
+    assert "do not retry" in note, note
