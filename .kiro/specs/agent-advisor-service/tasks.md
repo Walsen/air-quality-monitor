@@ -961,10 +961,73 @@ directory.
       to task 21.1)_
 
 - [ ] 16. Real adapters and shared port contract suites
-  - [ ] 16.1 Write the shared behavioural test suite per port
-    - One suite per port parameterised over every adapter of that port, so an adapter swap cannot change
-      behaviour; cloud parameters skip when no endpoint is reachable and the skip must be provable, with
-      a fenced assertion that no parameter skips when an endpoint IS present
+  - [x] 16.1 Write the shared behavioural test suite per port
+    - `tests/contracts/`: a `registry.py` holding every adapter of every port, plus one behavioural suite per
+      port parameterised over that port's adapters. Advisor 1372 -> 1404 tests. New recipe
+      `just test-contracts-advisor` runs them alone, which is what you want while ADDING an adapter, since a
+      new adapter's first duty is to pass these
+    - A SKIP IS INDISTINGUISHABLE FROM A PASS, which is the whole problem this task names. A cloud parameter
+      whose endpoint is never configured leaves the suite green while that adapter has never executed once
+    - ONE PREDICATE decides a skip and the fence asserts over the SAME one. `would_skip` is called by the
+      suites to skip and by the fence to assert nothing skips when an endpoint is present. Two copies could
+      disagree and the copy that drifted would be the one excusing a cloud adapter — the two-definitions
+      trap that let `AdviceRecord` exist twice
+    - THE MECHANISM IS PROVEN ON SYNTHETIC CASES because it would otherwise be VACUOUS today: every real
+      adapter is offline, so a fence over the real registry alone holds by having nothing to check. A
+      mechanism whose first real use is also its first exercise is one nobody has tested. `_SYNTHETIC_CASES`
+      drives both branches now, and a blank endpoint counts as absent
+    - The registry is held against `port_protocols()` rather than a hand-written count, so a port added later
+      fails BY DEFAULT instead of being silently uncovered. Each case is also checked to build something
+      that satisfies the port it claims, since a case wired to the wrong port would run that port's whole
+      suite against the wrong shape and the failures would read as behavioural
+    - `test_every_case_is_offline_today_and_says_so` pins the CURRENT state deliberately: when task 16.2 adds
+      a cloud case it FAILS, which is the prompt to confirm the skip path is honoured for it rather than
+      discovering later that it never ran
+    - Every assertion is the PORT's contract, never one adapter's implementation — a test true of the
+      scripted client but not an HTTP one would fail when 16.3 lands and get "fixed" by weakening it, at
+      which point the suite protects nothing. HOW an adapter is made to fail is adapter-specific, so that
+      one seam is isolated in a `_failing_variant` helper
+    - mypy caught a VACUOUS assertion I had written: `assert trigger.request(...) is None` is a tautology
+      when the protocol already declares `-> None`, so it passed for every conforming adapter while checking
+      nothing. Replaced with an assertion on the declared annotation, which is the actual contract
+    - FIVE DEFECTS FOUND BY PRE-MERGE REVIEW AND FIXED. Two independent lanes ran: one mutation-tested the
+      suite with deliberately broken adapters, one predicted which assertions the REAL adapters would break
+      1. WORST: `_failing_variant` returned None for any adapter without the scripted client's
+         `air_quality_body` kwarg, and the tests then SKIPPED — silently deleting the two most important
+         assertions in the serving suite (failure raises with a kind; the error hides the credential) for
+         exactly the adapter that can leak a credential over a network. The seam now lives on `AdapterCase`
+         as `build_failing`, so each adapter declares its own, and a missing seam is `pytest.fail`, NOT a
+         skip: "we could not test the failure path" is not a pass. This also removes the if/elif-per-adapter
+         shape the practices' Open/Closed rule warns about
+      2. The credential test was `repr(vars(client))`, which a review defeated three ways: `__slots__` (no
+         `__dict__`, so it fell back to a bare object repr), a nested object one hop away, and by extension
+         an `httpx.Client` holding an Authorization header. Replaced with a depth-limited reachability scan
+         plus a self-check over all three shapes
+      3. The fence proved the PREDICATE, not the FIXTURE. It never built an adapter and never observed a run,
+         so an exception in `build()`, a `pytest.skip` in a body or a `skipif` marker were all invisible —
+         while the docstring claimed "nothing may skip". A session-level hook in `tests/contracts/conftest.py`
+         now records what the runner ACTUALLY skipped and fails the session on any skip this environment
+         cannot explain, verified by planting one and confirming exit status 1. The in-suite test's claim was
+         narrowed to what it really covers
+      4. `test_each_case_builds_something_that_satisfies_its_port` called `build()` UNCONDITIONALLY — the one
+         place bypassing the predicate, which would have run a cloud constructor with no endpoint configured
+      5. Req 34.6's FAIL-CLOSED path had NO test at all, and it is that port's load-bearing safety clause: an
+         adapter swallowing a ClientError and returning PASSED would have left the suite green while output
+         went unchecked. Added via a `build_unavailable` seam, asserting the distinct UNAVAILABLE verdict
+    - The trigger return-value test now checks BOTH the declared annotation and the runtime value. mypy calls
+      the second redundant, and the ignore is deliberate: mypy reasons FROM the annotation, which is the very
+      thing under test — an adapter can keep `-> None` and return a value from its body
+    - The category-leak assertion moved from two hard-coded phrases to a SENTINEL, since phrase-coupled
+      absence checks only sample the property; an adapter echoing a different substring would have passed
+    - HONESTY CORRECTION: the erasure tests cited Reqs 20.1/20.2, which say what a record CONTAINS and
+      nothing about erasure's return value. The count semantics come from the port signature plus Req 20.3's
+      reasoning. Recorded as a design decision rather than a quoted requirement, with the semantics task 16.5
+      must state: the count is rows that EXISTED and were removed by THIS call
+    - THE MODEL PORT'S EXCLUSION IS NOW AN EXPLICIT SCOPED EXCEPTION, not a silent omission. A literal
+      reading of Req 26.8 is not satisfied for it, and the grounds are written down: DD2 makes the Strands
+      `Model` class itself the port, and the port has no adapter-independent behavioural contract checkable
+      offline — its behaviour is which tokens it streams. A shared Model suite would be vacuous or
+      integration-only, and a vacuous suite is worse than none because it certifies
     - _Requirements: 26.8_
 
   - [ ] 16.2 Implement the `BedrockModel` adapter configuration

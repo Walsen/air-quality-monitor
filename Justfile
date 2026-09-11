@@ -59,6 +59,12 @@ run-association *users:
 test-advisor:
     cd {{adv_dir}} && uv run pytest -m "not integration"
 
+# The shared port-contract suites (Requirement 26.8): one suite per port, run against every
+# adapter of that port. Part of the offline suite too — this recipe just runs them alone, which is
+# what you want while adding an adapter, since a new adapter's first duty is to pass these.
+test-contracts-advisor:
+    cd {{adv_dir}} && uv run pytest -m contract
+
 # The fenced checks: a live model or guardrail, or a container engine.
 test-integration-advisor:
     cd {{adv_dir}} && uv run pytest -m integration
