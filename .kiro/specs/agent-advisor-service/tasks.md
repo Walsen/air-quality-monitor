@@ -1247,7 +1247,7 @@ directory.
     - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
 - [ ] 17. AgentCore entrypoint and the deployment contract
-  - [ ] 17.1 Implement the entrypoint and health endpoint
+  - [x] 17.1 Implement the entrypoint and health endpoint
     - `@app.entrypoint` async throughout so no blocking operation can block `/ping`; `@app.ping` reporting
       `Healthy` or `HealthyBusy`; `time_of_last_update` omitted or set only on a real status change; the
       `AdvisoryRequest` and `AdvisoryResponse` as the `/invocations` bodies; every handled failure returned
@@ -1256,15 +1256,63 @@ directory.
       handler but not the catch — `handle_at_top_level` receives an already-caught error — so the broad
       `except` lives at this entrypoint, and the AST test that it appears nowhere else belongs with it.
       `boundary.py` already asserts it catches nothing broadly, which is the other half
-    - _Requirements: 21.5, 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
+    - `agentcore/app.py` -- the ONLY module importing `bedrock_agentcore` (Req 32.2, AST-fenced).
+      Advisor 1551 -> 1573 tests. 17.1, 17.2 and 17.3 landed together because they are one function
+    - THE CORRECT PING IMPLEMENTATION IS TO WRITE NO `@app.ping` HANDLER. Reading the SDK:
+      `get_current_ping_status` returns HealthyBusy when `_active_tasks` is non-empty and advances
+      `time_of_last_update` ONLY on a real status change -- which is exactly what Req 32.4 demands and
+      what a hand-rolled handler would break. Req 32.4 says as much; the SDK source confirms it
+    - THE TRAP Req 32.4b EXISTS FOR IS REAL: `_handle_invocation` never touches `_active_tasks`, so the
+      SDK does NOT infer busy from a request being in flight. An entrypoint that merely runs a turn
+      answers `Healthy` throughout and the health contract is silently unmet. Bracketing the turn with
+      `add_async_task`/`complete_async_task` (Reqs 32.4, 33.8) is what makes it true, and the
+      concurrency test is what proves it rather than asserting it
+    - THE SDK'S OWN ERROR PATH IS WHAT Req 32.5 FORBIDS: it answers
+      `JSONResponse({"error": str(e)}, status_code=500)`. AgentCore surfaces a container 5xx as an
+      opaque 424 RuntimeClientError, losing the Guardrail_Envelope and any Escalation -- and `str(e)`
+      puts the exception's words in the body, which Reqs 5.2 and 21.4 forbid. So this service's broad
+      catch fires FIRST, and that IS Req 21.5's top-level boundary (carried from task 11.2)
+    - RETURNING THE PYDANTIC MODEL SILENTLY BROKE Req 32.3, and a test caught it. The SDK tries
+      `json.dumps(obj)`, then `model_dump()`, then falls back to `json.dumps(str(obj))`. `model_dump()`
+      leaves `answered_at` a `datetime`, which json cannot encode -- so BOTH real attempts fail and the
+      body becomes the model's REPR STRING, with a 200 status. `model_dump(mode="json")` fixes it
+    - A ZERO TURN BUDGET DISABLED THE BUDGET. The first version wrote
+      `asyncio.timeout(turn_budget_seconds or None)`, and `0 or None` is None, meaning NO timeout -- a
+      fail-open on Req 32.13. A test with a zero budget then HUNG FOR NINETY MINUTES until a watchdog
+      killed the turn, which is how it was found. A non-positive budget is now refused at build time
+    - The budget bounds the RESPONSE, not the work: `asyncio.timeout` cancels the await, and a blocked
+      worker thread keeps running because Python cannot kill a thread. That is the right guarantee for
+      Reqs 32.13 and 32.8a, both of which are about the answer and the credential's remaining life,
+      but it is documented so nobody expects the thread to die with it
+    - Req 32.4a is satisfied by `asyncio.to_thread`, which the requirement explicitly permits ("awaited
+      on the async path OR run on a separate thread"). `TurnPipeline.run` is synchronous, so no async
+      rewrite was needed
+    - THE TURN RUNNER IS INJECTED. No concrete `TurnPipeline` exists in `src/` -- composing one from
+      every adapter is task 21's composition root -- so this module stays a transport boundary, which
+      is also what lets the deployment contract be tested with a scripted turn
+    - Req 32.8: the credential comes from the request HEADER, never the body. A body field would let a
+      caller supply a credential the front door never validated. The `Bearer` prefix is stripped as
+      transport framing, which is not inspection (Reqs 5.5, 5.6, A4a)
+    - NOT IN THE REQUIREMENTS, found by reading the SDK: `BedrockAgentCoreApp(debug=True)` exposes
+      `_agent_core_app_action` on `/invocations` including `force_healthy` and `force_busy`, so ANY
+      caller could make the container lie to the platform about its health. `debug` is left False and a
+      test pins that the action surface is unreachable
+    - MY OWN AST FENCE HAD A WRONG PREMISE AND I CORRECTED IT RATHER THAN THE CODE. The first version
+      banned broad catches outside the entrypoint and failed on three deliberate ones
+      (`generation.py`, `verification.py`, `adapters/guardrail/bedrock.py`). Req 21.5 forbids a BARE
+      catch; a typed-but-broad `except Exception` converting an unknown failure into an explicit
+      FAIL-CLOSED outcome is this codebase's deliberate pattern. The fence is now: no bare `except:`
+      anywhere, plus an allowlist naming each broad catch AND its justification, with a staleness test
+      so the list cannot rot into a blanket exemption
+    - _Requirements: 5.5, 5.6, 21.5, 32.1, 32.2, 32.3, 32.4, 32.4a, 32.5, 32.6, 32.7, 32.8, 32.13, 33.8, 33.9_
 
-  - [ ] 17.2 Implement inbound identity and credential forwarding
+  - [x] 17.2 Implement inbound identity and credential forwarding
     - Read the inbound `Authorization` header from the request-header allowlist and forward it unmodified;
       never parse, validate, cache or reissue it; document the `customJWTAuthorizer` configuration the
       deployment supplies
     - _Requirements: 5.5, 5.6, 32.7, 32.8_
 
-  - [ ] 17.3 Implement asynchronous task tracking
+  - [x] 17.3 Implement asynchronous task tracking
     - `add_async_task` and `complete_async_task` bracketing any work continuing after a response, so the
       SDK manages the ping status; no fire-and-forget job API is assumed and no async variant of the
       request exists
