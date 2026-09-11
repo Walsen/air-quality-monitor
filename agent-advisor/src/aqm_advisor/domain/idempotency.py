@@ -102,11 +102,24 @@ def write_idempotency_key(*, identity: TurnIdentity, kind: WriteKind) -> str:
     differing in field order or phrasing. A body-derived key would change with it and the
     duplicate would apply, which is the exact failure this guards.
 
+    Each component is LENGTH-PREFIXED rather than joined on a separator. Joining on `|` was
+    ambiguous: `user_id="alice", session_id="|b…"` and `user_id="alice|", session_id="b…"` both
+    render `alice||b…`, so two DIFFERENT turns collided onto one key — and a colliding key reads
+    as an already-applied duplicate, silently discarding a real write to someone's health
+    profile. Neither component is constrained to exclude `|`: a `runtimeSessionId` may arrive
+    from the platform, where validation checks only length and non-blankness, and `user_id`
+    comes from a federated identity whose character set this service does not choose.
+    Length-prefixing removes the whole class rather than banning one character.
+
     Returns a digest rather than a concatenation. The key is stored and may be logged, and one
     embedding the raw identity would put a user id somewhere Req 5.3 does not sanction.
     """
-    material = f"{identity.user_id}|{identity.session_id}|{kind.value}".encode()
-    return hashlib.sha256(material).hexdigest()
+    digest = hashlib.sha256()
+    for component in (identity.user_id, identity.session_id, kind.value):
+        encoded = component.encode()
+        digest.update(f"{len(encoded)}:".encode())
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 def profile_idempotency_key(*, identity: TurnIdentity) -> str:

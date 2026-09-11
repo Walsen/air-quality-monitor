@@ -25,6 +25,7 @@ import datetime as dt
 import pathlib
 
 import pytest
+from pydantic import SecretStr
 
 from aqm_advisor.domain.diary import (
     NOTE_PURPOSE_TEXT,
@@ -34,6 +35,7 @@ from aqm_advisor.domain.diary import (
     restate_entry_for_confirmation,
 )
 from aqm_advisor.domain.forbidden import forbidden_matches
+from aqm_advisor.domain.models import PriorTurn
 from aqm_advisor.domain.records import SymptomEntryDraft
 from aqm_advisor.domain.redflag import DEFAULT_RED_FLAG_RULES
 
@@ -82,6 +84,45 @@ def test_an_escalating_diary_turn_produces_no_write_plan() -> None:
     outcome = _plan("today my lips look blue and my reliever is not helping")
     assert outcome.confirmation_request is None
     assert outcome.may_write is False
+
+
+def test_a_red_flag_in_an_earlier_turn_escalates_the_diary_turn() -> None:
+    # Req 10.7 requires the recognition set be applied "to the utterance AND to any supplied
+    # prior turns in the same request". A review found `plan_diary_turn` passing
+    # `prior_turns=()`,
+    # dropping them — which broke exactly the case `match_request_red_flags` exists for.
+    #
+    # The scenario: the user describes the emergency, THEN asks to log the day. The description
+    # this turn is benign. Checking it alone would record the entry and say nothing about the
+    # blue lips — the displacement Req 28.6 forbids, reached from the one direction a
+    # description-only test cannot see.
+    outcome = _plan(
+        "log today as severity 3 with a cough",
+        prior_turns=(
+            PriorTurn(
+                utterance=SecretStr("earlier my lips look blue"),
+                guidance=SecretStr("..."),
+            ),
+        ),
+    )
+    assert outcome.escalation is not None
+    assert outcome.may_write is False
+    assert outcome.confirmation_request is None
+
+
+def test_a_benign_prior_turn_does_not_escalate() -> None:
+    # The other direction, so the test above cannot pass by escalating on any prior turn at all.
+    outcome = _plan(
+        "log today as severity 3 with a cough",
+        prior_turns=(
+            PriorTurn(
+                utterance=SecretStr("what is the air like today"),
+                guidance=SecretStr("..."),
+            ),
+        ),
+    )
+    assert outcome.escalation is None
+    assert outcome.may_write is True
 
 
 def test_an_ordinary_diary_description_does_not_escalate() -> None:
@@ -280,35 +321,105 @@ def test_the_module_performs_no_arithmetic() -> None:
 
 def test_the_module_never_compares_two_severities() -> None:
     # The specific derivation Req 28.7 forbids. An ordering comparison is how a trend would be
-    # produced
-    # without any arithmetic operator appearing at all.
+    # produced without any arithmetic operator appearing at all.
+    #
+    # EQUALITY counts. A review found the first version of this guard checked only `<`/`<=`/`>`/
+    # `>=`, so `return "changed" if this != last else "same"` — a genuine deterioration
+    # classifier — passed it. `==`/`!=` are `ast.Eq`/`ast.NotEq`, and comparing this entry to an
+    # earlier one for INEQUALITY reports a change just as much as comparing for order.
     tree = ast.parse(_SOURCE)
-    ordering = [
+    compared = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Compare)
-        and any(
-            isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)) for op in node.ops
-        )
+        and any(isinstance(op, _FORBIDDEN_COMPARISONS) for op in node.ops)
     ]
-    assert ordering == []
+    assert compared == [], f"the diary module compares: {len(compared)} site(s)"
 
 
-def test_the_module_aggregates_nothing() -> None:
-    tree = ast.parse(_SOURCE)
-    called = {
+_FORBIDDEN_COMPARISONS = (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
+"""Ordering AND equality. Membership (`in`) and identity (`is`) are deliberately absent:
+they ask whether a thing is present, not how it relates to an earlier value."""
+
+_FORBIDDEN_CALLS = frozenset(
+    {
+        "sum", "min", "max", "sorted", "mean", "median", "mode", "stdev",
+        # `index` turns a severity into an ordinal, which is how an ordering comparison is
+        # smuggled past the Compare guard: `order.index(this) != order.index(last)`.
+        "index",
+        # `diff` is a first difference — arithmetic performed inside a library call, where the
+        # BinOp guard cannot see it.
+        "diff", "gradient", "pct_change", "rolling",
+        # Dunder ordering, which is a Call rather than a Compare node.
+        "__gt__", "__lt__", "__ge__", "__le__", "__eq__", "__ne__",
+    }
+)
+
+
+def _called_names(tree: ast.AST) -> set[str]:
+    """Every called name, by BARE NAME and by ATTRIBUTE.
+
+    The attribute half is what the review found missing: the first version inspected only
+    `ast.Call` whose `func` was an `ast.Name`, so `statistics.mean(values)` and
+    `np.diff(values)` were never examined at all — a rolling mean or a first difference passed a
+    guard whose whole purpose was to make one impossible.
+    """
+    return {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    } | {
         node.func.id
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
-    assert called.isdisjoint({"sum", "min", "max", "sorted", "mean", "median"})
 
 
-def test_the_comparison_detector_would_catch_a_trend() -> None:
-    # Self-check: a detector that collected nothing would report this guarantee for free.
-    planted = ast.parse("def trend(a, b):\n    return a > b\n")
-    found = [node for node in ast.walk(planted) if isinstance(node, ast.Compare)]
-    assert found != []
+def test_the_module_aggregates_nothing() -> None:
+    found = _called_names(ast.parse(_SOURCE)) & _FORBIDDEN_CALLS
+    assert found == set(), f"the diary module aggregates: {found}"
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param("def t(a, b):\n    return a > b\n", id="ordering"),
+        pytest.param(
+            'def t(a, b):\n    return "changed" if a != b else "same"\n', id="equality"
+        ),
+        pytest.param("def t(a, b):\n    return a == b\n", id="sameness"),
+        pytest.param(
+            "def t(order, a, b):\n    return order.index(a) != order.index(b)\n",
+            id="ordinal-index",
+        ),
+        pytest.param(
+            "import statistics\ndef t(xs):\n    return statistics.mean(xs)\n", id="attr-mean"
+        ),
+        pytest.param("def t(np, xs):\n    return np.diff(xs)\n", id="attr-diff"),
+        pytest.param("def t(a, b):\n    return a.__gt__(b)\n", id="dunder-ordering"),
+        pytest.param("def t(a, b):\n    return a - b\n", id="arithmetic"),
+    ],
+)
+def test_the_trend_detectors_catch_every_known_evasion(planted: str) -> None:
+    # Self-check, and the reason it is parametrised: a detector that collected nothing would
+    # report Req 28.7's guarantee for free. Every case here is a REAL trend computation that an
+    # earlier version of these guards let through — the review found six of the eight. A guard
+    # whose self-check only plants `a > b` proves it catches the one thing nobody would write.
+    tree = ast.parse(planted)
+    arithmetic = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.Mult | ast.Div | ast.Add | ast.Sub | ast.Pow | ast.FloorDiv)
+    ]
+    compared = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Compare)
+        and any(isinstance(op, _FORBIDDEN_COMPARISONS) for op in node.ops)
+    ]
+    aggregated = _called_names(tree) & _FORBIDDEN_CALLS
+    assert arithmetic or compared or aggregated, f"no detector caught: {planted!r}"
 
 
 # --- Req 28.8: nothing is stored ---------------------------------------

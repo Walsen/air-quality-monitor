@@ -34,7 +34,7 @@ import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from aqm_advisor.domain.models import Escalation
+from aqm_advisor.domain.models import Escalation, PriorTurn
 from aqm_advisor.domain.records import SymptomEntryDraft
 from aqm_advisor.domain.redflag import RedFlagRule
 from aqm_advisor.domain.turn import determine_escalation
@@ -104,17 +104,26 @@ def plan_diary_turn(
     existing_dates: frozenset[dt.date],
     rules: Sequence[RedFlagRule],
     emergency_guidance: str,
+    prior_turns: Sequence[PriorTurn] = (),
     note_requested: bool = False,
 ) -> DiaryTurnOutcome:
     """Decide what a diary turn does, escalation first (Reqs 28.1 to 28.6).
 
-    The red-flag check runs on the DESCRIPTION before anything else, and when it fires the
-    outcome carries no confirmation request and `may_write` false. Recording cannot displace the
-    escalation because there is no path from here to a write.
+    The red-flag check runs BEFORE anything else, and when it fires the outcome carries no
+    confirmation request and `may_write` false. Recording cannot displace the escalation because
+    there is no path from here to a write.
+
+    `prior_turns` is forwarded because Req 10.7 requires the recognition set be applied "to the
+    utterance AND to any supplied prior turns in the same request". An earlier version dropped
+    them, passing `()`, which broke exactly the case `match_request_red_flags` exists for: a
+    user who says "my lips looked blue earlier" and then asks to log the day has described the
+    emergency in the FIRST message. Checking only the description would have recorded the entry
+    and said nothing — the precise displacement Req 28.6 forbids, arrived at from the one
+    direction the description-only test could not see.
     """
     escalation = determine_escalation(
         utterance=description,
-        prior_turns=(),
+        prior_turns=prior_turns,
         rules=rules,
         emergency_guidance=emergency_guidance,
     )

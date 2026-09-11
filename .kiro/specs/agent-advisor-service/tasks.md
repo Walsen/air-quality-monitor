@@ -683,11 +683,24 @@ directory.
       short-circuit as `TurnPipeline.run`, because a guarantee every caller must remember is not one
     - The urgency is not diminished by the framing: someone filing "my lips look blue today" as history is
       describing the same emergency as someone asking about it
-    - Req 28.7 is enforced by ABSENCE. Telling someone their condition is deteriorating or improving
-      requires comparing this entry against earlier ones, so the module contains no arithmetic AND no
-      ordering comparison — two AST tests, because an ordering comparison is how a trend would arrive
-      without any arithmetic operator appearing. A self-check proves the comparison detector works. Every
-      produced text is also swept for clinical wording
+    - Req 28.7 is enforced by ABSENCE: no arithmetic, no comparison, no aggregation, by AST test. A
+      pre-merge review DEFEATED the first version of these guards and they were widened. It found that
+      checking only `<`/`<=`/`>`/`>=` let `"changed" if this != last else "same"` through — a real
+      deterioration classifier — so EQUALITY now counts too; that inspecting only bare-name calls never
+      examined `statistics.mean(xs)` or `np.diff(xs)` at all, so ATTRIBUTE calls are now collected; and
+      that `order.index(this) != order.index(last)` turned a severity into an ordinal to evade both, so
+      `index`, `diff` and the ordering dunders are in the forbidden call set. The self-check is now
+      PARAMETRISED over all eight known evasions — a self-check planting only `a > b` proves the detector
+      catches the one thing nobody would write. Membership and identity stay permitted deliberately: they
+      ask whether a thing is present, not how it relates to an earlier value
+    - DEFECT FOUND BY REVIEW AND FIXED: `plan_diary_turn` passed `prior_turns=()`, dropping them. Req 10.7
+      requires the recognition set be applied "to the utterance AND to any supplied prior turns in the
+      same request", and dropping them broke exactly the case `match_request_red_flags` exists for — a
+      user who says "my lips look blue" and THEN asks to log the day has described the emergency in the
+      first message. The description alone is benign, so the entry would have been recorded and the blue
+      lips never mentioned: Req 28.6's displacement, reached from the one direction a description-only
+      test cannot see. My own tests all drove the description. Both directions are now tested
+    - Every produced text is also swept for clinical wording
     - Req 28.2's restatement names the severity, every marker AND the reliever flag, since one that omitted
       a field would obtain confirmation for a different entry than the write applies — and the reliever
       flag is the field most easily inferred wrongly from prose. A test asserts the restatement of a
@@ -736,7 +749,26 @@ directory.
       the substance rather than the spec's own wording
     - All three texts joined task 6.3's sweep; the explanation carries four numerals and the word
       "association", so it is exactly the kind of text a tightened pattern set could start rejecting
-    - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7_
+    - SCOPE LIMIT found by review, recorded rather than papered over: `CAUSAL_WORDS` is swept over the
+      texts THIS MODULE produces, and those are all hand-written. It is NOT a runtime filter on
+      model-generated prose — nothing in `src/` imports it — and the Req 8 `forbidden_matches` set carries
+      no association-causality patterns. So Req 30.2 is met for the service's own texts and NOT yet
+      enforced on generated guidance. That belongs with output verification (task 18's guardrail wiring),
+      not here, and it needs care rather than a blanket ban: "trigger" is legitimate in
+      preparedness advice under Req 29.1, so a filter that rejected the word everywhere would block text
+      the service is obliged to produce. Req 30.2 stays OPEN against generated output
+    - The review also noted `CAUSAL_WORDS` omits `worsen`, `aggravate`, `set off`, `brings on`, `due to`,
+      `reason for`, `provoke`, `induce`, `driving` and `contribute to`. Left as-is deliberately while the
+      set guards only fixed strings this service authors; widen it when it becomes a runtime filter, and
+      prefer token matching then, since substring matching would fire on "predictable"
+    - _Requirements: 30.1, 30.3, 30.4, 30.5, 30.6, 30.7; 30.2 PARTIAL (own texts only)_
+
+  - NOTE spanning 14.1 and 14.2, from the pre-merge review: the `ProfileDraft` / `SymptomEntryDraft`
+    confirmation gates are correct in isolation, but the wired `profile_put` / `symptom_entry_put` tools
+    forward model-authored JSON and do not route through `write_body()`. So Reqs 27.2 and 28.3 are enforced
+    only for a caller that uses the draft objects; nothing yet REQUIRES it. Closing that is the composition
+    root's job (task 21.1), which must make the draft the only path to a write. Recorded here so the
+    end-to-end guarantee is not assumed to exist already
 
   - [x] 14.4 Implement idempotent write keys
     - `domain/idempotency.py`. ONE derivation (`write_idempotency_key`) behind two named keys, so the two
@@ -780,6 +812,15 @@ directory.
       rather than taken on faith. But "already safe" has a DEPENDENCY: the date must come from the
       confirmed draft, or a retry crossing midnight writes a second entry on a second date and
       replace-per-date collapses nothing. That precondition is now a test
+    - DEFECT FOUND BY REVIEW AND FIXED: the key joined its components on a raw `|`, so
+      `("alice", "|bob…")` and `("alice|", "bob…")` both rendered `alice||bob…` and produced the SAME
+      digest — two DIFFERENT turns colliding onto one key, which reads as an already-applied duplicate and
+      silently discards a real write to someone's health profile. Neither component is constrained to
+      exclude `|`: a `runtimeSessionId` may arrive from the platform, where validation checks only length
+      and non-blankness, and `user_id` comes from a federated identity whose character set this service
+      does not choose. Components are now LENGTH-PREFIXED, which removes the class rather than banning one
+      character, and the test compares the whole set of adversarial identities PAIRWISE — including two
+      that imitate the length prefix itself
     - _Requirements: 32.4c_
 
   - [x]* 14.5 Write property test for idempotent writes under redelivery

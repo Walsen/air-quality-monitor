@@ -95,6 +95,60 @@ def test_the_identity_is_frozen() -> None:
 # --- the key collapses a redelivery ------------------------------------
 
 
+def test_a_separator_in_a_component_cannot_forge_another_turns_key() -> None:
+    # A review found the key joined its components on a raw `|`, so `("alice", "|bob…")` and
+    # `("alice|", "bob…")` both rendered `alice||bob…` and produced the SAME digest. A colliding
+    # key reads as an already-applied duplicate, so the second turn's write to someone's health
+    # profile was silently discarded.
+    #
+    # Neither component is constrained to exclude `|`: a `runtimeSessionId` may arrive from the
+    # platform, where validation checks only length and non-blankness, and `user_id` comes from
+    # a
+    # federated identity whose character set this service does not choose.
+    left = profile_idempotency_key(
+        identity=TurnIdentity(user_id="alice", session_id="|" + "b" * 33)
+    )
+    right = profile_idempotency_key(
+        identity=TurnIdentity(user_id="alice|", session_id="b" * 33)
+    )
+    assert left != right
+
+
+@pytest.mark.parametrize(
+    ("user_id", "session_id"),
+    [
+        ("alice", "|" + "b" * 33),
+        ("alice|", "b" * 33),
+        ("a|lice", "b" * 33),
+        ("alice", "b" * 33 + "|"),
+        ("11:alice", "b" * 33),
+        ("alice", "0:" + "b" * 32),
+    ],
+    ids=["leading", "trailing", "embedded", "session-trailing", "length-prefix", "zero-prefix"],
+)
+def test_no_two_distinct_identities_share_a_key(user_id: str, session_id: str) -> None:
+    # Quantified over shapes that attack the ENCODING rather than the hash: a raw separator, and
+    # a
+    # component that imitates the length prefix itself. Every distinct pair must yield a
+    # distinct
+    # key, so the whole set is compared pairwise rather than one pair at a time.
+    identities = [
+        ("alice", "b" * 33),
+        ("alice", "|" + "b" * 33),
+        ("alice|", "b" * 33),
+        ("a|lice", "b" * 33),
+        ("alice", "b" * 33 + "|"),
+        ("11:alice", "b" * 33),
+        ("alice", "0:" + "b" * 32),
+    ]
+    keys = {
+        profile_idempotency_key(identity=TurnIdentity(user_id=user, session_id=session))
+        for user, session in identities
+    }
+    assert len(keys) == len(identities), "two distinct identities collided onto one key"
+    assert (user_id, session_id) in identities
+
+
 def test_the_same_turn_delivered_twice_yields_the_same_key() -> None:
     # Req 32.4c's whole purpose. Rebuilt from the same components, exactly as a re-invoked
     # entrypoint would, rather than reusing one object.
