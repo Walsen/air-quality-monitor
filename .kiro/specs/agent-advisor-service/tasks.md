@@ -566,11 +566,37 @@ directory.
     - **Validates: Requirement 20.3**
 
 - [ ] 13. Untrusted content and data minimisation
-  - [ ] 13.1 Implement the untrusted-content rules
-    - Treat the utterance, prior turns and every retrieved value as data; keep retrieved data structurally
-      separate from the utterance so text inside a field cannot present itself as a turn boundary; never
-      reveal system instructions, pattern sets or configuration; apply the output checks regardless of
-      what the input requested
+  - [x] 13.1 Implement the untrusted-content rules
+    - `domain/disclosure.py`. Reqs 18.1 and 18.2 are deliberately NOT implemented as detection: you cannot
+      reliably recognise an instruction hidden in prose, and a service that believed it could would be
+      trusting a filter that fails silently. Compliance is instead made impossible to EXPRESS
+    - Req 18.3 holds because the output checks are unconditional — the verification ledger starts unverified
+      and `TurnPipeline.run` refuses to assemble without a positive verdict, so a successful injection can
+      only produce a WITHHELD turn, never a Forbidden_Claim
+    - Req 18.5's mechanism is JSON ENCODING, not a filter. The tools return `json.dumps` output and JSON
+      escapes newlines, so a retrieved field carrying a fake `Human:` turn boundary arrives as the two
+      characters backslash-n rather than a line break. Tested over four hostile shapes, plus a round-trip
+      test proving the value survives — escaping that lost the data would be a different bug. A structural
+      test also asserts no prompt-assembly function takes both an utterance and retrieved data, so there is
+      no string into which a retrieved field could be spliced beside the user's words
+    - Req 18.4 needed a real check, and over-breadth was the trap: the prompt talks about asthma,
+      emergencies and particulates, so a naive overlap test would reject every legitimate answer. The signal
+      is a VERBATIM SPAN of 8+ consecutive words. Protected text is matched LITERALLY, never compiled — the
+      Forbidden_Claim patterns are regexes, and compiling one would report disclosure whenever the
+      generation merely MATCHED the pattern, so an answer describing symptoms would be flagged
+    - A finding names which protected item was quoted and the run length, never the run or the protected
+      text: these strings reach logs, and a log echoing the system prompt discloses it a second time (same
+      reasoning as Req 21.8's field-name-only warning)
+    - DEFECT CAUGHT BEFORE SHIPPING: the system prompt states the particulate-lag and gaseous-same-day
+      explanations in the SAME WORDS the service is obliged to emit, because the prompt asks for that
+      wording. Without an exemption, an answer correctly explaining the three-day lag was reported as
+      disclosing the system prompt and the turn would have been withheld — the `you have` defect exactly.
+      `required_texts()` assembles every obliged text so a caller cannot forget the exemption, and the
+      sweep covers ALL of them rather than the one that failed, since narrowness was the root cause the
+      first time. A non-vacuity test proves the exemption does not swallow the hard-limits section
+    - A second test-side defect: the short-phrase threshold test used `str.split()` while the checker
+      tokenises on non-alphanumerics, so seven whitespace tokens yielded eight word tokens. Built from the
+      tokeniser's own output now
     - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.5_
 
   - [ ] 13.2 Implement the personal-data minimisation sweep
