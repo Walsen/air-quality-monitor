@@ -523,18 +523,45 @@ directory.
     - **Property 7: Envelope invariance**
     - **Validates: Requirements 8.5, 21.3**
 
-- [ ] 12. Audit trail
-  - [ ] 12.1 Implement the advice audit writer
-    - Exactly one `AdviceRecord` per turn including escalating and guardrail-rejected turns, the latter
-      noting the rejection; the write is never a condition of answering, and a failure is logged with the
-      response still returned; no notification and no action on the user's behalf
+- [x] 12. Audit trail
+  - [x] 12.1 Implement the advice audit writer
+    - `agent/audit.py`. Req 20.5 shapes the module: `write` returns a boolean and NEVER raises, because a
+      user asking about the air they are breathing must not lose their answer because an audit table was
+      unavailable. The audit exists for the operator; the answer exists for the user
+    - Exactly one record per turn, enforced in the WRITER rather than trusted of the caller — a repair
+      attempt after a guardrail rejection is still ONE turn, so recording per generation would double-count
+      exactly the turns most worth counting accurately. The latch is per writer and a writer is per turn; a
+      process-wide latch would record the first turn of a run and nothing after
+    - A FAILED write does not close the latch, so a retry within the same turn can still record. Closing it
+      on failure would let one transient error lose that turn's audit permanently
+    - Req 20.4: a guardrail-rejected turn gets a record noting the rejection. Recording only successful
+      turns would make the audit a log of things that went fine
+    - Req 20.6 honoured by ABSENCE: a test pins the public surface to exactly `write` and `has_written`, so
+      a `notify` somebody adds later has to change that test to land — a reviewable act rather than a quiet
+      one. Only `OSError` and `ValueError` are caught, so a programming error in record assembly is not
+      hidden as though it were an unavailable table. The failure log carries the error TYPE and no user
+      identity: a store's message can quote the row it was writing, and that row IS the audit record
+    - DEFECT FIXED (found while starting this task): `AdviceRecord` had TWO definitions — a frozen
+      dataclass in `ports/protocols.py` and a Pydantic `_StrictModel` in `domain/records.py` — whose field
+      sets happened to match. Luck, not a guarantee: two authorities drift the moment somebody edits
+      whichever file they have open, and the `append` port would then accept a record the domain never
+      validated. The port now RE-EXPORTS the domain's, and a test asserts object IDENTITY, which makes
+      drift impossible rather than merely detectable. The domain's was kept because `extra="forbid"` makes
+      Req 20.3's "exactly these fields" hold at CONSTRUCTION — an attempt to record an utterance now raises
+      instead of being quietly dropped, and a dropped field looks identical to one never passed
+    - A failing test also caught me re-deriving the record identifiers. `BasisSummary.record_identifiers()`
+      already existed, and its docstring says why it lives there: Req 20.2 names "the retrieved records the
+      Basis_Summary named", so deriving them elsewhere would let the audit claim provenance the response
+      never cited. The identifier is a COMPOSITE of site, species, instant and duration, because a bare
+      site code would fold together genuinely distinct records and under-report provenance while looking
+      complete
     - _Requirements: 20.1, 20.2, 20.4, 20.5, 20.6_
 
-  - [ ]* 12.2 Write property test for exactly one audit record per turn
+  - [x]* 12.2 Write property test for exactly one audit record per turn
     - **Property 14: Exactly one audit record per turn**
     - **Validates: Requirements 20.1, 20.4, 20.5**
 
-  - [ ]* 12.3 Write property test for audit minimisation
+  - [x]* 12.3 Write property test for audit minimisation
     - **Property 15: Audit minimisation**
     - **Validates: Requirement 20.3**
 
