@@ -34,14 +34,12 @@ the same reason.
 somebody else:
 
 - The **history window maximum**. Reqs 3.2 and 3.3 make it Service 2's, learned from that
-  service's rejection. A key
-  here would re-declare another service's constant, and the copy that drifted would be this one.
+  service's rejection. A key here would re-declare another service's constant, and the copy that
+  drifted would be this one.
 - **`advisoryScope` and `disclaimer`**. Assumption A8 and Req 21.9 give them no local copy
-  and no fallback. Only
-  `emergencyGuidance` gets a configured fallback, under A8a.
+  and no fallback. Only `emergencyGuidance` gets a configured fallback, under A8a.
 - The **profile and diary write limits** of Req 27.6. That clause reports the limit SERVICE 2
-  rejected with; it does
-  not create one here.
+  rejected with; it does not create one here.
 """
 
 from __future__ import annotations
@@ -411,20 +409,83 @@ def _resolve_scalars(
     return resolved
 
 
+def _validate_url(
+    key: str, supplied: object, problems: _Problems, *, required: bool
+) -> None:
+    """Validate one URL setting (Reqs 23.5, 32.7).
+
+    REJECTS EMBEDDED CREDENTIALS. `urlparse` accepts `https://user:pass@host` happily, and a
+    review found that such a URL then reached `redacted()` verbatim — so the moment the
+    composition root logs the startup line, the operator's basic-auth secret is in the log.
+    Refusing the whole shape is better than stripping it for the log: this service authenticates
+    to Service 2 by forwarding the caller's credential (assumption A4a), so basic-auth in the
+    base URL is not a configuration it has any use for, and accepting it silently would leave a
+    credential somewhere no test looks.
+    """
+    if supplied is None or not str(supplied).strip():
+        if required:
+            problems.add(
+                key,
+                "required; the service cannot retrieve anything without Service 2's base URL",
+            )
+        return
+    text = str(supplied).strip()
+    parsed = urlparse(text)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        problems.add(f"{key}={text!r}", "expected an absolute http or https URL")
+        return
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        problems.add(
+            key,
+            "must not embed a credential; this service forwards the caller's credential "
+            "instead, and an embedded one would reach the startup log",
+        )
+
+
 def _validate_serving(resolved: Mapping[str, Any], problems: _Problems) -> None:
     """Req 23.5: the Service 2 base URL is required and must be usable."""
-    supplied = resolved.get("serving_base_url")
-    if supplied is None or not str(supplied).strip():
+    _validate_url("serving_base_url", resolved.get("serving_base_url"), problems, required=True)
+    _validate_url(
+        "jwt_discovery_url", resolved.get("jwt_discovery_url"), problems, required=False
+    )
+
+
+_POSITIVE_SCALARS: tuple[str, ...] = (
+    "request_timeout_seconds",
+    "turn_budget_seconds",
+    "max_utterance_length",
+    "model_max_output_tokens",
+)
+"""Scalars this loader owns outright, which nothing downstream range-checks.
+
+A review found every one of these resolving clean at zero or negative. They are NOT in
+`InvocationBounds`, so nothing else refuses them, and each has a concrete failure: a zero
+`max_utterance_length` rejects every request (Req 1.5), and a non-positive timeout or turn
+budget is not a duration. A service that starts healthy and answers nothing is the outcome Req
+23.2 exists to prevent, so these are validated HERE — which is also Service 2's rule that
+validation lives wherever the value lives.
+
+`model_max_output_tokens` is the sharp one: its sibling `max_output_tokens` is refused at zero
+by `InvocationBounds`, so the asymmetry made one of two adjacent ceilings checked and the other
+not.
+"""
+
+
+def _validate_scalars(resolved: Mapping[str, Any], problems: _Problems) -> None:
+    """Req 23.2: validate every resolved value this loader owns."""
+    for key in _POSITIVE_SCALARS:
+        value = resolved.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            problems.add(f"{key}={value!r}", "expected a positive integer")
+    if not str(resolved.get("locale") or "").strip():
+        problems.add("locale", "must not be blank")
+    temperature = resolved.get("model_temperature")
+    if isinstance(temperature, float) and not 0.0 <= temperature <= 2.0:
         problems.add(
-            "serving_base_url",
-            "required; the service cannot retrieve anything without Service 2's base URL",
-        )
-        return
-    parsed = urlparse(str(supplied).strip())
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        problems.add(
-            f"serving_base_url={supplied!r}",
-            "expected an absolute http or https URL",
+            f"model_temperature={temperature!r}",
+            "expected a value between 0.0 and 2.0",
         )
 
 
@@ -628,6 +689,7 @@ def resolve_and_validate(
     resolved = _resolve_scalars(env, data, problems)
 
     _validate_serving(resolved, problems)
+    _validate_scalars(resolved, problems)
     _validate_registries(resolved, problems)
     _validate_log_level(resolved, problems)
     _validate_guardrail(resolved, problems)

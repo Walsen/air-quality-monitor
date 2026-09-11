@@ -26,6 +26,7 @@ not. An unset ceiling is OMITTED.
 
 from __future__ import annotations
 
+import ast
 import json
 import pathlib
 
@@ -53,6 +54,99 @@ def _resolved(**overrides: str) -> AdvisorConfig:
 
 
 # --- Req 23.5: the base URL is required --------------------------------
+
+
+def test_a_base_url_embedding_a_credential_is_refused() -> None:
+    # A review found `urlparse` accepting `https://user:pass@host` and `redacted()` then
+    # emitting
+    # it verbatim, so the operator's basic-auth secret would land in Req 23.1's startup line.
+    # Refusing the shape beats stripping it for the log: this service authenticates to Service 2
+    # by forwarding the caller's credential (A4a), so basic-auth in the base URL is a
+    # configuration it has no use for, and accepting it silently leaves a secret where no test
+    # looks.
+    with pytest.raises(ConfigError) as caught:
+        resolve_and_validate(
+            {"AQM_ADVISOR_SERVING_BASE_URL": "https://svcuser:SENTINEL-PW-Q7X@serving.test/api"},
+            {},
+            credential_exists=lambda _: True,
+        )
+    joined = "; ".join(caught.value.problems)
+    assert "serving_base_url" in joined
+    assert "SENTINEL-PW-Q7X" not in joined, "the refusal echoed the credential it refused"
+
+
+def test_a_jwt_discovery_url_embedding_a_credential_is_refused() -> None:
+    with pytest.raises(ConfigError) as caught:
+        resolve_and_validate(
+            _env(
+                AQM_ADVISOR_JWT_DISCOVERY_URL="https://u:SENTINEL-PW-Q7X@idp.test/.well"
+            ),
+            {},
+            credential_exists=lambda _: True,
+        )
+    joined = "; ".join(caught.value.problems)
+    assert "jwt_discovery_url" in joined
+    assert "SENTINEL-PW-Q7X" not in joined
+
+
+def test_no_url_in_the_redacted_view_can_carry_a_credential() -> None:
+    # The other half of the same fix: even for a URL that passed validation, nothing
+    # credential-shaped reaches the startup line. Asserted over the whole rendered payload
+    # rather
+    # than key by key, so a URL field added later is covered without touching this test.
+    config = _resolved(AQM_ADVISOR_JWT_DISCOVERY_URL="https://idp.test/.well-known")
+    rendered = json.dumps(config.redacted())
+    assert "@" not in rendered, rendered
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "AQM_ADVISOR_REQUEST_TIMEOUT_SECONDS",
+        "AQM_ADVISOR_TURN_BUDGET_SECONDS",
+        "AQM_ADVISOR_MAX_UTTERANCE_LENGTH",
+        "AQM_ADVISOR_MODEL_MAX_OUTPUT_TOKENS",
+    ],
+)
+@pytest.mark.parametrize("raw", ["0", "-1"])
+def test_a_scalar_this_loader_owns_must_be_positive(variable: str, raw: str) -> None:
+    # Req 23.2 requires validating EVERY resolved value. A review found all four of these
+    # resolving clean at zero and negative, because none is an `InvocationBounds` field so
+    # nothing
+    # downstream refused them. Each has a concrete failure: a zero `max_utterance_length`
+    # rejects
+    # every request, and a negative timeout or turn budget is not a duration. A service that
+    # starts healthy and answers nothing is exactly what this requirement exists to prevent.
+    with pytest.raises(ConfigError) as caught:
+        resolve_and_validate(_env(**{variable: raw}), {}, credential_exists=lambda _: True)
+    assert caught.value.problems, (variable, raw)
+
+
+def test_the_two_adjacent_output_ceilings_are_both_checked() -> None:
+    # The asymmetry the review called sharp: `max_output_tokens` is refused at zero by
+    # `InvocationBounds`, so before this fix one of two adjacent ceilings was checked and the
+    # other was not — the kind of gap that reads as deliberate.
+    for variable in ("AQM_ADVISOR_MAX_OUTPUT_TOKENS", "AQM_ADVISOR_MODEL_MAX_OUTPUT_TOKENS"):
+        with pytest.raises(ConfigError):
+            resolve_and_validate(_env(**{variable: "0"}), {}, credential_exists=lambda _: True)
+
+
+def test_a_blank_locale_is_refused() -> None:
+    with pytest.raises(ConfigError) as caught:
+        resolve_and_validate(
+            _env(AQM_ADVISOR_LOCALE="  "), {}, credential_exists=lambda _: True
+        )
+    assert any("locale" in problem for problem in caught.value.problems)
+
+
+def test_a_temperature_outside_the_sampling_range_is_refused() -> None:
+    # Finite is not the same as usable. A negative temperature is not a sampling setting.
+    for raw in ("-0.5", "3.0"):
+        with pytest.raises(ConfigError) as caught:
+            resolve_and_validate(
+                _env(AQM_ADVISOR_MODEL_TEMPERATURE=raw), {}, credential_exists=lambda _: True
+            )
+        assert any("model_temperature" in problem for problem in caught.value.problems), raw
 
 
 def test_the_service_2_base_url_is_required() -> None:
@@ -552,32 +646,87 @@ def test_an_invalid_log_level_is_reported_once_with_the_permitted_set() -> None:
     assert "info" in matching[0]
 
 
+def _loader_tree() -> ast.AST:
+    """The loader's AST, parsed once per call site."""
+    return ast.parse(
+        pathlib.Path("src/aqm_advisor/config/loader.py").read_text(encoding="utf-8")
+    )
+
+
+def _called_names(tree: ast.AST) -> set[str]:
+    """Every called name, by bare name AND by attribute.
+
+    The attribute half is what a review found missing: the first version inspected only
+    `ast.Call` whose `func` was an `ast.Name`, so `logging.configure_logging()` — the form a
+    caller would most naturally write — was never examined.
+    """
+    return {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    } | {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+
+def _environment_reads(tree: ast.AST) -> set[str]:
+    """Every spelling that reaches the process environment.
+
+    Covers the attribute form, the `from os import environ` form and a bare `import os`. A
+    review found the attribute-only version letting the import form through, which reaches the
+    same global by another name.
+    """
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv"):
+            found.add(node.attr)
+        elif isinstance(node, ast.ImportFrom):
+            found |= {a.name for a in node.names} & {"environ", "getenv"}
+        elif isinstance(node, ast.Import):
+            found |= {a.name for a in node.names} & {"os"}
+    return found
+
+
 def test_the_loader_does_not_configure_logging_itself() -> None:
     # Resolving is not applying. A loader that configured logging as a side effect would have
     # half-started before its own validation finished — and Req 23.2 forbids half-starting.
-    import ast
-
-    source = pathlib.Path("src/aqm_advisor/config/loader.py").read_text(encoding="utf-8")
-    called = {
-        node.func.id
-        for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    }
-    assert "configure_logging" not in called
+    assert "configure_logging" not in _called_names(_loader_tree())
 
 
 def test_the_loader_reads_no_environment_of_its_own() -> None:
     # `env` is a parameter, so the loader is pure and a test can supply any environment. A
     # module
     # reaching for `os.environ` would make the process's real environment leak into every test.
-    import ast
+    assert _environment_reads(_loader_tree()) == set()
 
-    source = pathlib.Path("src/aqm_advisor/config/loader.py").read_text(encoding="utf-8")
-    attributes = {
-        node.attr for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Attribute)
-    }
-    assert "environ" not in attributes
-    assert "getenv" not in attributes
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param("configure_logging('info')", id="bare-name"),
+        pytest.param("logging.configure_logging('info')", id="attribute"),
+    ],
+)
+def test_the_logging_guard_catches_both_call_forms(planted: str) -> None:
+    # Self-check over the forms that matter rather than the one the guard obviously catches. The
+    # attribute form is the one that slipped past the first version.
+
+    assert "configure_logging" in _called_names(ast.parse(planted)), planted
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        pytest.param("import os\nx = os.environ['A']", id="attribute"),
+        pytest.param("from os import environ\nx = environ['A']", id="import-from"),
+        pytest.param("import os\nx = os.getenv('A')", id="getenv"),
+    ],
+)
+def test_the_environment_guard_catches_every_spelling(planted: str) -> None:
+
+    assert _environment_reads(ast.parse(planted)) != set(), planted
 
 
 def test_the_loader_calls_nothing_on_the_serving_client_or_model() -> None:

@@ -883,7 +883,37 @@ directory.
       them: the history window maximum (Reqs 3.2/3.3 make it Service 2's, learned from its rejection),
       `advisoryScope` and `disclaimer` (A8 and Req 21.9 give them no local copy and no fallback), and Req 27.6's
       write limits (that clause REPORTS Service 2's limit rather than creating one here)
-    - _Requirements: 23.1, 23.2, 23.3, 23.4, 23.5, 23.6, 34.9_
+    - THREE DEFECTS FOUND BY PRE-MERGE REVIEW AND FIXED:
+      1. `redacted()` emitted `servingBaseUrl` and `jwtDiscoveryUrl` VERBATIM, and `urlparse` accepts
+         `https://user:pass@host` — so an operator who embedded basic-auth would have had it published the
+         moment the startup line was wired. Now REFUSED at validation rather than stripped for the log: this
+         service authenticates to Service 2 by forwarding the caller's credential (A4a), so basic-auth in the
+         base URL is a configuration it has no use for, and accepting it silently leaves a secret where no
+         test looks. A test asserts the refusal does not echo the credential it refused
+      2. `PERMITTED_CONFIG_KEYS` applied at EVERY nesting depth, so a key named `maxUtteranceLength` inside a
+         retrieved Service 2 body escaped the `utterance` marker — in any casing, everywhere the walker went.
+         Eight of the eleven entries exist precisely BECAUSE they neutralise a marker, so the hole was the
+         size of the set. The set's own docstring claimed it was for Req 23.1's single startup line; it now
+         is, via `is_sensitive(key, top_level=...)`. The other three sets stay unscoped, because an identity,
+         a token count and a site name are equally publishable at any depth and a config key's name is not
+      3. FOUR scalars this loader owns outright had NO validation: `request_timeout_seconds`,
+         `turn_budget_seconds`, `max_utterance_length` and `model_max_output_tokens` all resolved clean at
+         zero and negative, because none is an `InvocationBounds` field so nothing downstream refused them.
+         Req 23.2 requires validating EVERY resolved value, and each has a concrete failure — a zero
+         utterance cap rejects every request, so the service would start healthy and answer nothing. The
+         sharpest part was the asymmetry: `max_output_tokens` was refused at zero while its neighbour
+         `model_max_output_tokens` was not, which reads as deliberate. `locale` blankness and the temperature
+         range are now checked too
+    - Two AST guards were hardened after the review showed them evadable: the logging guard inspected only
+      bare-name calls, so `logging.configure_logging()` passed, and the environment guard inspected only
+      attributes, so `from os import environ` passed. Both now have parametrised self-checks over every
+      spelling — the third time a guard's self-check has planted only the case nobody would write
+    - Req 23.1 is PARTIAL, not met. `redacted()` is provided and proven publishable by the redactor that will
+      publish it, but NOTHING LOGS IT: the once-at-startup emission needs the composition root (task 21.1).
+      The loader deliberately performs no side effect, since Req 23.2 wants validation complete before any
+      such call and a loader that logged would have half-started before finishing its own validation
+    - _Requirements: 23.2, 23.3, 23.4, 23.5, 23.6, 34.9; 23.1 PARTIAL (payload provided, emission deferred
+      to task 21.1)_
 
 - [ ] 16. Real adapters and shared port contract suites
   - [ ] 16.1 Write the shared behavioural test suite per port

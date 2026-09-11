@@ -182,19 +182,28 @@ class InvalidLogLevelError(ValueError):
     """The configured log level is outside the recognized set (Requirement 23)."""
 
 
-def is_sensitive(key: str) -> bool:
+def is_sensitive(key: str, *, top_level: bool = True) -> bool:
     """True when a context key must have its value redacted.
 
     Public because the tests assert over it directly: a rule this load-bearing should be
     checkable without going through a formatted record, so a near-miss can be pinned key by key.
+
+    `top_level` scopes `PERMITTED_CONFIG_KEYS` to the outermost context, which is the only place
+    Req 23.1's startup line puts them. A review found the exemption applying at EVERY nesting
+    depth, so a key named `maxUtteranceLength` inside a retrieved Service 2 body escaped the
+    `utterance` marker — a marker-sized hole, in any casing, everywhere the walker went. The
+    set's own docstring claimed it was for one startup line, and this makes the mechanism match
+    the claim. The other three sets stay unscoped: an identity, a token count and a site name
+    are equally publishable at any depth, which is not true of a configuration key's name.
     """
     lowered = key.lower()
     if (
         lowered in PERMITTED_IDENTITY_KEYS
         or lowered in PERMITTED_COUNT_KEYS
         or lowered in PERMITTED_LOCATION_KEYS
-        or lowered in PERMITTED_CONFIG_KEYS
     ):
+        return False
+    if top_level and lowered in PERMITTED_CONFIG_KEYS:
         return False
     return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
 
@@ -205,10 +214,17 @@ def _redact(value: object) -> object:
     Containers are walked, so a sensitive field nested inside a retrieved body is caught too — a
     Service 2 response passed as one object must not slip through because only the outer key was
     checked.
+
+    Everything reached from here is BELOW the top level by construction, so the configuration
+    exemption does not apply: `is_sensitive` is called with `top_level=False`.
     """
     if isinstance(value, dict):
         return {
-            key: (REDACTED if is_sensitive(str(key)) else _redact(item))
+            key: (
+                REDACTED
+                if is_sensitive(str(key), top_level=False)
+                else _redact(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
