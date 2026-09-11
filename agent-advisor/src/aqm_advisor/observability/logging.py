@@ -90,6 +90,43 @@ and a site name are public sensor facts, the same reasoning that lets the audit 
 composite identifier.
 """
 
+PERMITTED_CONFIG_KEYS = frozenset(
+    {
+        # Requirement 23.1's single startup line. Each of these is METADATA ABOUT a sensitive
+        # thing rather than the thing: a LIMIT on utterance length is not an utterance, a
+        # BOOLEAN
+        # saying a credential resolved is not a credential, a COUNT of configured patterns is
+        # not
+        # a pattern, and a PATH to the prompt file is not the prompt. Exact names only.
+        "maxutterancelength",
+        "modelcredentialconfigured",
+        "maxoutputtokens",
+        "maxtotaltokens",
+        "modelmaxoutputtokens",
+        "emergencyguidancefallbackconfigured",
+        "systempromptpath",
+        "forbiddenpatternsconfigured",
+        "redflagrulesconfigured",
+        "guardrailidentifier",
+        "guardrailversion",
+    }
+)
+"""Requirement 23.1's startup-line keys, which the broad markers below would otherwise redact.
+
+THE SAME DEFECT AS `PERMITTED_LOCATION_KEYS`, found the same way. Req 23.1 requires the resolved
+non-secret configuration be logged once, and `utterance`, `credential`, `token`, `guidance` and
+`prompt` are all markers — so that line arrived almost entirely REDACTED and told an operator
+nothing about what the service had resolved. A requirement's own output must be publishable by
+the redactor that publishes it.
+
+Exact names only, and lowercased because the startup line is camelCase where every other context
+key is snake_case: `is_sensitive` lowercases before comparing, so these are stored pre-lowered
+rather than relying on a second casing convention.
+
+What is NOT here is the point: `modelCredentialPath` is absent, so a future author who logs the
+path instead of the boolean gets it redacted rather than published.
+"""
+
 SENSITIVE_KEY_MARKERS: tuple[str, ...] = (
     # Credentials. The inbound credential is opaque to this service (assumption A4a) and must
     # never be rendered even so.
@@ -156,6 +193,7 @@ def is_sensitive(key: str) -> bool:
         lowered in PERMITTED_IDENTITY_KEYS
         or lowered in PERMITTED_COUNT_KEYS
         or lowered in PERMITTED_LOCATION_KEYS
+        or lowered in PERMITTED_CONFIG_KEYS
     ):
         return False
     return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
@@ -283,6 +321,7 @@ def log_handled_error(
 
 
 __all__ = [
+    "PERMITTED_CONFIG_KEYS",
     "PERMITTED_COUNT_KEYS",
     "PERMITTED_IDENTITY_KEYS",
     "PERMITTED_LOCATION_KEYS",
