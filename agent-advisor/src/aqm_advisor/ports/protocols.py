@@ -2,27 +2,21 @@
 
 Design decision DD1: every I/O boundary is a ``Protocol`` with no implementation and NO Bedrock,
 AgentCore or httpx type in any signature. That is not a stylistic preference — it is what lets
-the
-whole suite run with no AWS credentials and no network beyond localhost (Requirement 26.5), and
-it
-is asserted by a test that renders every signature and scans for an SDK name.
+the whole suite run with no AWS credentials and no network beyond localhost (Requirement 26.5),
+and it is asserted by a test that renders every signature and scans for an SDK name.
 
 THE MODEL PORT IS ABSENT FROM THIS MODULE, and that is DD2 rather than an omission: the Strands
 ``Model`` abstract class IS the Model_Port. A wrapper would have to be kept in step with the
 framework's own abstraction for no gain, and a ``Model`` subclass whose ``stream`` yields
-scripted
-events performs no network call — which is what makes the advisory path runnable offline. Note
-the
-real surface is FOUR abstract methods (``stream``, ``structured_output``, ``get_config``,
-``update_config``), verified against ``strands-agents==1.55.1``: a subclass missing any of them
-cannot be instantiated at all.
+scripted events performs no network call — which is what makes the advisory path runnable
+offline. Note the real surface is FOUR abstract methods (``stream``, ``structured_output``,
+``get_config``, ``update_config``), verified against ``strands-agents==1.55.1``: a subclass
+missing any of them cannot be instantiated at all.
 
 THE CREDENTIAL IS OPAQUE (assumption A4a). AgentCore validates the inbound token and Service 2
 validates it on receipt, so a third parse here would add a place for three things to disagree —
-and
-a component that parses a token is a component that can log a claim. It travels as a ``str`` and
-is
-never inspected.
+and a component that parses a token is a component that can log a claim. It travels as a ``str``
+and is never inspected.
 """
 
 from __future__ import annotations
@@ -33,6 +27,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
+from aqm_advisor.domain.records import AdviceRecord as _DomainAdviceRecord
+
 # --- boundary value types ------------------------------------------------
 
 
@@ -40,8 +36,7 @@ class ServingFailureKind(StrEnum):
     """Why a Serving_Client call did not produce a usable body (Requirement 21.1).
 
     A CATEGORY, never the underlying message: Requirement 21.4 forbids returning a raw error
-    body,
-    and a kind is what a degraded response can honestly name.
+    body, and a kind is what a degraded response can honestly name.
     """
 
     UNREACHABLE = "unreachable"
@@ -82,40 +77,31 @@ class GuardrailResult:
     """One verdict, with the topic categories that fired.
 
     ``categories`` names what kind of rule matched — never the offending text. Requirement 8.6
-    logs
-    the category precisely so a rejected generation is diagnosable without storing it.
+    logs the category precisely so a rejected generation is diagnosable without storing it.
     """
 
     verdict: GuardrailVerdict
     categories: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True, slots=True)
-class AdviceRecord:
-    """The audit trail for one turn (Requirement 20.2).
+AdviceRecord = _DomainAdviceRecord
+"""The audit record, re-exported from the domain (Requirement 20.2).
 
-    There is NOWHERE here to put an utterance, the guidance text, a condition, a threshold value
-    or
-    a coordinate (Requirement 20.3). That is structural minimisation, the same technique Service
-    2
-    applied to its own Audit_Record: it keeps erasure down to removing an identity, and a test
-    asserts the field set so a later addition fails loudly.
-    """
+**There used to be TWO definitions of this** — a frozen dataclass here and a Pydantic
+`_StrictModel` in `domain/records.py` — and they happened to carry identical field sets. That
+was luck, not a guarantee: two authorities for one shape drift the moment somebody adds a field
+to whichever file they have open, and the `append` port would then accept a record the domain
+never validated.
 
-    user_id: str
-    turn_at: dt.datetime
-    route: str
-    escalated: bool
-    threshold_crossed: bool
-    driving_pollutant: str | None
-    record_references: tuple[str, ...]
-    guardrail_rejected: bool
-    rejection_category: str | None
-    idempotency_key: str
-    """Requirement 32.4c: a re-invoked entrypoint delivers the same turn twice, so a record
-    needs
-    to be recognisable as a duplicate rather than appended again."""
+The domain's is kept because it is the stronger one: `extra="forbid"` makes Req 20.3's "exactly
+these fields" hold at CONSTRUCTION, so an attempt to record an utterance or a condition raises
+rather than being silently dropped. A dataclass would accept the same call only if the field
+existed, which is a weaker statement.
 
+Re-exported rather than re-declared, and named in `__all__` so the re-export is explicit for
+strict mypy. The port speaks the domain's vocabulary; `domain/` imports nothing from `ports/`,
+so this direction adds no cycle.
+"""
 
 # --- the ports -----------------------------------------------------------
 
@@ -176,10 +162,8 @@ class GuardrailChecker(Protocol):
 
     ``source`` is always OUTPUT at this boundary. Requirement 34.3's denied topics are the
     load-bearing control for "never emit medication or diagnostic advice", and they can only act
-    on
-    text that already exists — which is why this is a check on a held generation rather than a
-    hope
-    about how one is produced.
+    on text that already exists — which is why this is a check on a held generation rather than
+    a hope about how one is produced.
     """
 
     def check(self, text: str) -> GuardrailResult:
@@ -205,9 +189,8 @@ class AssociationTrigger(Protocol):
     """Requests the Requirement 33 association derivation. FIRE-AND-FORGET.
 
     Never awaited inside a turn (Requirement 33.1): a queue between a person and their answer
-    makes
-    the product worse, which is why Requirement 32.13 refuses asynchrony for the conversational
-    turn while Requirement 33 adopts it for the learning path.
+    makes the product worse, which is why Requirement 32.13 refuses asynchrony for the
+    conversational turn while Requirement 33 adopts it for the learning path.
     """
 
     def request(self, user_id: str, correlation_id: str) -> None:

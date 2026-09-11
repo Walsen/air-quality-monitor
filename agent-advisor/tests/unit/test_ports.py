@@ -3,22 +3,22 @@
 The load-bearing assertion is `test_no_port_signature_names_a_cloud_type`: DD1 says no Bedrock,
 AgentCore or httpx type appears in any port signature, and that is what lets the whole suite run
 with no AWS credentials and no network beyond localhost (Requirement 26.5). Asserted by
-RENDERING
-each signature rather than by reading the module, so a type introduced through an alias or a
-re-export is caught too.
+RENDERING each signature rather than by reading the module, so a type introduced through an
+alias or a re-export is caught too.
 
 The port list is DERIVED from `port_protocols()` rather than written here, so a port added later
-is
-scanned by default — the same "covered by default" shape the leak sweeps use.
+is scanned by default — the same "covered by default" shape the leak sweeps use.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import inspect
 import typing
 
 import pytest
+from pydantic import ValidationError
 
 from aqm_advisor.ports.protocols import (
     AdviceAuditStore,
@@ -197,7 +197,7 @@ def test_a_verdict_carries_categories_but_never_the_text() -> None:
 # --- Req 20.3: the audit record cannot hold clinical content ------------
 
 def test_the_advice_record_field_set_is_exactly_the_documented_one() -> None:
-    assert {field.name for field in dataclasses.fields(AdviceRecord)} == {
+    assert set(AdviceRecord.model_fields) == {
         "user_id",
         "turn_at",
         "route",
@@ -230,13 +230,13 @@ def test_the_advice_record_field_set_is_exactly_the_documented_one() -> None:
 )
 def test_the_advice_record_has_nowhere_to_put_clinical_content(forbidden: str) -> None:
     # Req 20.3, structural: this is what keeps erasure down to removing an identity.
-    assert forbidden not in {field.name for field in dataclasses.fields(AdviceRecord)}
+    assert forbidden not in set(AdviceRecord.model_fields)
 
 
-def test_the_advice_record_is_frozen() -> None:
-    record = AdviceRecord(
+def _a_record() -> AdviceRecord:
+    return AdviceRecord(
         user_id="user-1",
-        turn_at=__import__("datetime").datetime(2026, 7, 1, tzinfo=__import__("datetime").UTC),
+        turn_at=dt.datetime(2026, 7, 1, tzinfo=dt.UTC),
         route="/invocations",
         escalated=False,
         threshold_crossed=False,
@@ -246,14 +246,58 @@ def test_the_advice_record_is_frozen() -> None:
         rejection_category=None,
         idempotency_key="k1",
     )
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        record.escalated = True  # type: ignore[misc]
+
+
+def test_the_advice_record_is_frozen() -> None:
+    # Now a Pydantic model rather than a dataclass, so the refusal is a ValidationError.
+    with pytest.raises(ValidationError):
+        _a_record().escalated = True
+
+
+def test_the_port_and_the_domain_share_one_advice_record() -> None:
+    # THE consolidation guard. There used to be TWO definitions — a frozen dataclass in this
+    # port
+    # module and a Pydantic model in `domain/records.py` — whose field sets happened to match.
+    # That
+    # was luck, not a guarantee: two authorities for one shape drift the moment somebody adds a
+    # field to whichever file they have open, and the `append` port would then accept a record
+    # the
+    # domain never validated. Asserting object IDENTITY makes drift impossible rather than
+    # merely
+    # detectable, which is stronger than the drift guards used for cross-SERVICE constants —
+    # those
+    # cannot share an object, and this can.
+    from aqm_advisor.domain.records import AdviceRecord as DomainRecord
+
+    assert AdviceRecord is DomainRecord
+
+
+def test_the_advice_record_refuses_an_unknown_field() -> None:
+    # What the consolidation bought. `extra="forbid"` makes Req 20.3's "exactly these fields"
+    # hold
+    # at CONSTRUCTION, so an attempt to record an utterance raises instead of being quietly
+    # dropped
+    # — and a dropped field looks identical to one that was never passed.
+    with pytest.raises(ValidationError):
+        AdviceRecord(  # type: ignore[call-arg]
+            user_id="user-1",
+            turn_at=dt.datetime(2026, 7, 1, tzinfo=dt.UTC),
+            route="/invocations",
+            escalated=False,
+            threshold_crossed=False,
+            driving_pollutant="PM25",
+            record_references=(),
+            guardrail_rejected=False,
+            rejection_category=None,
+            idempotency_key="k1",
+            utterance="how is the air?",
+        )
 
 
 def test_the_record_carries_an_idempotency_key() -> None:
     # Req 32.4c: a re-invoked entrypoint delivers the same turn twice, so a record has to be
     # recognisable as a duplicate rather than appended again.
-    names = {field.name for field in dataclasses.fields(AdviceRecord)}
+    names = set(AdviceRecord.model_fields)
     assert "idempotency_key" in names
 
 
