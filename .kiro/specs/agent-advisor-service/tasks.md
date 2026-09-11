@@ -523,7 +523,7 @@ directory.
     - **Property 7: Envelope invariance**
     - **Validates: Requirements 8.5, 21.3**
 
-- [ ] 12. Audit trail
+- [x] 12. Audit trail
   - [x] 12.1 Implement the advice audit writer
     - `agent/audit.py`. Req 20.5 shapes the module: `write` returns a boolean and NEVER raises, because a
       user asking about the air they are breathing must not lose their answer because an audit table was
@@ -557,11 +557,11 @@ directory.
       complete
     - _Requirements: 20.1, 20.2, 20.4, 20.5, 20.6_
 
-  - [ ]* 12.2 Write property test for exactly one audit record per turn
+  - [x]* 12.2 Write property test for exactly one audit record per turn
     - **Property 14: Exactly one audit record per turn**
     - **Validates: Requirements 20.1, 20.4, 20.5**
 
-  - [ ]* 12.3 Write property test for audit minimisation
+  - [x]* 12.3 Write property test for audit minimisation
     - **Property 15: Audit minimisation**
     - **Validates: Requirement 20.3**
 
