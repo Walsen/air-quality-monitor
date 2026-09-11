@@ -836,14 +836,84 @@ directory.
       keys agreeing cannot be mistaken for the deduplication happening
     - Passes at the nightly 1000 examples/property
 
-- [ ] 15. Configuration
-  - [ ] 15.1 Implement the fail-fast configuration loader
-    - Resolve from environment, then file, then defaults; validate every value before any model or store
-      call; one message per invalid value and a non-zero exit with no half-start; reject an unrecognised
-      key listing the recognised keys in the same category; never write a resolved credential, reporting a
-      credential path as whether it resolved; require the Service 2 base URL; select each adapter by name
-      from a registry and reject an unregistered name; log the resolved non-secret configuration once
-    - _Requirements: 23.1, 23.2, 23.3, 23.4, 23.5, 23.6, 34.9_
+- [x] 15. Configuration
+  - [x] 15.1 Implement the fail-fast configuration loader
+    - `config/loader.py`, mirroring Service 2's loader in SHAPE rather than importing it (the practices forbid
+      cross-service imports until a shared contract package is specced). Advisor 1177 -> 1242 tests
+    - Fail-fast means NEVER HALF-START, not stop at the first error (Req 23.2): every validator runs, `_Problems`
+      accumulates, and `ConfigError` carries every message. An operator fixing one setting per deploy is exactly
+      what accumulation avoids
+    - The loader does NOT re-check bounds `InvocationBounds` already owns. Service 2's loader records that
+      duplicating them produced TWO messages for one invalid value, which Req 23.2 forbids; a test pins that a
+      single bad value yields exactly one message. The rule lives wherever the value lives
+    - `env` is a PARAMETER, not a read of `os.environ`, and an AST test asserts the module reads neither `environ`
+      nor `getenv`. Resolving is not applying: a second AST test asserts it never calls `configure_logging`, and a
+      source sweep asserts it calls nothing on the Serving_Client or the model (Req 23.2 wants validation complete
+      BEFORE any such call, and a loader with a side effect has half-started)
+    - DEFECT FOUND BY MY OWN TEST, same class as the `location_name` one: the redactor's broad markers
+      (`utterance`, `credential`, `token`, `guidance`, `prompt`) made Req 23.1's REQUIRED startup line arrive
+      almost entirely REDACTED — the one line an operator reads to see what was resolved would have said nothing.
+      Fixed with `PERMITTED_CONFIG_KEYS`, an exact-match set exactly like `PERMITTED_LOCATION_KEYS`, because a
+      LIMIT on utterance length is not an utterance and a BOOLEAN saying a credential resolved is not a
+      credential. `modelCredentialPath` is deliberately absent, so an author who logs the path gets it redacted.
+      The disjointness guard now compares all four sets PAIRWISE rather than hand-listing pairs
+    - DESIGN CORRECTED BY MY OWN TEST: the first registry listed cloud names for every port and rejected the
+      unimplemented ones through a second "registered but not implemented" tier. Incoherent — a registry that
+      advertises a name the loader then refuses tells the operator two contradictory things, and Req 23.6's point
+      is that the registry IS the answer to "what may I select". Now only names that resolve are registered; task
+      16 adds each cloud name WITH its adapter, which is the one-entry change the requirement describes
+    - `_nearest_category` resolves by CLOSEST WHOLE KEY (difflib) before falling back to a token head. A
+      token-head-only version sent `model_regoin` to the `adapters` category, because that category holds a port
+      literally named `model` and sorts first — so an operator who mistyped `model_region` was shown adapter
+      names. `guardrail_checker` versus the `guardrail_*` settings is the same collision
+    - Req 22.1c is honoured in one place: `_optional_int` keeps an unset ceiling ABSENT, and a configured zero is
+      REJECTED. An operator writing 0 means "no limit"; the SDK means "invalid"; load time is the only place that
+      difference can be explained to them
+    - Req 23.5's base URL is required, refuses a blank (how a broken deploy template presents) and refuses a
+      non-http scheme. Req 34.9 refuses to start when enforcement is enabled with no identifier — the worst of the
+      three states, since the operator believes output is checked and it is not. Disabled is the default and Req
+      34.5 keeps the LOCAL check running either way, so disabled does not mean unchecked
+    - A credential is required only by the ADAPTER that needs one, never unconditionally: the scripted model needs
+      none and demanding one would make the offline suite unstartable. The loader never reads a credential file —
+      a test records every path the injected predicate was asked about and asserts nothing was opened
+    - The file reader raises IMMEDIATELY rather than accumulating (a file that cannot be parsed yields nothing to
+      accumulate over) and never falls back to defaults, which would come up with settings nobody chose. It names
+      the PATH but never the CONTENTS, since those may hold a credential
+    - THREE VALUES DELIBERATELY NOT CONFIGURABLE, recorded in the module docstring so a later author does not add
+      them: the history window maximum (Reqs 3.2/3.3 make it Service 2's, learned from its rejection),
+      `advisoryScope` and `disclaimer` (A8 and Req 21.9 give them no local copy and no fallback), and Req 27.6's
+      write limits (that clause REPORTS Service 2's limit rather than creating one here)
+    - THREE DEFECTS FOUND BY PRE-MERGE REVIEW AND FIXED:
+      1. `redacted()` emitted `servingBaseUrl` and `jwtDiscoveryUrl` VERBATIM, and `urlparse` accepts
+         `https://user:pass@host` — so an operator who embedded basic-auth would have had it published the
+         moment the startup line was wired. Now REFUSED at validation rather than stripped for the log: this
+         service authenticates to Service 2 by forwarding the caller's credential (A4a), so basic-auth in the
+         base URL is a configuration it has no use for, and accepting it silently leaves a secret where no
+         test looks. A test asserts the refusal does not echo the credential it refused
+      2. `PERMITTED_CONFIG_KEYS` applied at EVERY nesting depth, so a key named `maxUtteranceLength` inside a
+         retrieved Service 2 body escaped the `utterance` marker — in any casing, everywhere the walker went.
+         Eight of the eleven entries exist precisely BECAUSE they neutralise a marker, so the hole was the
+         size of the set. The set's own docstring claimed it was for Req 23.1's single startup line; it now
+         is, via `is_sensitive(key, top_level=...)`. The other three sets stay unscoped, because an identity,
+         a token count and a site name are equally publishable at any depth and a config key's name is not
+      3. FOUR scalars this loader owns outright had NO validation: `request_timeout_seconds`,
+         `turn_budget_seconds`, `max_utterance_length` and `model_max_output_tokens` all resolved clean at
+         zero and negative, because none is an `InvocationBounds` field so nothing downstream refused them.
+         Req 23.2 requires validating EVERY resolved value, and each has a concrete failure — a zero
+         utterance cap rejects every request, so the service would start healthy and answer nothing. The
+         sharpest part was the asymmetry: `max_output_tokens` was refused at zero while its neighbour
+         `model_max_output_tokens` was not, which reads as deliberate. `locale` blankness and the temperature
+         range are now checked too
+    - Two AST guards were hardened after the review showed them evadable: the logging guard inspected only
+      bare-name calls, so `logging.configure_logging()` passed, and the environment guard inspected only
+      attributes, so `from os import environ` passed. Both now have parametrised self-checks over every
+      spelling — the third time a guard's self-check has planted only the case nobody would write
+    - Req 23.1 is PARTIAL, not met. `redacted()` is provided and proven publishable by the redactor that will
+      publish it, but NOTHING LOGS IT: the once-at-startup emission needs the composition root (task 21.1).
+      The loader deliberately performs no side effect, since Req 23.2 wants validation complete before any
+      such call and a loader that logged would have half-started before finishing its own validation
+    - _Requirements: 23.2, 23.3, 23.4, 23.5, 23.6, 34.9; 23.1 PARTIAL (payload provided, emission deferred
+      to task 21.1)_
 
 - [ ] 16. Real adapters and shared port contract suites
   - [ ] 16.1 Write the shared behavioural test suite per port

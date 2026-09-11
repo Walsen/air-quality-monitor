@@ -90,6 +90,43 @@ and a site name are public sensor facts, the same reasoning that lets the audit 
 composite identifier.
 """
 
+PERMITTED_CONFIG_KEYS = frozenset(
+    {
+        # Requirement 23.1's single startup line. Each of these is METADATA ABOUT a sensitive
+        # thing rather than the thing: a LIMIT on utterance length is not an utterance, a
+        # BOOLEAN
+        # saying a credential resolved is not a credential, a COUNT of configured patterns is
+        # not
+        # a pattern, and a PATH to the prompt file is not the prompt. Exact names only.
+        "maxutterancelength",
+        "modelcredentialconfigured",
+        "maxoutputtokens",
+        "maxtotaltokens",
+        "modelmaxoutputtokens",
+        "emergencyguidancefallbackconfigured",
+        "systempromptpath",
+        "forbiddenpatternsconfigured",
+        "redflagrulesconfigured",
+        "guardrailidentifier",
+        "guardrailversion",
+    }
+)
+"""Requirement 23.1's startup-line keys, which the broad markers below would otherwise redact.
+
+THE SAME DEFECT AS `PERMITTED_LOCATION_KEYS`, found the same way. Req 23.1 requires the resolved
+non-secret configuration be logged once, and `utterance`, `credential`, `token`, `guidance` and
+`prompt` are all markers — so that line arrived almost entirely REDACTED and told an operator
+nothing about what the service had resolved. A requirement's own output must be publishable by
+the redactor that publishes it.
+
+Exact names only, and lowercased because the startup line is camelCase where every other context
+key is snake_case: `is_sensitive` lowercases before comparing, so these are stored pre-lowered
+rather than relying on a second casing convention.
+
+What is NOT here is the point: `modelCredentialPath` is absent, so a future author who logs the
+path instead of the boolean gets it redacted rather than published.
+"""
+
 SENSITIVE_KEY_MARKERS: tuple[str, ...] = (
     # Credentials. The inbound credential is opaque to this service (assumption A4a) and must
     # never be rendered even so.
@@ -145,11 +182,19 @@ class InvalidLogLevelError(ValueError):
     """The configured log level is outside the recognized set (Requirement 23)."""
 
 
-def is_sensitive(key: str) -> bool:
+def is_sensitive(key: str, *, top_level: bool = True) -> bool:
     """True when a context key must have its value redacted.
 
     Public because the tests assert over it directly: a rule this load-bearing should be
     checkable without going through a formatted record, so a near-miss can be pinned key by key.
+
+    `top_level` scopes `PERMITTED_CONFIG_KEYS` to the outermost context, which is the only place
+    Req 23.1's startup line puts them. A review found the exemption applying at EVERY nesting
+    depth, so a key named `maxUtteranceLength` inside a retrieved Service 2 body escaped the
+    `utterance` marker — a marker-sized hole, in any casing, everywhere the walker went. The
+    set's own docstring claimed it was for one startup line, and this makes the mechanism match
+    the claim. The other three sets stay unscoped: an identity, a token count and a site name
+    are equally publishable at any depth, which is not true of a configuration key's name.
     """
     lowered = key.lower()
     if (
@@ -157,6 +202,8 @@ def is_sensitive(key: str) -> bool:
         or lowered in PERMITTED_COUNT_KEYS
         or lowered in PERMITTED_LOCATION_KEYS
     ):
+        return False
+    if top_level and lowered in PERMITTED_CONFIG_KEYS:
         return False
     return any(marker in lowered for marker in SENSITIVE_KEY_MARKERS)
 
@@ -167,10 +214,17 @@ def _redact(value: object) -> object:
     Containers are walked, so a sensitive field nested inside a retrieved body is caught too — a
     Service 2 response passed as one object must not slip through because only the outer key was
     checked.
+
+    Everything reached from here is BELOW the top level by construction, so the configuration
+    exemption does not apply: `is_sensitive` is called with `top_level=False`.
     """
     if isinstance(value, dict):
         return {
-            key: (REDACTED if is_sensitive(str(key)) else _redact(item))
+            key: (
+                REDACTED
+                if is_sensitive(str(key), top_level=False)
+                else _redact(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
@@ -283,6 +337,7 @@ def log_handled_error(
 
 
 __all__ = [
+    "PERMITTED_CONFIG_KEYS",
     "PERMITTED_COUNT_KEYS",
     "PERMITTED_IDENTITY_KEYS",
     "PERMITTED_LOCATION_KEYS",

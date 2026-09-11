@@ -1,7 +1,6 @@
 """The personal-data minimisation sweep (task 13.2). Validates Req 19.1 to 19.6.
 
-**Redaction here is keyed on the KEY NAME, so the leak this sweep exists to catch is a
-sensitive
+**Redaction here is keyed on the KEY NAME, so the leak this sweep exists to catch is a sensitive
 VALUE arriving under an innocuous key.** `SENSITIVE_KEY_MARKERS` cannot see a condition logged
 as `detail` or an utterance logged as `context`. So the sweep does not inspect key names at all:
 it puts a distinctive sentinel in every field a turn can carry, runs the whole lifecycle at
@@ -433,15 +432,83 @@ def test_the_exception_does_not_widen_the_location_marker(key: str) -> None:
     assert is_sensitive(key) is True
 
 
+def test_the_config_exception_does_not_reach_a_nested_key() -> None:
+    # A review found the exemption applying at EVERY nesting depth, so a key named
+    # `maxUtteranceLength` inside a retrieved Service 2 body escaped the `utterance` marker — a
+    # marker-sized hole, in any casing, everywhere the walker went. Eight of the eleven entries
+    # exist precisely BECAUSE they neutralise a marker, so the hole was the size of the set.
+    #
+    # The set's own docstring claimed it was for Req 23.1's single startup line. It now is.
+    from aqm_advisor.observability.logging import is_sensitive
+
+    for key in ("maxUtteranceLength", "systemPromptPath", "modelCredentialConfigured"):
+        assert is_sensitive(key, top_level=True) is False, key
+        assert is_sensitive(key, top_level=False) is True, key
+
+
+def test_a_nested_body_cannot_smuggle_a_value_under_a_config_key_name() -> None:
+    # The same thing through the real redactor rather than the predicate, because the predicate
+    # agreeing is not evidence that the walker calls it correctly.
+    from aqm_advisor.observability.logging import REDACTED, _redact
+
+    redacted = _redact(
+        {"body": {"maxUtteranceLength": "SENTINEL-UTTERANCE-Q7X", "site_code": "AQM1"}}
+    )
+    assert redacted == {"body": {"maxUtteranceLength": REDACTED, "site_code": "AQM1"}}
+
+
+def test_the_other_three_exceptions_still_apply_at_depth() -> None:
+    # Scoping the config set must not scope the others. An identity, a token count and a site
+    # name
+    # are equally publishable at any depth — which is not true of a configuration key's name,
+    # and
+    # is the whole reason only one set was scoped.
+    from aqm_advisor.observability.logging import is_sensitive
+
+    for key in ("user_id", "output_tokens", "location_name"):
+        assert is_sensitive(key, top_level=False) is False, key
+
+
 def test_the_permitted_sets_do_not_overlap() -> None:
-    # Three exact-match exceptions now exist. A key appearing in two would make the reason for
+    # FOUR exact-match exceptions now exist. A key appearing in two would make the reason for
     # its
     # exemption ambiguous, and narrowing one later would silently leave it exempt via the other.
+    # Compared pairwise over the whole set rather than hand-listing the pairs, so a fifth
+    # exception is covered the moment it is added.
+    from itertools import combinations
+
     from aqm_advisor.observability.logging import (
+        PERMITTED_CONFIG_KEYS,
         PERMITTED_COUNT_KEYS,
         PERMITTED_LOCATION_KEYS,
     )
 
-    assert PERMITTED_IDENTITY_KEYS.isdisjoint(PERMITTED_COUNT_KEYS)
-    assert PERMITTED_IDENTITY_KEYS.isdisjoint(PERMITTED_LOCATION_KEYS)
-    assert PERMITTED_COUNT_KEYS.isdisjoint(PERMITTED_LOCATION_KEYS)
+    sets = {
+        "identity": PERMITTED_IDENTITY_KEYS,
+        "count": PERMITTED_COUNT_KEYS,
+        "location": PERMITTED_LOCATION_KEYS,
+        "config": PERMITTED_CONFIG_KEYS,
+    }
+    for (left_name, left), (right_name, right) in combinations(sorted(sets.items()), 2):
+        assert left.isdisjoint(right), (left_name, right_name, left & right)
+
+
+def test_the_config_exception_is_stored_already_lowercased() -> None:
+    # `is_sensitive` lowercases before comparing, and the startup line is camelCase where every
+    # other context key is snake_case. An entry stored in camelCase would never match and the
+    # key
+    # would stay redacted — an exception that looks present and does nothing.
+    from aqm_advisor.observability.logging import PERMITTED_CONFIG_KEYS
+
+    assert all(key == key.lower() for key in PERMITTED_CONFIG_KEYS)
+
+
+def test_the_config_exception_does_not_exempt_a_credential_path() -> None:
+    # The set's boundary. Req 23.4 wants a credential reported as WHETHER it resolved, so the
+    # boolean is exempt and the path is not — a future author who logs the path gets it redacted
+    # rather than published.
+    from aqm_advisor.observability.logging import is_sensitive
+
+    assert is_sensitive("modelCredentialConfigured") is False
+    assert is_sensitive("modelCredentialPath") is True
+    assert is_sensitive("model_credential_path") is True
