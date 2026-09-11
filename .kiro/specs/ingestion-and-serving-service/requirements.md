@@ -74,10 +74,12 @@ reader should confirm or override.
 
 - **A2 — Service directory:** `data-processing/`, with the package at
   `data-processing/src/aqm_ingestion/`. The steering document
-  `.kiro/steering/engineering-practices.md` §0 spells this directory `data-procesing/`, missing an `s`.
-  No such directory exists yet, so nothing needs renaming; this spec uses the corrected spelling and
-  the steering table needs a one-line correction to match. That correction is deliberately **not** made
-  by this spec.
+  `.kiro/steering/engineering-practices.md` §0 formerly spelled this directory `data-procesing/`,
+  missing an `s`. That one-line correction has now been MADE, so the steering table and this spec
+  agree and no rename is outstanding. It is recorded rather than deleted because the misspelling had
+  a real cost: an agent implementing Service 3's task 16.3 copied the bad path out of the steering
+  table into a research prompt, and the wrong directory simply does not exist — a silent dead end
+  rather than an error. A path in a steering file is read by tools, not only by people.
 
 - **A3 — Readings store is DynamoDB, not Timestream.** This is a deliberate, documented deviation from
   the service table in `docs/architecture/02-ingestion-and-serving-service.md` §2, which names Amazon
