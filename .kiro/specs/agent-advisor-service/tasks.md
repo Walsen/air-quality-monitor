@@ -675,12 +675,37 @@ directory.
       it is pinned rather than assumed
     - _Requirements: 4.2, 4.3, 4.4, 4.5, 27.1, 27.2, 27.3, 27.4, 27.5, 27.6_
 
-  - [ ] 14.2 Implement symptom diary capture
-    - Construct a `SymptomEntryDraft` from the user's description; restate the inferred severity and marker
-      set and obtain confirmation, applying the user's correction over its own reading; never write without
-      an explicit instruction in the same turn; include a note only when asked and say it computes nothing;
-      warn before replacing an existing entry for a date; apply the red-flag check to a diary description
-      and escalate first; never characterise an entry clinically; store nothing
+  - [x] 14.2 Implement symptom diary capture
+    - `domain/diary.py`, plus `write_body` on the existing `SymptomEntryDraft`. Req 28.6 shapes the module
+      and is enforced by CONTROL FLOW: the red-flag check runs on the description first, and when it fires
+      the outcome carries the escalation with no confirmation request and `may_write` false. The write is
+      UNREACHABLE on that path rather than something a caller must remember to skip — the same
+      short-circuit as `TurnPipeline.run`, because a guarantee every caller must remember is not one
+    - The urgency is not diminished by the framing: someone filing "my lips look blue today" as history is
+      describing the same emergency as someone asking about it
+    - Req 28.7 is enforced by ABSENCE. Telling someone their condition is deteriorating or improving
+      requires comparing this entry against earlier ones, so the module contains no arithmetic AND no
+      ordering comparison — two AST tests, because an ordering comparison is how a trend would arrive
+      without any arithmetic operator appearing. A self-check proves the comparison detector works. Every
+      produced text is also swept for clinical wording
+    - Req 28.2's restatement names the severity, every marker AND the reliever flag, since one that omitted
+      a field would obtain confirmation for a different entry than the write applies — and the reliever
+      flag is the field most easily inferred wrongly from prose. A test asserts the restatement of a
+      CORRECTED draft shows the correction, or the second confirmation would restate the reading the user
+      had just rejected
+    - Req 28.4: an absent note is OMITTED from the write body rather than sent as null. Sending an explicit
+      null would be this service asserting there is no note, where declining to send the field says only
+      that it has none. `NOTE_PURPOSE_TEXT` says both halves — for recall, and computes nothing — because
+      someone who believes their words feed a calculation words them for the machine rather than for
+      themselves, which makes the diary worse at the one thing it is for
+    - Req 28.5's warning names the DATE; "an entry will be replaced" leaves the user unsure which day they
+      are overwriting, and a diary's value is that yesterday's entry is still yesterday's. It is absent
+      when there is nothing to replace, because warning every time trains the user to click through it
+    - Req 28.8: the outcome has nowhere to put the description, and a test asserts a distinctive marker in
+      the description does not appear in its `repr`
+    - All three new texts joined task 6.3's sweep. The restatement is the interesting one: it says "you
+      used your reliever", NAMING a medication role, and passes only because
+      `administration_near_medication` distinguishes reporting a past action from instructing one
     - _Requirements: 28.1, 28.2, 28.3, 28.4, 28.5, 28.6, 28.7, 28.8_
 
   - [ ] 14.3 Implement learned-association reporting
