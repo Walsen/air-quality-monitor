@@ -708,12 +708,34 @@ directory.
       `administration_near_medication` distinguishes reporting a past action from instructing one
     - _Requirements: 28.1, 28.2, 28.3, 28.4, 28.5, 28.6, 28.7, 28.8_
 
-  - [ ] 14.3 Implement learned-association reporting
-    - Explain that an escalation point came from the user's own diary, naming species, lag and observation
-      count; describe it as an association or pattern and never a cause, trigger, diagnosis or prediction;
-      say when there is not yet enough history rather than presenting a weak association; name a learned
-      source in the basis; state that a declared threshold takes precedence over a learned one; confine
-      the consequence to exposure reduction and the alerting point
+  - [x] 14.3 Implement learned-association reporting
+    - `domain/association.py`. Nothing here derives an association: Service 2's `LearnedThreshold` carries
+      species, lag and observation count with it, and its own docstring says why — "so Requirement 30's
+      reporting obligation can be met without a second lookup, and so a threshold can never be surfaced
+      without the basis it rests on". This module reads that and relays it. Checked Service 2's real shape
+      rather than assuming field names
+    - Req 30.2's TRAP is the word "trigger". It is the most natural word in the asthma vocabulary — people
+      say "my triggers" — and it is exactly the word forbidden here, because a trigger is a causal claim
+      about someone's body derived from a correlation in their diary. `CAUSAL_WORDS` is swept over EVERY
+      text the module produces, not only the one that felt risky, and a test pins the set against Req
+      30.2's own list. A separate sweep covers PREDICTION, which arrives through tense rather than a noun
+    - Req 30.4 must name two numbers WITHOUT subtracting them. "You need 14 more observations" is a
+      computation, and Req 30.3 forbids computing anything about an association — so both numbers are
+      stated and the reader does the arithmetic. An AST test asserts the module performs none, which makes
+      that phrasing a structural consequence rather than a stylistic choice
+    - A PARTIAL learned block yields no view. Reporting a partial association would be worse than reporting
+      none: the user would see a pattern whose derivation this service could not state, and Req 30.1 wants
+      all three parts precisely so a threshold is never surfaced without its basis
+    - Req 30.7's sweep covers medication, inhaler, reliever, preventer, dose and "see your doctor". A
+      correlation in a diary is the weakest evidence in the system and the last thing that should move a
+      clinical behaviour
+    - TEST CORRECTED: the precedence test first asserted the literal word "learned" and failed. It was
+      wrong, not the text — "learned threshold" is SPEC vocabulary, not user vocabulary, and Req 30.6's
+      stated purpose is that the user UNDERSTANDS their instruction was not overridden. "A pattern from
+      your diary does not replace it" carries that where the jargon would not, so the assertion now checks
+      the substance rather than the spec's own wording
+    - All three texts joined task 6.3's sweep; the explanation carries four numerals and the word
+      "association", so it is exactly the kind of text a tightened pattern set could start rejecting
     - _Requirements: 30.1, 30.2, 30.3, 30.4, 30.5, 30.6, 30.7_
 
   - [ ] 14.4 Implement idempotent write keys

@@ -158,6 +158,12 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
     # rather than the CLAIM, and only a guard over all required texts finds that.
     import datetime as dt
 
+    from aqm_advisor.domain.association import (
+        PRECEDENCE_TEXT,
+        explain_learned_threshold,
+        insufficient_history_text,
+        learned_threshold_view,
+    )
     from aqm_advisor.domain.attribution import unavailable_text
     from aqm_advisor.domain.deference import CLINICIAN_SUGGESTION_TEXT, DEFERENCE_TEXT
     from aqm_advisor.domain.degradation import missing_data_note
@@ -210,6 +216,17 @@ def test_the_required_texts_are_not_rejected_by_the_pattern_set() -> None:
         # already did is neither an instruction nor a dose — pinned here so that stays true.
         NOTE_PURPOSE_TEXT,
         replacement_warning(dt.date(2026, 7, 1)),
+        # Reqs 30.1, 30.4 and 30.6. The learned-threshold explanation carries four numerals and
+        # the word "association", so it is exactly the kind of text a tightened pattern set
+        # could
+        # start rejecting.
+        explain_learned_threshold(
+            learned_threshold_view(
+                {"species": "PM25", "subIndex": 4, "lagDays": 3, "observations": 24}
+            )
+        ),
+        insufficient_history_text(observations=6, minimum=20),
+        PRECEDENCE_TEXT,
         restate_entry_for_confirmation(
             SymptomEntryDraft(
                 date=dt.date(2026, 7, 1),
