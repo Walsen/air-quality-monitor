@@ -599,12 +599,37 @@ directory.
       tokeniser's own output now
     - _Requirements: 18.1, 18.2, 18.3, 18.4, 18.5_
 
-  - [ ] 13.2 Implement the personal-data minimisation sweep
-    - A data-driven leak sweep running the full turn lifecycle at DEBUG with a distinctive sentinel in
-      every request and profile field, plus a completeness test comparing sentinel keys against the model
-      field sets so adding a field fails until it has a sentinel; a self-check proving the sweep can see a
-      planted value; assert the pseudonymous identity is still logged
-    - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.6_
+  - [x] 13.2 Implement the personal-data minimisation sweep
+    - `tests/unit/test_minimisation_sweep.py`. Redaction is keyed on the KEY NAME, so the leak the sweep
+      exists to catch is a sensitive VALUE arriving under an innocuous key — a condition logged as `detail`
+      is invisible to `SENSITIVE_KEY_MARKERS`. The sweep therefore inspects no key names: it plants a
+      distinctive sentinel in every field a turn can carry, runs the lifecycle at DEBUG, and asserts no
+      sentinel reaches the log by any route. Assertions are on the FORMATTED output, because context
+      arrives as `extra` and the formatter is what reaches stdout
+    - The lifecycle run deliberately covers the paths a happy-path test would skip — the drift watcher, the
+      degraded response, the top-level handler and a FAILING audit store — because those are where an author
+      reaches for "just log the context so we can debug it"
+    - COMPLETENESS is data-driven: sentinel keys are compared against `AdvisoryRequest.model_fields`,
+      `PriorTurn.model_fields` and the canned profile body's own keys, so a new field fails this file until
+      it has a sentinel. That test immediately earned its place — it caught `sensitivity_level` where I had
+      assumed `sensitivity`, and a `routines` field I had not covered at all
+    - SELF-CHECK included: one test plants a sentinel deliberately and asserts the sweep sees it, because a
+      sweep that could not see a leak would pass on a service that logged everything. Sentinels are
+      distinctive rather than realistic (`SENTINEL-CONDITION-Q7X`, not `asthma`) so they cannot collide
+      with the service's own prose and report a leak that is really a docstring
+    - Req 19.3 asserted POSITIVELY: the pseudonymous identity still reaches the log, since a sweep that
+      redacted everything would look maximally safe while making an incident undiagnosable
+    - DEFECT FIXED: Req 19.4 has two clauses, and the broad `location` marker satisfied the first while
+      making the second IMPOSSIBLE — "WHERE a location must be identified THE Service SHALL use the
+      location name Service 2 returned", yet `location_name` was redacted, so there was no way to say which
+      of a user's sites an entry concerned. New `PERMITTED_LOCATION_KEYS` (`location_name`, `site_name`,
+      `site_code`), exact names only exactly as `PERMITTED_COUNT_KEYS` is — a substring exception would
+      re-open the marker it exists to narrow, and `location_coordinates` would pass. Eight near-miss keys
+      are pinned as still redacted, and a test asserts the three permitted sets are disjoint
+    - `locationName` in camelCase stays REDACTED deliberately: this service writes its own log keys in
+      snake_case, so the camelCase form only appears when a whole retrieved body is passed — which is
+      exactly what must not be logged
+    - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.5, 19.6_
 
   - [ ]* 13.3 Write property test for credential non-disclosure
     - **Property 8: Credential non-disclosure**
