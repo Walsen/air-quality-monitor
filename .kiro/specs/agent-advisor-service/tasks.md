@@ -565,7 +565,7 @@ directory.
     - **Property 15: Audit minimisation**
     - **Validates: Requirement 20.3**
 
-- [ ] 13. Untrusted content and data minimisation
+- [x] 13. Untrusted content and data minimisation
   - [x] 13.1 Implement the untrusted-content rules
     - `domain/disclosure.py`. Reqs 18.1 and 18.2 are deliberately NOT implemented as detection: you cannot
       reliably recognise an instruction hidden in prose, and a service that believed it could would be
@@ -631,15 +631,15 @@ directory.
       exactly what must not be logged
     - _Requirements: 19.1, 19.2, 19.3, 19.4, 19.5, 19.6_
 
-  - [ ]* 13.3 Write property test for credential non-disclosure
+  - [x]* 13.3 Write property test for credential non-disclosure
     - **Property 8: Credential non-disclosure**
     - **Validates: Requirements 5.1, 5.2, 5.4**
 
-  - [ ]* 13.4 Write property test that personal data never reaches a log
+  - [x]* 13.4 Write property test that personal data never reaches a log
     - **Property 9: Personal data never reaches a log**
     - **Validates: Requirements 19.2, 19.4, 24.5**
 
-  - [ ]* 13.5 Write property test for injection resistance
+  - [x]* 13.5 Write property test for injection resistance
     - **Property 18: Injection does not move the guardrails**
     - **Validates: Requirements 18.1, 18.2, 18.3, 18.4**
 

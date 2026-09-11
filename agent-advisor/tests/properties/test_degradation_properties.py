@@ -300,21 +300,26 @@ def test_a_rejected_request_never_echoes_its_own_input(
     envelopes: tuple[GuardrailEnvelope | None, GuardrailEnvelope | None],
 ) -> None:
     # A Pydantic error carries the offending VALUE as well as the field. Echoing it would return
-    # the
-    # user's own utterance inside an error message, and Req 19.2 keeps that text out of logs —
-    # an error
-    # body is no better a place for it.
-    if not isinstance(utterance, str) or len(utterance) < 6:
+    # the user's own utterance inside an error message, and Req 19.2 keeps that text out of logs
+    # — an error body is no better a place for it.
+    #
+    # The utterance is PREFIXED with a distinctive marker before the check. The nightly profile
+    # found the reason: hypothesis generated `"reques"`, which is a substring of the fixed
+    # message "The request could not be read", so the test failed on a coincidence rather than
+    # an echo. Asserting absence needs a value that cannot occur by chance — the same lesson as
+    # the sentinel sweep and the digest exclusion.
+    if not isinstance(utterance, str):
         return
+    marked = f"ECHO-Q7X-{utterance}"
     try:
-        AdvisoryRequest(utterance=utterance, credential=credential)  # type: ignore[arg-type]
+        AdvisoryRequest(utterance=marked, credential=credential)  # type: ignore[arg-type]
     except ValidationError as error:
         fault = fault_for(error)
         assert fault is not None
         response = fault_response(
             fault, envelope=_resolved(envelopes), answered_at=_AT
         )
-        assert utterance not in (response.guidance or "")
+        assert marked not in (response.guidance or "")
 
 
 def test_a_long_utterance_with_a_bad_credential_is_not_echoed() -> None:
