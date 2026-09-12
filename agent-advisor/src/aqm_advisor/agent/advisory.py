@@ -86,6 +86,7 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         forbidden_patterns: Sequence[str],
         guardrail: GuardrailChecker,
         retrieve_snapshot: Callable[[], object],
+        retrieve_profile: Callable[[], object] | None = None,
     ) -> None:
         """Bind one turn's collaborators. All injected; none read from config here."""
         self._recorder = recorder
@@ -99,6 +100,11 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         self._forbidden_patterns = forbidden_patterns
         self._guardrail = guardrail
         self._retrieve_snapshot = retrieve_snapshot
+        # The profile is pre-fetched like the snapshot so medication-closure has the user's
+        # recorded medications even when the live model does not call profile_get. Optional and
+        # defaulting to None so a turn with no profile source names nothing, exactly as the
+        # prompt's "if no profile was retrieved" branch already requires.
+        self._retrieve_profile = retrieve_profile or (lambda: None)
         self._served_body: object = None
         self._degraded = False
 
@@ -154,6 +160,18 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         self._degraded = body is None
         if body is not None:
             self._recorder.record_body(body)
+        # THE PROFILE IS PRE-FETCHED FOR THE SAME REASON AND UNDER THE SAME RULE. A live model
+        # does not reliably call profile_get, and medication-closure permits naming a medication
+        # only from the profile RETRIEVED THIS TURN — so without this the model names the user's
+        # own reliever from memory and the turn is withheld. The glossary settles that this is
+        # sound: a Retrieved_Value comes from a Serving_Client response in this turn, not from a
+        # tool call, and this fetch is one. The guarantee is intact — a medication absent from
+        # the profile still fails — and no tool call is recorded, so the trajectory (Req 35.4)
+        # still describes only what the model itself called. A profile that does not resolve is
+        # not a degradation: the answer simply names no medication.
+        profile = self._retrieve_profile()
+        if profile is not None:
+            self._recorder.record_body(profile)
         return self._recorder.values()
 
     # --- step 3 ---------------------------------------------------------

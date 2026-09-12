@@ -168,6 +168,11 @@ def build_pipeline_factory(
         # Fetching once rather than twice matters beyond efficiency: two calls could return two
         # different bodies, and the audit record would then name a different turn from basis.
         snapshot = _snapshot(serving_client, credential)
+        # The profile is fetched once here, alongside the snapshot, and handed to the
+        # pipeline as `retrieve_profile`. Step 2 records it so a medication the user has is not
+        # rejected merely because the live model did not call profile_get. Fetched once, not per
+        # tool call, so two reads cannot disagree.
+        profile = _profile(serving_client, credential)
         identity = identity_for(request, snapshot)
 
         tools = build_retrieval_tools(
@@ -225,6 +230,7 @@ def build_pipeline_factory(
             forbidden_patterns=forbidden_patterns,
             guardrail=guardrail,
             retrieve_snapshot=lambda: snapshot,
+            retrieve_profile=lambda: profile,
         )
 
     return make_pipeline
@@ -264,5 +270,20 @@ def _snapshot(client: ServingClient, credential: str) -> object | None:
     """
     try:
         return client.air_quality(credential)
+    except ServingClientError:
+        return None
+
+
+def _profile(client: ServingClient, credential: str) -> object | None:
+    """Fetch the user's profile once, so medication-closure has their recorded medications.
+
+    Mirrors `_snapshot`: a client error becomes `None` and the turn simply names no medication,
+    rather than failing. No tool call is recorded — the trajectory (Req 35.4) is what the MODEL
+    called, and this is the service's own fetch. Naming a medication remains permitted only when
+    it is in THIS profile, so a body that does not resolve tightens the check rather than
+    loosening it.
+    """
+    try:
+        return client.profile_get(credential)
     except ServingClientError:
         return None
