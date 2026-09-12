@@ -1439,20 +1439,65 @@ directory.
       a permanently-busy nor a never-busy implementation satisfies it. A fourth property covers the
       timestamp: repeated reads must not advance it, and a real change must
 
-- [ ] 18. Asynchronous association trigger
-  - [ ] 18.1 Implement the association trigger
+- [x] 18. Asynchronous association trigger
+  - [x] 18.1 Implement the association trigger
     - Never computed, triggered synchronously or awaited during a turn; a learned threshold read only from
       a retrieved response; invoked asynchronously where this service hosts the trigger; idempotent per
       user and evaluation window; a correlation identifier carried through; a failure logged with turns
       continuing against stored thresholds; no user notification
-    - _Requirements: 33.1, 33.2, 33.3, 33.4, 33.5, 33.6, 33.7_
+    - DELIVERED AS ENFORCED PROHIBITIONS, NOT AN ADAPTER, because Req 33.3's antecedent is false: this
+      service does not host the trigger. Checked against Service 2's code before writing anything --
+      DD13 makes the derivation Service 2's, its own Req 32.12 keeps it off the serving path and on its
+      own schedule, `jobs/entrypoint.py` is a one-shot process whose docstring places the schedule
+      "outside this code -- cron, an EventBridge rule, a Kubernetes CronJob", and Service 2 exposes
+      seven HTTP routes, NONE of which triggers a derivation, with no queue, EventBridge or task-token
+      consumer anywhere. Building an adapter would have meant INVENTING a Service 2 trigger API its
+      spec does not define -- the task 16.3 defect in reverse, fabricating a cross-service contract
+      rather than discovering one, against a service already complete and merged
+    - THE CONFIG REGISTRY ALREADY ENCODED THIS. `REGISTERED_ADAPTERS["association_trigger"]` is
+      `("recording",)` -- the ONLY port with no production option, where every other offers `http`,
+      `bedrock`, `dynamodb` or `system`. A test pins that contrast, so the conclusion is a reading of
+      the service rather than a preference
+    - Req 33.4 is met by SERVICE 2, whose `put_learned_thresholds` replaces rather than merges and whose
+      entrypoint documents itself as idempotent because a scheduler will occasionally deliver twice.
+      Asserting it here would assert somebody else's guarantee
+    - Req 33.5 is vacuous without a trigger, and is NOT claimed. Req 33.6 reduces to the read path
+      tolerating an absent learned block, which is pinned
+    - Req 33.1 enforced service-wide: the turn path cannot NAME the trigger, so it cannot wait for one;
+      no module defines a statistical function or imports a statistics library. The detector reads
+      FUNCTION NAMES from the AST, never parameter names, because the trigger's own `correlation_id`
+      argument is an identifier and a textual scan reads it as a correlation computation
+    - Req 33.7 enforced service-wide rather than per-class. `agent/audit.py` already pins its own public
+      surface for Req 20.6, but a notifier added ANYWHERE else would satisfy that test and still breach
+      this one
+    - _Requirements: 33.1, 33.2, 33.6, 33.7 (33.3 antecedent false; 33.4 met by Service 2; 33.5 vacuous
+      without a hosted trigger — see above)_
 
-  - [ ] 18.2 Document and implement the chosen trigger mechanism
+  - [x] 18.2 Document and implement the chosen trigger mechanism
     - Choose among a Step Functions `waitForTaskToken` state, the direct SDK integration, and a Lambda
       durable function's `waitForCallback`; derive the session identifier from a stable property of the
       triggering execution so a retry resumes the same session; set an explicit timeout on any
       callback-based wait
-    - _Requirements: 33.10, 33.11, 33.12_
+    - NO MECHANISM CHOSEN, and choosing one would have been wrong. Req 33.10's antecedent -- "WHERE the
+      association job is driven from a serverless pipeline rather than from within a turn" -- is false:
+      Service 2's own external schedule drives it. All three candidates are ways for a pipeline to
+      invoke an AGENT RUNTIME asynchronously, and no pipeline invokes this agent for the association.
+      Picking one would have produced deployment machinery for a caller that does not exist
+    - Req 33.11 therefore has no triggered job to derive a session id for. The groundwork is already in
+      place if one is ever built: `domain/idempotency.py`'s `TurnIdentity.session_id` documents that it
+      IS the `runtimeSessionId`, so a future trigger must reuse that rather than invent a second scheme.
+      Task 17 separately wired Req 32.11's session correlation at the entrypoint
+    - Req 33.12's callback timeout has no callback wait to bound
+    - Reqs 33.8 and 33.9 were UNCITED by this task and bind anyway -- the same omission pattern the
+      task 17 spec audit found. 33.8 is met by the entrypoint's `add_async_task` / `complete_async_task`
+      bracket and is now pinned, because that API is also what keeps `/ping` truthful, so dropping it
+      would breach Req 32.4b silently. 33.9 is now asserted for the first time: the request model has no
+      async variant, and the built app exposes exactly `/invocations` and `/ping`, so there is no
+      fire-and-forget job endpoint
+    - IF ON-DEMAND DERIVATION IS EVER WANTED, the change belongs to Service 2 first: a trigger surface
+      there, as a new requirement on that service, before any adapter here. The prohibition tests fail
+      loudly if an adapter appears without it, which is the intended forcing function
+    - _Requirements: 33.8, 33.9 (33.10, 33.11, 33.12 antecedents false — see above)_
 
 - [ ] 19. Quality assurance suites
   - [ ] 19.1 Write the negative suite
