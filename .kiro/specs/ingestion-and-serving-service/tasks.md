@@ -628,6 +628,23 @@ an injected Clock — no `datetime.now()` anywhere in `domain/` — and no domai
   - [ ] 28.1 Write the Docker Compose definition and the local stack recipe
     - The service, a local MQTT broker, and local store emulation sufficient to exercise the DynamoDB and
       S3 adapters without a cloud account; a git-ignored credential tree and no committed secret
+    - CORRECTED 2026-09-12, found while writing Service 3's task 20.1. This file's packaging test already
+      stated the right principle in its own header — "inspect the STRUCTURE, never the text" — and the
+      Compose assertions followed it by reading parsed YAML, but the three DOCKERFILE assertions grepped
+      raw text, and one was genuinely defeated by that. `--frozen` appears in this image's header comment
+      as well as on its two `RUN uv sync` lines, so `assert "--frozen" in dockerfile` PASSED with
+      `--frozen` removed from BOTH of them. Confirmed by making the change and watching the test stay
+      green. That image would have re-resolved dependencies at build time and shipped a set this suite
+      never gated, with the gate reporting success
+    - FIXED by giving this service its OWN Dockerfile instruction parser — dropping `#` lines whole and
+      joining backslash continuations — rather than importing Service 3's, since Req 28.3 forbids
+      importing across service directories. The interpreter assertion was NOT defeated (`python:3.12`
+      appears only on the real `FROM` line) but was one explanatory comment away, so it moved too; a
+      mutation planting `FROM python:latest` behind a comment naming `python:3.12` now fails
+    - The secret search DELIBERATELY still reads raw text. Every other assertion asks whether the image
+      DOES something, where a comment is not evidence; that one asks whether a secret is PRESENT in a
+      committed file, and a private key in a comment is as committed as one in a `RUN`. Parsing would
+      narrow the search and lose findings
     - _Requirements: 28.8, 28.9_
 
   - [ ] 28.2 Write the container-fenced integration checks
