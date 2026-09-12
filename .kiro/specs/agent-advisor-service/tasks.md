@@ -1520,9 +1520,28 @@ directory.
       gates the build
     - _Requirements: 35.8, 35.9_
 
-  - [ ]* 19.4 Write property test that claims require retrieval
+  - [x]* 19.4 Write property test that claims require retrieval
     - **Property 19: Claims require retrieval**
     - **Validates: Requirements 2.1, 35.5**
+    - DONE, out of order and ahead of the rest of task 19, because task 21.3's checkpoint requires
+      every design property present and this was the ONLY one missing — 1 to 18 and 20 existed, so
+      21.3 could not have passed. All 20 are now present
+    - I CORRECTED MY OWN OVER-CLAIM MID-WRITE, and the correction is the interesting part. The first
+      draft asserted that grounding enforces the AIR-QUALITY call specifically. It does not. A probe
+      settled it: a turn calling only `profile_get`, whose body carried a personal threshold of 87,
+      grounds "the air quality index is 87 right now" with no air-quality retrieval in its
+      trajectory. That is NOT a defect in grounding — Req 7.1 asks that a quoted value be one "this
+      turn actually retrieved", and the union of the turn's retrievals is exactly that
+    - So the file asserts the decidable half (a conditions claim requires SOME retrieval carrying
+      the value, in both directions, plus a non-vacuity check through the real tool) and PINS the
+      residual gap as its own test, which fails if grounding ever becomes tool-aware. The
+      tool-IDENTITY half belongs to Req 35.4's golden-turn trajectory assertions, which need a
+      composed pipeline and therefore arrive with task 21
+    - No claim detector was invented. Nothing in production decides "this sentence claims something
+      about conditions", and writing one in a test file is how a property comes to assert something
+      the service never promised. The qualitative case — "the air is poor today", no digits — is
+      pinned as a stated boundary, the same shape as the number-words limitation `grounding.py`
+      already records
 
 - [x] 20. Container packaging
   - [x] 20.1 Write the Dockerfile and packaging assertions
