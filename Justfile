@@ -27,8 +27,12 @@ test: test-simulator test-ingestion test-advisor
 
 # Run every service's integration checks (container engine or local broker).
 # NOTE: this aggregate cannot pass today. `test-integration-advisor` selects zero tests, and
-# pytest exits 5 on an empty selection — the advisor's fenced checks arrive with tasks 17.4 and
-# 19.3 (live model, live guardrail, deployment contract). Until then run the two legs that exist:
+# pytest exits 5 on an empty selection. CORRECTED at task 17.4: this note used to say the advisor's
+# fenced checks arrive with tasks 17.4 and 19.3, but 17.4 does NOT fix it — Req 26.5a puts the
+# deployment contract in the OFFLINE suite deliberately, because the `bedrock_agentcore` SDK serves
+# `/invocations` and `/ping` with no AWS involvement, so those tests are unmarked and run offline.
+# The first `integration`-marked advisor test therefore arrives with task 19.3 (live model, live
+# guardrail). Until then run the two legs that exist:
 #   just test-integration-simulator
 #   just test-integration-ingestion
 # CI calls those two directly for the same reason.

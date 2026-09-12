@@ -1246,8 +1246,8 @@ directory.
       ever wanted
     - _Requirements: 20.1, 20.2, 20.3, 20.5_
 
-- [ ] 17. AgentCore entrypoint and the deployment contract
-  - [ ] 17.1 Implement the entrypoint and health endpoint
+- [x] 17. AgentCore entrypoint and the deployment contract
+  - [x] 17.1 Implement the entrypoint and health endpoint
     - `@app.entrypoint` async throughout so no blocking operation can block `/ping`; `@app.ping` reporting
       `Healthy` or `HealthyBusy`; `time_of_last_update` omitted or set only on a real status change; the
       `AdvisoryRequest` and `AdvisoryResponse` as the `/invocations` bodies; every handled failure returned
@@ -1256,21 +1256,69 @@ directory.
       handler but not the catch — `handle_at_top_level` receives an already-caught error — so the broad
       `except` lives at this entrypoint, and the AST test that it appears nowhere else belongs with it.
       `boundary.py` already asserts it catches nothing broadly, which is the other half
-    - _Requirements: 21.5, 32.1, 32.3, 32.4, 32.4a, 32.5, 32.6_
+    - `agentcore/app.py` -- the ONLY module importing `bedrock_agentcore` (Req 32.2, AST-fenced).
+      Advisor 1551 -> 1573 tests. 17.1, 17.2 and 17.3 landed together because they are one function
+    - THE CORRECT PING IMPLEMENTATION IS TO WRITE NO `@app.ping` HANDLER. Reading the SDK:
+      `get_current_ping_status` returns HealthyBusy when `_active_tasks` is non-empty and advances
+      `time_of_last_update` ONLY on a real status change -- which is exactly what Req 32.4 demands and
+      what a hand-rolled handler would break. Req 32.4 says as much; the SDK source confirms it
+    - THE TRAP Req 32.4b EXISTS FOR IS REAL: `_handle_invocation` never touches `_active_tasks`, so the
+      SDK does NOT infer busy from a request being in flight. An entrypoint that merely runs a turn
+      answers `Healthy` throughout and the health contract is silently unmet. Bracketing the turn with
+      `add_async_task`/`complete_async_task` (Reqs 32.4, 33.8) is what makes it true, and the
+      concurrency test is what proves it rather than asserting it
+    - THE SDK'S OWN ERROR PATH IS WHAT Req 32.5 FORBIDS: it answers
+      `JSONResponse({"error": str(e)}, status_code=500)`. AgentCore surfaces a container 5xx as an
+      opaque 424 RuntimeClientError, losing the Guardrail_Envelope and any Escalation -- and `str(e)`
+      puts the exception's words in the body, which Reqs 5.2 and 21.4 forbid. So this service's broad
+      catch fires FIRST, and that IS Req 21.5's top-level boundary (carried from task 11.2)
+    - RETURNING THE PYDANTIC MODEL SILENTLY BROKE Req 32.3, and a test caught it. The SDK tries
+      `json.dumps(obj)`, then `model_dump()`, then falls back to `json.dumps(str(obj))`. `model_dump()`
+      leaves `answered_at` a `datetime`, which json cannot encode -- so BOTH real attempts fail and the
+      body becomes the model's REPR STRING, with a 200 status. `model_dump(mode="json")` fixes it
+    - A ZERO TURN BUDGET DISABLED THE BUDGET. The first version wrote
+      `asyncio.timeout(turn_budget_seconds or None)`, and `0 or None` is None, meaning NO timeout -- a
+      fail-open on Req 32.13. A test with a zero budget then HUNG FOR NINETY MINUTES until a watchdog
+      killed the turn, which is how it was found. A non-positive budget is now refused at build time
+    - The budget bounds the RESPONSE, not the work: `asyncio.timeout` cancels the await, and a blocked
+      worker thread keeps running because Python cannot kill a thread. That is the right guarantee for
+      Reqs 32.13 and 32.8a, both of which are about the answer and the credential's remaining life,
+      but it is documented so nobody expects the thread to die with it
+    - Req 32.4a is satisfied by `asyncio.to_thread`, which the requirement explicitly permits ("awaited
+      on the async path OR run on a separate thread"). `TurnPipeline.run` is synchronous, so no async
+      rewrite was needed
+    - THE TURN RUNNER IS INJECTED. No concrete `TurnPipeline` exists in `src/` -- composing one from
+      every adapter is task 21's composition root -- so this module stays a transport boundary, which
+      is also what lets the deployment contract be tested with a scripted turn
+    - Req 32.8: the credential comes from the request HEADER, never the body. A body field would let a
+      caller supply a credential the front door never validated. The `Bearer` prefix is stripped as
+      transport framing, which is not inspection (Reqs 5.5, 5.6, A4a)
+    - NOT IN THE REQUIREMENTS, found by reading the SDK: `BedrockAgentCoreApp(debug=True)` exposes
+      `_agent_core_app_action` on `/invocations` including `force_healthy` and `force_busy`, so ANY
+      caller could make the container lie to the platform about its health. `debug` is left False and a
+      test pins that the action surface is unreachable
+    - MY OWN AST FENCE HAD A WRONG PREMISE AND I CORRECTED IT RATHER THAN THE CODE. The first version
+      banned broad catches outside the entrypoint and failed on three deliberate ones
+      (`generation.py`, `verification.py`, `adapters/guardrail/bedrock.py`). Req 21.5 forbids a BARE
+      catch; a typed-but-broad `except Exception` converting an unknown failure into an explicit
+      FAIL-CLOSED outcome is this codebase's deliberate pattern. The fence is now: no bare `except:`
+      anywhere, plus an allowlist naming each broad catch AND its justification, with a staleness test
+      so the list cannot rot into a blanket exemption
+    - _Requirements: 5.5, 5.6, 21.5, 32.1, 32.2, 32.3, 32.4, 32.4a, 32.5, 32.6, 32.7, 32.8, 32.13, 33.8, 33.9_
 
-  - [ ] 17.2 Implement inbound identity and credential forwarding
+  - [x] 17.2 Implement inbound identity and credential forwarding
     - Read the inbound `Authorization` header from the request-header allowlist and forward it unmodified;
       never parse, validate, cache or reissue it; document the `customJWTAuthorizer` configuration the
       deployment supplies
     - _Requirements: 5.5, 5.6, 32.7, 32.8_
 
-  - [ ] 17.3 Implement asynchronous task tracking
+  - [x] 17.3 Implement asynchronous task tracking
     - `add_async_task` and `complete_async_task` bracketing any work continuing after a response, so the
       SDK manages the ping status; no fire-and-forget job API is assumed and no async variant of the
       request exists
     - _Requirements: 33.8, 33.9_
 
-  - [ ] 17.4 Write the offline deployment-contract tests
+  - [x] 17.4 Write the offline deployment-contract tests
     - Drive `POST /invocations` and `GET /ping` against the locally served application with no AWS; assert
       the health response shape; assert `/ping` stays responsive and reports `HealthyBusy` for the whole
       time a turn is in flight
@@ -1278,11 +1326,118 @@ directory.
       Service 2. A4's direct forwarding is documented as sufficient only WHERE those match, so this is the
       test that keeps the assumption true rather than merely asserted. Drift here fails at Service 2, not
       here, which is the hardest place to attribute it
-    - _Requirements: 26.5a, 32.4b, 32.14_
+    - `tests/unit/test_agentcore_app.py` (15) plus `tests/unit/test_audience_agreement.py` (4).
+      Advisor 1573 -> 1578 tests. Driven through `httpx.ASGITransport`, the pattern Service 2 already
+      uses; no socket is bound and `app.run()` is never called, so there is nothing to be flaky
+    - REQ 32.14 COULD NOT BE TESTED AS WRITTEN, AND THE FIX IS STRONGER THAN THE TEST. The obvious
+      reading -- compare the advisor's configured audience with Service 2's -- is not assertable
+      offline: both are resolved from the environment in two separately deployed processes, so there
+      is no runtime value to compare and matching DEFAULTS would prove nothing about a deployment
+    - What is assertable, and better: BOTH SERVICES NOW READ THE AUDIENCE FROM ONE ENVIRONMENT
+      VARIABLE. The advisor read `AQM_ADVISOR_JWT_ALLOWED_AUDIENCE` while Service 2 read
+      `AQM_COGNITO_CLIENT_ID` -- two names for one Cognito app client, with nothing linking them,
+      which is exactly the silent divergence Req 32.14 describes. `jwt_allowed_audience` is now on
+      `AQM_COGNITO_CLIENT_ID`, so the disagreement cannot be EXPRESSED rather than merely being
+      detectable after the fact
+    - Service 2's side is read FROM DISK and parsed from its AST, not imported (cross-service imports
+      are forbidden) and not hard-coded (a rename in Service 2 must FAIL this test, not pass it). A
+      non-vacuity test pins that the parse actually finds the variable
+    - The dropped `AQM_ADVISOR_` prefix is a deliberate exception with two tests around it: one
+      asserting this key does NOT carry the prefix, with the reason in the message so a tidy-up that
+      "fixes" it fails loudly, and one asserting every OTHER setting still does
+    - CORRECTED THE JUSTFILE: its note claimed tasks 17.4 and 19.3 would fix `test-integration-advisor`
+      selecting zero tests. 17.4 does not -- Req 26.5a puts the deployment contract in the OFFLINE
+      suite because the SDK serves those endpoints with no AWS, so these tests are unmarked. The first
+      `integration`-marked advisor test arrives with task 19.3
+    - REVIEW ROUND (5 subagents on PR #21). Advisor 1582 -> 1597 tests. Findings and fixes:
+    - Req 32.8 VIOLATION FOUND: `_credential_from` fell back to returning the RAW header, and the HTTP
+      client wraps whatever it gets in `Bearer `. So `Token abc` went out as `Bearer Token abc` and a
+      bare `abc` as `Bearer abc` — the credential Service 2 evaluated was NOT the one the caller sent.
+      Only canonical Bearer framing is accepted now; anything else is refused rather than corrupted,
+      because a mangled forward is rejected downstream for a reason invisible from here. Note what is
+      NOT a violation: RFC 6750 makes the scheme case-insensitive and permits several spaces, so
+      accepting `bearer` and collapsing the separator leaves the TOKEN byte-identical, which is what
+      Req 32.8 protects
+    - THE BROAD CATCH SKIPPED `fault_for`, which is wider than the reviewer's own finding. Every
+      expected exception — including a caller's pydantic ValidationError — was answered "something went
+      wrong on my side", telling users a SERVER-side story about their own malformed body. `fault_for`
+      now runs first, exactly as its docstring describes, with `handle_at_top_level` for the surprise
+    - A non-object `/invocations` body reached `payload.items()` and raised AttributeError. Guarded, so
+      a list or string is an invalid-request answer rather than an internal-error one
+    - THE BUDGET EXPIRY IS NOW ITS OWN BRANCH WITH ITS OWN LOG. It was folded into the broad catch,
+      which logs only the exception type, so an operator could not tell an expiry from a model error.
+      They are not equivalent: only the expiry leaves a WORKER THREAD RUNNING, because
+      `asyncio.timeout` cancels the await and Python cannot kill a thread
+    - MY OWN FINDING, from reasoning about that interaction: a turn budget SHORTER than one
+      `request_timeout_seconds` guarantees the budget expires while a retrieval is still running, so
+      every such turn abandons a thread. Repeated abandonment fills the default executor (about 6
+      workers on a 2-vCPU container) and later turns then answer degraded WITHOUT EVER EXECUTING while
+      the container still reports healthy — a silent liveness collapse no health check notices. Both
+      values validated fine alone; nothing looked at their RELATIONSHIP. A cross-field rule now refuses
+      it, with a test that the shipped defaults satisfy it (60 >= 30)
+    - The audience parse returned the FIRST `ast.walk` match, which is source order rather than
+      meaning. It now collects every candidate and FAILS on ambiguity: a future second Cognito client
+      id would otherwise be picked silently, and if the advisor pointed at that same wrong variable the
+      equality assertion would still PASS and certify a mis-wiring
+    - TEST HYGIENE from the review: the named concurrency test asserted only that HealthyBusy APPEARED,
+      so it passed against an implementation that registered the task and never completed it — it now
+      also asserts the return to Healthy. The budget test releases its worker INSIDE the client context
+      so the pool slot is reclaimed before the next test, with a 2s rather than 10s fallback
+    - WHAT THE REVIEW COULD NOT BREAK: no reachable path lets an `Exception`-class failure escape to the
+      SDK's 500/424 handler. `add_async_task`, `clock.now()`, `resolve_envelope` and
+      `model_dump(mode="json")` were each traced and cannot raise for first-party inputs; the `finally`
+      runs even on `BaseException`, so the task is never leaked. `/ping` cannot block on the task lock —
+      `get_current_ping_status` does not even take it, and the critical sections are O(1) dict work
+      outside any await. All three AST fences were verified non-vacuous, scanning 57 real modules
+    - `CancelledError` does escape, and that is CORRECT: a cancellation is not a turn outcome, and
+      manufacturing a cheerful degraded answer for an abandoned request would be a lie. The claim is
+      therefore scoped to "every handled TURN failure answers 200", not "every failure"
+    - SPEC-AUDIT ROUND (the 5th subagent). It found three Req 32 clauses NOT in task 17's citation
+      list, all unimplemented at the entrypoint AND unrecorded as deferred. Its sharpest point: a
+      `streaming_enabled` flag read by nothing is "the same configured-and-read-by-nothing trap this
+      PR proudly fixed for `turn_budget_seconds`, but left in place for streaming"
+    - Req 32.11 FIXED, not deferred. The entrypoint IGNORED `context.session_id` while
+      `observability/correlation.py` -- `session_scope`, `new_session_id`, `validate_session_id`,
+      `SESSION_ID_MIN_LENGTH = 33` -- sat unused, having been built in an earlier task for exactly
+      this. So no baggage was set and one session's spans were not attributable to it. The turn now
+      runs inside a `session_scope`: the platform's id is preferred, one is originated when absent
+      (a fresh id per turn would split a session across as many ids as it had turns), and an id below
+      the 33-character floor is substituted rather than passed to a scope that validates before
+      attaching. The header name is imported from the SDK in the test, so a rename there fails the
+      test rather than quietly making it vacuous
+    - Req 32.12 MADE LOUD rather than implemented. SSE is a feature with a safety constraint -- a
+      streamed turn must emit no Guidance token before Req 34's checks pass on the COMPLETE
+      generation -- so it is genuinely out of scope here. But silently ignoring the flag would tell an
+      operator they had enabled streaming when they had not, so `streaming_enabled=True` is now
+      REFUSED at build time with the reason. Implementing SSE remains deferred
+    - Req 32.10 DEFERRED, now recorded: the entrypoint emits no per-invocation span or metric.
+      `observability/` reads the ambient OTel meter and installs no collector, which honours 32.10's
+      "configure no collector on AgentCore" half; attaching per-turn instrumentation belongs with task
+      21's composition root, where the metrics recorder is constructed
+    - LATENT TRAP RECORDED: `AQM_ADVISOR_JWT_ALLOWED_AUDIENCE` is now inert. Nothing in the repo sets
+      it -- no compose file, no CI workflow, no script -- so nothing is silently ignored today. The
+      forward risk is that an operator infers the `AQM_ADVISOR_` name every other setting uses and sets
+      a dead variable. The prefix-exception test guards the CODE, not a deployment
+    - _Requirements: 5.2, 5.5, 5.6, 26.5a, 32.4b, 32.8, 32.11, 32.13, 32.14 (32.10, 32.12 DEFERRED -- see above)_
 
-  - [ ]* 17.5 Write property test that ping stays live during a turn
+  - [x]* 17.5 Write property test that ping stays live during a turn
     - **Property 16: Ping stays live while a turn is in flight**
     - **Validates: Requirements 32.4, 32.4a, 32.4b**
+    - `tests/properties/test_ping_properties.py`. Advisor 1578 -> 1582 tests
+    - SPLIT DELIBERATELY, AND THE SPLIT IS THE INTERESTING PART. "Ping stays live while a turn is in
+      flight" has two halves. The half needing REAL concurrency -- that GET /ping answers while
+      /invocations executes -- is an example test in `test_agentcore_app.py`, driven through a real
+      ASGI client with the turn gated on a threading event. The half that GENERALISES is here: for any
+      interleaving of turns starting and finishing, the status is busy exactly while work is
+      outstanding, and always returns to Healthy when balanced
+    - SYNCHRONOUS ON PURPOSE. All 99 other `@given` uses in this suite are sync and no property test is
+      async. Combining hypothesis with an event loop and an ASGI transport is where hanging tests come
+      from -- task 17.1 already lost ninety minutes to one hang -- and the concurrency that would
+      justify the risk is already pinned by the example. So this drives the SDK's own task bookkeeping,
+      which is the state /ping reads
+    - The load-bearing assertion is the EQUIVALENCE, in both directions: busy iff outstanding. Neither
+      a permanently-busy nor a never-busy implementation satisfies it. A fourth property covers the
+      timestamp: repeated reads must not advance it, and a real change must
 
 - [ ] 18. Asynchronous association trigger
   - [ ] 18.1 Implement the association trigger

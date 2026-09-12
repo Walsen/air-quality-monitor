@@ -232,7 +232,19 @@ _SCALARS: Mapping[str, tuple[str, object]] = {
     "streaming_enabled": (f"{_ENV_PREFIX}STREAMING_ENABLED", False),
     "turn_budget_seconds": (f"{_ENV_PREFIX}TURN_BUDGET_SECONDS", DEFAULT_TURN_BUDGET_SECONDS),
     "jwt_discovery_url": (f"{_ENV_PREFIX}JWT_DISCOVERY_URL", None),
-    "jwt_allowed_audience": (f"{_ENV_PREFIX}JWT_ALLOWED_AUDIENCE", None),
+    # NOT an AQM_ADVISOR_ name, deliberately. Req 32.14 requires this service's inbound
+    # authorizer to
+    # accept the SAME audience Service 2's does, and for a Cognito JWT that audience IS the app
+    # client
+    # id. Two separately-named variables for one app client is precisely how they drift apart —
+    # and
+    # the requirement notes the drift then fails at Service 2, "the hardest place to attribute
+    # it".
+    # One shared variable makes the disagreement impossible to express rather than merely
+    # detectable.
+    # `tests/unit/test_audience_agreement.py` reads Service 2's wiring from disk and pins the
+    # match.
+    "jwt_allowed_audience": ("AQM_COGNITO_CLIENT_ID", None),
 }
 """Each key's environment variable and default. `key -> (env_var, default)`.
 
@@ -471,6 +483,41 @@ not.
 """
 
 
+def _validate_budget_covers_a_request(
+    resolved: Mapping[str, Any], problems: _Problems
+) -> None:
+    """The turn budget must be at least one request timeout (Reqs 32.13, 32.4a).
+
+    A CROSS-FIELD RULE, and the only one here. Both values validate fine alone, which is exactly
+    why
+    this was missing: nothing looked at their RELATIONSHIP. A turn budget SHORTER than a single
+    downstream timeout guarantees the budget expires while a retrieval is still in flight — and
+    the
+    entrypoint runs the turn on a worker thread that `asyncio.timeout` cannot kill, because
+    Python
+    cannot kill a thread. So every such turn abandons a running thread.
+
+    Repeated abandonment fills the executor, and a saturated pool makes later turns answer
+    degraded
+    WITHOUT EVER EXECUTING while the container still reports healthy — a silent liveness
+    collapse
+    that no health check notices. A review found the accumulation; this refuses the
+    configuration
+    that makes it routine instead of rare.
+    """
+    budget = resolved.get("turn_budget_seconds")
+    timeout = resolved.get("request_timeout_seconds")
+    if not isinstance(budget, int) or not isinstance(timeout, int):
+        return  # each is reported on its own by _validate_scalars
+    if budget < timeout:
+        problems.add(
+            "turn_budget_seconds",
+            f"must be at least request_timeout_seconds ({timeout}); a budget of {budget} "
+            "would expire while a retrieval is still running, abandoning a worker thread "
+            "that cannot be cancelled",
+        )
+
+
 def _validate_scalars(resolved: Mapping[str, Any], problems: _Problems) -> None:
     """Req 23.2: validate every resolved value this loader owns."""
     for key in _POSITIVE_SCALARS:
@@ -690,6 +737,7 @@ def resolve_and_validate(
 
     _validate_serving(resolved, problems)
     _validate_scalars(resolved, problems)
+    _validate_budget_covers_a_request(resolved, problems)
     _validate_registries(resolved, problems)
     _validate_log_level(resolved, problems)
     _validate_guardrail(resolved, problems)

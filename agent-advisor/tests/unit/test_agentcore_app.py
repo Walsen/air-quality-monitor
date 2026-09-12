@@ -1,0 +1,506 @@
+"""Tests for the AgentCore deployment boundary (task 17). Reqs 21.5, 32.1-32.8a, 33.8, 33.9.
+
+Driven through `httpx.ASGITransport`, because `BedrockAgentCoreApp` IS a Starlette ASGI app.
+That is
+the pattern Service 2 already uses, and it was chosen there for a reason worth repeating:
+Starlette's
+own `TestClient` needs an httpx-adjacent package this project does not pin. No socket is bound,
+no
+port is chosen, nothing reaches AWS — so this whole file lives in the offline suite Req 26.5a
+requires.
+
+**THE POINT OF Req 32.4b IS A TRAP THE SDK SETS, AND THESE TESTS SPRING IT.**
+`_handle_invocation`
+never touches `_active_tasks`, and `get_current_ping_status` returns `HealthyBusy` only when
+that set
+is non-empty. So an entrypoint that merely runs a turn reports `Healthy` throughout — the health
+contract looks implemented and is not. The turn must therefore register an async task, which is
+what
+Reqs 32.4 and 33.8 already say to do, and what the concurrency test below proves it does.
+
+**THE SDK'S OWN ERROR PATH IS WHAT Req 32.5 FORBIDS.** Read from the installed source: the SDK
+catches an entrypoint exception and answers `JSONResponse({"error": str(e)}, status_code=500)`.
+AgentCore surfaces a container 5xx to the caller as an opaque `424 RuntimeClientError`, which
+replaces a documented degraded answer and loses the Guardrail_Envelope and any Escalation with
+it —
+and `str(e)` puts the exception's own words in the body, which Reqs 5.2 and 21.4 forbid. So this
+service's broad catch has to fire FIRST, and a test below asserts the SDK's never runs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import threading
+
+import httpx
+import pytest
+from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from bedrock_agentcore.runtime.models import SESSION_HEADER
+
+from aqm_advisor.agentcore.app import build_app
+from aqm_advisor.domain.models import AdvisoryRequest, AdvisoryResponse, GuardrailEnvelope
+from aqm_advisor.observability.correlation import current_session_id, new_session_id
+from aqm_advisor.ports.clock import FixedClock
+
+_AT = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
+_EMERGENCY = "If you are struggling to breathe, call 999."
+_CREDENTIAL = "SENTINEL-CRED-Q7X-do-not-log"
+
+
+def _response(*, degraded: bool = False) -> AdvisoryResponse:
+    return AdvisoryResponse(
+        escalation=None,
+        guidance="Conditions are moderate today.",
+        basis=None,
+        envelope=GuardrailEnvelope(emergency_guidance=_EMERGENCY),
+        degraded=degraded,
+        answered_at=_AT,
+    )
+
+
+def _payload(**overrides: object) -> dict[str, object]:
+    body: dict[str, object] = {"utterance": "how is the air today?"}
+    body.update(overrides)
+    return body
+
+
+def _app(run_turn: object = None, **kwargs: object) -> BedrockAgentCoreApp:
+    settings: dict[str, object] = {
+        "run_turn": run_turn or (lambda _request: _response()),
+        "emergency_guidance": _EMERGENCY,
+        "turn_budget_seconds": 30,
+        "clock": FixedClock(_AT),
+    }
+    settings.update(kwargs)
+    return build_app(**settings)  # type: ignore[arg-type]
+
+
+def _client(app: object) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),  # type: ignore[arg-type]
+        base_url="http://agentcore.test",
+    )
+
+
+# --- Req 32.1: the two routes exist -----------------------------------
+
+
+async def test_the_health_response_carries_exactly_the_documented_shape() -> None:
+    # Req 32.4's body, asserted as a SHAPE rather than by reading one field. The Runtime
+    # consumes this
+    # response to decide whether the session is healthy, so an extra or renamed key is a
+    # deployment
+    # fault that no advisory test would notice — and a malformed health response after a push to
+    # ECR
+    # is the expensive way to find out (Req 26.5a's own argument for testing it here).
+    async with _client(_app()) as client:
+        reply = await client.get("/ping")
+    body = reply.json()
+    assert set(body) == {"status", "time_of_last_update"}, body
+    assert body["status"] in {"Healthy", "HealthyBusy"}, body
+    assert isinstance(body["time_of_last_update"], int), body
+
+
+async def test_ping_answers_healthy_when_idle() -> None:
+    async with _client(_app()) as client:
+        reply = await client.get("/ping")
+    assert reply.status_code == 200
+    assert reply.json()["status"] == "Healthy"
+
+
+async def test_invocations_returns_the_advisory_response_body() -> None:
+    # Req 32.3: the Advisory_Response IS the /invocations body, not a second wire shape.
+    async with _client(_app()) as client:
+        reply = await client.post("/invocations", json=_payload())
+    assert reply.status_code == 200
+    body = reply.json()
+    assert body["guidance"] == "Conditions are moderate today."
+    assert body["envelope"]["emergency_guidance"] == _EMERGENCY
+
+
+# --- Req 32.4 / 32.4b: ping stays live AND reports HealthyBusy --------
+
+
+async def test_ping_reports_healthybusy_while_a_turn_is_in_flight() -> None:
+    # THE requirement that does not reproduce locally by default (Req 32.4b).
+    #
+    # This test is also what proves the entrypoint registers an async task at all: without
+    # `add_async_task`, `_active_tasks` stays empty and /ping answers `Healthy` right through
+    # the
+    # turn — the SDK does NOT infer busy from an in-flight request.
+    #
+    # The turn blocks on a THREADING event, not an asyncio one, because `run_turn` executes on a
+    # worker thread via `to_thread`. An earlier version put an `asyncio.Event` seam in the
+    # production
+    # builder for this; blocking inside the test's own runner needs no seam in shipped code.
+    gate = threading.Event()
+    seen: list[str] = []
+
+    def blocking_turn(_request: AdvisoryRequest) -> AdvisoryResponse:
+        gate.wait(timeout=10)  # bounded, so a broken test cannot hang the suite
+        return _response()
+
+    app = _app(run_turn=blocking_turn)
+    async with _client(app) as client:
+
+        async def turn() -> httpx.Response:
+            return await client.post("/invocations", json=_payload())
+
+        async def probe() -> httpx.Response:
+            reply = await client.get("/ping")
+            for _ in range(200):
+                reply = await client.get("/ping")
+                seen.append(reply.json()["status"])
+                if reply.json()["status"] == "HealthyBusy":
+                    break
+                await asyncio.sleep(0.005)
+            gate.set()
+            return reply
+
+        turn_reply, ping_reply = await asyncio.gather(turn(), probe())
+
+    assert turn_reply.status_code == 200
+    assert ping_reply.status_code == 200, "ping did not stay responsive during the turn"
+    assert "HealthyBusy" in seen, seen
+
+    # A review found this test passing against an implementation that registered the task and
+    # NEVER
+    # completed it: asserting HealthyBusy merely APPEARED says nothing about it going away.
+    # Siblings
+    # covered that, but this test's own docstring claimed more than it proved.
+    async with _client(app) as after:
+        assert (await after.get("/ping")).json()["status"] == "Healthy"
+
+
+async def test_ping_returns_to_healthy_after_the_turn() -> None:
+    # The other half: a task that is never completed would pin the session busy forever, which
+    # is
+    # what Req 32.4's session-quota warning is about.
+    app = _app()
+    async with _client(app) as client:
+        await client.post("/invocations", json=_payload())
+        reply = await client.get("/ping")
+    assert reply.json()["status"] == "Healthy"
+
+
+async def test_the_ping_timestamp_does_not_advance_on_every_ping() -> None:
+    # Req 32.4: a timestamp that always moves signals a continuous status change, which stops
+    # the
+    # idle session timeout from ever firing and can exhaust the account's session quota. The SDK
+    # already guards this, and this service must not defeat it with a custom handler — which is
+    # exactly why no `@app.ping` handler is registered.
+    async with _client(_app()) as client:
+        first = (await client.get("/ping")).json()["time_of_last_update"]
+        await asyncio.sleep(0.02)
+        second = (await client.get("/ping")).json()["time_of_last_update"]
+    assert first == second
+
+
+# --- Req 32.5 / 21.5: a failure is a response, never a container 5xx --
+
+
+async def test_a_failing_turn_returns_200_with_a_degraded_response() -> None:
+    # Req 32.5. If this service's catch did not fire first, the SDK's own handler would answer
+    # 500,
+    # AgentCore would surface an opaque 424 RuntimeClientError, and the Guardrail_Envelope and
+    # any
+    # Escalation would be lost with it.
+    def boom(_request: AdvisoryRequest) -> AdvisoryResponse:
+        raise RuntimeError("SENTINEL-ERR-Q7X the model exploded")
+
+    async with _client(_app(run_turn=boom)) as client:
+        reply = await client.post("/invocations", json=_payload())
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["degraded"] is True
+    assert body["envelope"]["emergency_guidance"] == _EMERGENCY
+
+
+async def test_a_failure_response_discloses_neither_the_message_nor_the_credential() -> None:
+    # The SDK's error path puts `str(e)` in the body. Ours must not: an exception's words can
+    # carry a
+    # prompt, a partial generation or a provider's error body (Reqs 5.2, 21.4).
+    def boom(_request: AdvisoryRequest) -> AdvisoryResponse:
+        raise RuntimeError(f"SENTINEL-ERR-Q7X {_CREDENTIAL}")
+
+    async with _client(_app(run_turn=boom)) as client:
+        reply = await client.post("/invocations", json=_payload(credential=_CREDENTIAL))
+    assert "SENTINEL-ERR-Q7X" not in reply.text
+    assert _CREDENTIAL not in reply.text
+
+
+async def test_a_malformed_request_is_a_response_not_a_validation_error() -> None:
+    # A bad body must not become a container fault either. Req 1's validation belongs to the
+    # model,
+    # and the answer is still an Advisory_Response.
+    async with _client(_app()) as client:
+        reply = await client.post("/invocations", json={"not_a_field": 1})
+    assert reply.status_code == 200, reply.text
+    assert reply.json()["degraded"] is True
+
+
+# --- Req 32.13 / 32.8a: the turn budget is enforced -------------------
+
+
+@pytest.mark.parametrize("budget", [0, -1])
+def test_a_non_positive_budget_is_refused_at_build_time(budget: int) -> None:
+    # THE REGRESSION THAT COST NINETY MINUTES. The first version wrote
+    # `asyncio.timeout(turn_budget_seconds or None)`, and `0 or None` is None — meaning NO
+    # timeout.
+    # A zero budget therefore DISABLED the Req 32.13 bound instead of expiring, and a test with
+    # a
+    # zero budget hung until a watchdog killed it. "No budget" is not a state Req 32.13 permits.
+    with pytest.raises(ValueError, match="positive"):
+        _app(turn_budget_seconds=budget)
+
+
+async def test_a_turn_exceeding_its_budget_is_a_degraded_response() -> None:
+    # Req 32.13 bounds an ordinary turn, and Req 32.8a needs that bound so a credential valid at
+    # the
+    # start is still valid at the last retrieval. `turn_budget_seconds` existed in configuration
+    # and
+    # was consumed NOWHERE before this entrypoint.
+    #
+    # Note what is asserted: the CALLER gets a bounded answer. The worker thread is not killed —
+    # Python cannot kill a thread — so `release` exists to let it finish rather than leak.
+    release = threading.Event()
+
+    def overrunning_turn(_request: AdvisoryRequest) -> AdvisoryResponse:
+        release.wait(timeout=2)
+        return _response()
+
+    try:
+        async with _client(_app(run_turn=overrunning_turn, turn_budget_seconds=1)) as client:
+            reply = await client.post("/invocations", json=_payload())
+            assert reply.status_code == 200
+            assert reply.json()["degraded"] is True
+            # Released INSIDE the context, so the worker is reclaimed before the next test
+            # rather
+            # than after this one's assertions. A review noted the pool slot stayed occupied in
+            # the
+            # window between the budget expiring and the `finally`.
+            release.set()
+    finally:
+        release.set()
+
+
+# --- Req 32.8 / 5.6: the credential is forwarded, never inspected -----
+
+
+async def test_the_inbound_authorization_header_reaches_the_turn() -> None:
+    # Req 32.8: the credential arrives through the Runtime's request-header allowlist and is
+    # forwarded unmodified. Captured here to prove it is read from the HEADER, not the body.
+    seen: list[str] = []
+
+    def capture(request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(request.credential.get_secret_value())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post(
+            "/invocations",
+            json=_payload(),
+            headers={"Authorization": f"Bearer {_CREDENTIAL}"},
+        )
+    assert seen == [_CREDENTIAL], "the bearer credential did not reach the turn unmodified"
+
+
+async def test_the_credential_is_never_echoed_in_a_successful_response() -> None:
+    async with _client(_app()) as client:
+        reply = await client.post(
+            "/invocations",
+            json=_payload(),
+            headers={"Authorization": f"Bearer {_CREDENTIAL}"},
+        )
+    assert _CREDENTIAL not in reply.text
+
+
+# --- the debug surface must stay shut --------------------------------
+
+
+async def test_debug_actions_are_not_reachable() -> None:
+    # `BedrockAgentCoreApp(debug=True)` exposes `_agent_core_app_action` on /invocations,
+    # including
+    # `force_healthy` and `force_busy`. With debug on, ANY caller could make the container lie
+    # about
+    # its health to the platform. Not in the requirements — found by reading the SDK — so it is
+    # pinned here rather than left to the default staying put.
+    async with _client(_app()) as client:
+        reply = await client.post(
+            "/invocations", json={"_agent_core_app_action": "force_healthy"}
+        )
+    assert "forced_status" not in reply.text, reply.text
+
+
+# --- regressions from the review round ---------------------------------
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        (f"Bearer {_CREDENTIAL}", _CREDENTIAL),
+        (f"bearer {_CREDENTIAL}", _CREDENTIAL),
+        (f"BEARER {_CREDENTIAL}", _CREDENTIAL),
+        (f"Bearer   {_CREDENTIAL}", _CREDENTIAL),
+    ],
+    ids=["canonical", "lowercase-scheme", "uppercase-scheme", "extra-spaces"],
+)
+async def test_the_token_survives_every_legal_bearer_framing(
+    header: str, expected: str
+) -> None:
+    # RFC 6750 makes the scheme case-insensitive and allows more than one space before the
+    # token, so
+    # all four of these carry the SAME credential. What Req 32.8 protects is the TOKEN being
+    # forwarded unmodified, not the framing bytes.
+    seen: list[str] = []
+
+    def capture(request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(request.credential.get_secret_value())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post(
+            "/invocations", json=_payload(), headers={"Authorization": header}
+        )
+    assert seen == [expected]
+
+
+@pytest.mark.parametrize(
+    "header",
+    [f"Token {_CREDENTIAL}", _CREDENTIAL, "Basic dXNlcjpwdw==", ""],
+    ids=["other-scheme", "no-scheme", "basic", "empty"],
+)
+async def test_a_non_bearer_header_is_refused_rather_than_double_framed(
+    header: str,
+) -> None:
+    # THE Req 32.8 finding. The first version returned the raw header when it was not Bearer-
+    # framed,
+    # and `HttpServingClient` wraps whatever it gets in `Bearer ` — so `Token abc` went out as
+    # `Bearer Token abc` and a bare `abc` as `Bearer abc`. The credential Service 2 evaluated
+    # was not
+    # the one the caller sent. Refusing beats corrupting: a mangled forward is rejected
+    # downstream for
+    # a reason invisible from here.
+    seen: list[str] = []
+
+    def capture(request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(request.credential.get_secret_value())
+        return _response()
+
+    headers = {"Authorization": header} if header else {}
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post("/invocations", json=_payload(), headers=headers)
+    assert seen == [""], f"a non-Bearer header was forwarded as {seen!r}"
+
+
+@pytest.mark.parametrize(
+    "body", [[1, 2], "hello", 42, True], ids=["list", "string", "int", "bool"]
+)
+async def test_a_non_object_body_is_an_invalid_request_not_an_internal_error(
+    body: object,
+) -> None:
+    # A JSON list or string reached `payload.items()` and raised AttributeError, which the broad
+    # catch
+    # rendered as "something went wrong on my side" — a SERVER-side story for a client-side
+    # mistake.
+    async with _client(_app()) as client:
+        reply = await client.post("/invocations", json=body)
+    assert reply.status_code == 200, reply.text
+    body_out = reply.json()
+    assert body_out["degraded"] is True
+    assert "my side" not in (body_out.get("guidance") or "").casefold(), body_out
+
+
+# --- Req 32.11: the session id reaches baggage -------------------------
+
+
+async def test_the_platform_session_id_is_the_one_published_to_baggage() -> None:
+    # Req 32.11. A review found the entrypoint IGNORING `context.session_id`, so no baggage was
+    # set
+    # and a session's spans were not attributable to it — while `observability/correlation.py`
+    # sat
+    # unused, having been built for exactly this.
+    #
+    # Asserts the SUPPLIED id specifically, not merely that something is in baggage: the
+    # entrypoint
+    # originates a fallback, so a weaker assertion would pass even if the platform's id were
+    # dropped.
+    # The header name is imported from the SDK rather than written here, so a rename there fails
+    # this
+    # test instead of quietly making it vacuous.
+    supplied = "s" * 40
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post(
+            "/invocations", json=_payload(), headers={SESSION_HEADER: supplied}
+        )
+    assert seen == [supplied], seen
+
+
+async def test_a_turn_always_runs_inside_a_session_scope() -> None:
+    # With no id supplied the turn must still be correlated: an unlabelled span is as
+    # unattributable
+    # as a mislabelled one, so the entrypoint originates one rather than leaving baggage empty.
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        await client.post("/invocations", json=_payload())
+    assert seen and seen[0], "the turn ran outside any session scope"
+    assert len(seen[0] or "") >= 33, "Req 32.11's 33-character floor was not met"
+
+
+async def test_a_session_id_below_the_platform_floor_is_replaced() -> None:
+    # Req 32.11 sets a 33-character floor and `session_scope` validates BEFORE attaching, so
+    # passing a
+    # short id through would raise inside the turn. Refusing the turn over a correlation label
+    # would
+    # be the wrong trade — the answer matters more than its tag — so a short id is substituted.
+    seen: list[str | None] = []
+
+    def capture(_request: AdvisoryRequest) -> AdvisoryResponse:
+        seen.append(current_session_id())
+        return _response()
+
+    async with _client(_app(run_turn=capture)) as client:
+        reply = await client.post(
+            "/invocations", json=_payload(), headers={SESSION_HEADER: "too-short"}
+        )
+    assert reply.status_code == 200
+    assert seen and seen[0] != "too-short"
+    assert len(seen[0] or "") >= 33
+
+
+def test_an_originated_session_id_clears_the_platform_floor() -> None:
+    assert len(new_session_id()) >= 33
+
+
+# --- Req 32.12: streaming is refused, not silently ignored -------------
+
+
+def test_enabling_streaming_is_refused_rather_than_ignored() -> None:
+    # A review caught `streaming_enabled` being read by NOTHING here — the same "configured and
+    # read
+    # by nothing" trap this PR fixed for `turn_budget_seconds`, left in place for streaming. Req
+    # 32.12
+    # requires a streamed turn to emit no Guidance token before Req 34's checks pass on the
+    # COMPLETE
+    # generation, so streaming is a feature with a safety constraint, not a flag to flip.
+    # Ignoring it
+    # would tell an operator they had enabled streaming when they had not.
+    with pytest.raises(ValueError, match="streaming"):
+        _app(streaming_enabled=True)
+
+
+def test_streaming_disabled_builds_normally() -> None:
+    # The other direction, so the refusal cannot be satisfied by refusing everything.
+    assert _app(streaming_enabled=False) is not None

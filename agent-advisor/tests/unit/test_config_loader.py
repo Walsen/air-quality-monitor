@@ -33,6 +33,8 @@ import pathlib
 import pytest
 
 from aqm_advisor.config.loader import (
+    DEFAULT_REQUEST_TIMEOUT_SECONDS,
+    DEFAULT_TURN_BUDGET_SECONDS,
     RECOGNIZED_KEYS,
     REGISTERED_ADAPTERS,
     AdvisorConfig,
@@ -735,3 +737,43 @@ def test_the_loader_calls_nothing_on_the_serving_client_or_model() -> None:
     source = pathlib.Path("src/aqm_advisor/config/loader.py").read_text(encoding="utf-8")
     for forbidden in ("air_quality(", "profile_get(", "invoke(", "stream(", "boto3"):
         assert forbidden not in source, forbidden
+
+
+def test_a_turn_budget_shorter_than_a_request_timeout_is_refused() -> None:
+    # A CROSS-FIELD rule, and the only one here. Both values validate fine alone, which is
+    # exactly why
+    # this was missing: nothing looked at their relationship. A budget shorter than one
+    # downstream
+    # timeout guarantees the budget expires while a retrieval is still running — and the
+    # entrypoint
+    # runs the turn on a worker thread that `asyncio.timeout` cannot kill. Repeated expiries
+    # fill the
+    # executor, and a saturated pool makes later turns answer degraded WITHOUT EVER EXECUTING
+    # while the
+    # container still reports healthy.
+    with pytest.raises(ConfigError) as caught:
+        _resolved(
+            AQM_ADVISOR_TURN_BUDGET_SECONDS="10",
+            AQM_ADVISOR_REQUEST_TIMEOUT_SECONDS="30",
+        )
+    message = str(caught.value)
+    assert "turn_budget_seconds" in message
+    assert "request_timeout_seconds" in message
+
+
+def test_a_budget_equal_to_the_timeout_is_accepted() -> None:
+    # The boundary is >=, not >. Equal is the tightest configuration that still lets one
+    # retrieval
+    # finish inside the budget, so refusing it would be over-strict.
+    config = _resolved(
+        AQM_ADVISOR_TURN_BUDGET_SECONDS="30",
+        AQM_ADVISOR_REQUEST_TIMEOUT_SECONDS="30",
+    )
+    assert config.turn_budget_seconds == 30
+
+
+def test_the_shipped_defaults_satisfy_the_relationship() -> None:
+    # Non-vacuity for the rule: if the defaults violated it, every unconfigured deployment would
+    # refuse
+    # to start and the rule would be discovered as an outage rather than as a guard.
+    assert DEFAULT_TURN_BUDGET_SECONDS >= DEFAULT_REQUEST_TIMEOUT_SECONDS
