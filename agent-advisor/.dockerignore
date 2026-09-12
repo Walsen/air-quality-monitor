@@ -1,0 +1,14 @@
+# The image needs only the manifest, the lockfile and src/. Everything else would bloat the build
+# context AND perturb the DockerImageAsset content hash on unrelated edits (a test change would
+# rebuild the image). The Dockerfile copies pyproject.toml, uv.lock and src/ — nothing here.
+.venv
+.git
+infra
+tests
+cdk.out
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.md

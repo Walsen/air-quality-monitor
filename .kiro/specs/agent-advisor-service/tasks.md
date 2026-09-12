@@ -1648,6 +1648,19 @@ directory.
     - The existing "nothing writes to stdout" test caught a `print()` added for the config-error path.
       Correct: the logger emits single-line JSON on stdout, so a stray print corrupts it
     - STILL TO DO in 21.1: the audit table name, and the pseudonymous user identity
+    - CDK DEPLOYMENT ADDED (out of task-21 scope, driven by the deadline): `agent-advisor/infra/` is
+      a self-contained CDK project that deploys the advisor to AgentCore Runtime. `CfnRuntime` fed by
+      a `DockerImageAsset(platform=LINUX_ARM64)` so the image exists before the runtime; execution
+      role trusts `bedrock-agentcore.amazonaws.com` with `aws:SourceAccount`/`aws:SourceArn`
+      confused-deputy guards and grants `bedrock:InvokeModel` on `us.anthropic.claude-sonnet-4-6`
+      (the `us.` inference-profile prefix is mandatory — the bare id errors in every US region);
+      customJwtAuthorizer audience is `AQM_COGNITO_CLIENT_ID`, the same client Service 2 validates.
+      Six offline synth-assertion tests + a real `cdk synth` both pass with NO account and NO daemon,
+      because DockerImageAsset builds at deploy. `just synth-advisor-infra` runs the gate. A real
+      `cdk deploy` is blocked on three operator steps the agent cannot take: grant + `cdk bootstrap`
+      from an admin identity, the Anthropic model-access console form, and a running Buildx engine.
+      Recorded here rather than in a deployment spec because none existed for Service 3 and the
+      deadline did not allow writing one first; a Service 3 deployment spec is still owed
     - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
       rather than a hook — see above)_
 
