@@ -174,27 +174,86 @@ def test_the_credential_tree_is_git_ignored() -> None:
     assert "certs/" in ignored
 
 
+def _dockerfile_instructions() -> list[tuple[str, str]]:
+    """Every Dockerfile instruction as `(verb, argument)`, comments removed.
+
+    THIS FILE'S HEADER ALREADY STATES THE PRINCIPLE — "inspect the STRUCTURE, never the text" —
+    and the Compose assertions follow it by reading the parsed YAML. The Dockerfile assertions
+    did not, for want of a parser, and one of them was genuinely defeated by it: `--frozen`
+    appears in this image's own header comment as well as on its two `RUN uv sync` lines, so
+    `assert "--frozen" in dockerfile` passed with `--frozen` removed from BOTH of them. That was
+    confirmed by making the change and watching the test stay green. The image would have
+    re-resolved dependencies at build time and shipped a set the suite never gated.
+
+    Backslash continuations are joined first, so a multi-line `RUN` arrives as one instruction
+    rather than a fragment plus orphan text. A `#` line is dropped WHOLE rather than truncated
+    at the marker: the header explains why a quote-blind stripper is worse than none, having
+    once broken the broker healthcheck on the `#` inside `"$$SYS/#"`. Dropping whole lines
+    cannot make that mistake, because a Dockerfile comment is only ever a full line.
+    """
+    joined = _DOCKERFILE_PATH.read_text(encoding="utf-8").replace("\\\n", " ")
+    found: list[tuple[str, str]] = []
+    for raw in joined.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        verb, _, argument = line.partition(" ")
+        found.append((verb.upper(), argument.strip()))
+    return found
+
+
+def _dockerfile_arguments(verb: str) -> list[str]:
+    return [argument for found, argument in _dockerfile_instructions() if found == verb]
+
+
+def test_the_instruction_parser_drops_comments_entirely() -> None:
+    # The self-check the rewritten assertions rest on. This image's header mentions
+    # `uv sync --frozen` in prose; if that prose reached the instruction list, the tests below
+    # would inherit exactly the defect they were written to remove.
+    assert "--frozen" in _DOCKERFILE_PATH.read_text(encoding="utf-8").splitlines()[4], (
+        "the header comment that defeated the old assertion has moved; re-check this test"
+    )
+    assert not [a for _, a in _dockerfile_instructions() if "THE INTERPRETER IS PINNED" in a]
+    verbs = {verb for verb, _ in _dockerfile_instructions()}
+    assert {"FROM", "RUN", "COPY", "USER", "EXPOSE", "CMD"} <= verbs
+
+
 def test_the_dockerfile_pins_the_interpreter_and_installs_from_the_lockfile() -> None:
     # Req 28.2's exact-version rule reaches the image too: an unpinned base or a resolve at
-    # build
-    # time would make the container drift from the uv.lock the tests ran against.
-    dockerfile = _DOCKERFILE_PATH.read_text(encoding="utf-8")
-    assert "python:3.12" in dockerfile
-    # --frozen fails rather than re-resolving, which is what makes the lock authoritative.
-    assert "--frozen" in dockerfile
+    # build time would make the container drift from the uv.lock the tests ran against.
+    #
+    # REWRITTEN TO READ INSTRUCTIONS. The interpreter assertion was never actually defeated —
+    # `python:3.12` appears only on the real `FROM` line — but it was one explanatory comment
+    # away from being, so it moves too rather than being left as the next instance of this bug.
+    froms = _dockerfile_arguments("FROM")
+    assert froms, "no FROM instruction"
+    assert all("python:3.12" in f for f in froms), froms
+
+    # --frozen fails rather than re-resolving, which is what makes the lock authoritative. Each
+    # `uv sync` must carry it in the INSTRUCTION, so removing it from a RUN line fails here.
+    syncs = [a for a in _dockerfile_arguments("RUN") if "uv sync" in a]
+    assert syncs, "no dependency install found"
+    unfrozen = [s for s in syncs if "--frozen" not in s]
+    assert not unfrozen, f"these installs would re-resolve at build time: {unfrozen}"
 
 
 def test_the_image_runs_as_an_unprivileged_user() -> None:
     # §7 least privilege. Absent a USER directive a container runs as root.
-    dockerfile = _DOCKERFILE_PATH.read_text(encoding="utf-8")
-    assert any(
-        line.strip().startswith("USER ") and "root" not in line
-        for line in dockerfile.splitlines()
-    ), "the image does not drop to an unprivileged user"
+    #
+    # This one was ALREADY comment-safe: it matched `line.strip().startswith("USER ")`, which a
+    # `#` line cannot satisfy. It reads the parsed instructions now for consistency, not repair.
+    users = _dockerfile_arguments("USER")
+    assert users, "the image does not drop to an unprivileged user"
+    assert users[-1] != "root", users
 
 
 def test_the_image_bakes_no_secret() -> None:
     # Req 28.9 for the image: credentials arrive at runtime, never in a layer.
+    #
+    # DELIBERATELY STILL RAW TEXT, and this is the one place where that is correct. Every other
+    # assertion here asks "does the image DO this?", where a comment is not evidence. This one
+    # asks "is a secret PRESENT in a committed file?", and a private key sitting in a comment is
+    # as committed as one in a `RUN`. Parsing would narrow the search and lose findings.
     dockerfile = _DOCKERFILE_PATH.read_text(encoding="utf-8")
     for forbidden in ("AWS_SECRET_ACCESS_KEY", "-----BEGIN", "AQM_FEED_API_KEY="):
         assert forbidden not in dockerfile
