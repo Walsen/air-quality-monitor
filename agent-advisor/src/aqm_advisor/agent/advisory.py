@@ -44,6 +44,7 @@ from aqm_advisor.agent.tools import RetrievalRecorder
 from aqm_advisor.agent.verification import VerificationLedger, VerificationVerdict
 from aqm_advisor.domain.basis import assemble_basis
 from aqm_advisor.domain.envelope import resolve_envelope
+from aqm_advisor.domain.forbidden import forbidden_matches, unlisted_medications
 from aqm_advisor.domain.grounding import permitted_values, structural_constants, ungrounded
 from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import (
@@ -57,6 +58,7 @@ from aqm_advisor.domain.records import RetrievedValues
 from aqm_advisor.domain.redflag import RedFlagRule
 from aqm_advisor.domain.turn import determine_escalation, escalating_response
 from aqm_advisor.ports.clock import Clock
+from aqm_advisor.ports.protocols import GuardrailChecker, GuardrailVerdict
 
 ROUTE: Final = "invocations"
 """The route recorded in the audit record. One entry point, per Req 33.9."""
@@ -82,6 +84,7 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         red_flag_rules: Sequence[RedFlagRule],
         emergency_guidance: str,
         forbidden_patterns: Sequence[str],
+        guardrail: GuardrailChecker,
         retrieve_snapshot: Callable[[], object],
     ) -> None:
         """Bind one turn's collaborators. All injected; none read from config here."""
@@ -94,6 +97,7 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         self._red_flag_rules = red_flag_rules
         self._emergency_guidance = emergency_guidance
         self._forbidden_patterns = forbidden_patterns
+        self._guardrail = guardrail
         self._retrieve_snapshot = retrieve_snapshot
         self._served_body: object = None
         self._degraded = False
@@ -181,30 +185,66 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
     def verify(
         self,
         generated: str | None,
-        retrieved: RetrievedValues,  # noqa: ARG002 — the hook checked against the same recorder
+        retrieved: RetrievedValues,
     ) -> VerificationVerdict:
-        """Read the verdict the hook recorded, and refuse an absent one.
+        """Run the output checks on the generated text, and record the verdict.
 
-        ABSENCE IS FAILURE, NOT NEUTRALITY. A turn whose hook never fired has no verdict, and
-        treating that as a pass is precisely the bypass Req 31.5 forbids. The ledger's own
-        `is_publishable` takes the same position, so this method agrees with it rather than
-        inventing a second policy.
+        THIS IS NOT WHERE Req 31.5 ASKED FOR THE CHECKS, and the reason is measured rather than
+        assumed. The requirement wants them "registered through Strands hooks... so no return
+        path can bypass them". A probe against the pinned SDK shows a hook CANNOT do it: on
+        `agent.structured_output`, `AfterInvocationEvent.result` is `None` — documented and
+        observed — and `agent.messages` is empty, so the event exposes no generated text. Nor
+        can the hook read it from this object: the hook fires INSIDE the model call, before the
+        text has returned to the pipeline, so there is nothing here yet to read.
 
-        A turn with nothing generated — an escalation, or a model failure already recorded as
-        degraded — is verified vacuously: there is no model text to check, and the escalation
-        wording is this service's own. The check list still names what ran, because a verdict
-        with an empty list is refused at construction.
+        A hook that cannot obtain the generation is a guarantee in name only. What actually
+        makes these checks unbypassable is the Template Method: `run` fixes the order, raises
+        before assembly on a failed verdict, is not overridden by this class, and an AST test
+        reads it. The ledger keeps the fail-closed half — an absent verdict is a failure, not
+        neutrality — so a future path that skipped verification still could not publish.
+
+        `VerificationHook` remains the right shape for anything a hook CAN see, and is left in
+        place for that. The divergence from Req 31.5's literal wording is recorded in tasks.md.
+
+        A turn with nothing generated is verified vacuously: there is no model text to check,
+        and the escalation wording is this service's own. The check list still names what ran,
+        because a verdict with an empty list is refused at construction.
         """
         if generated is None:
             return VerificationVerdict(passed=True, checks=("no-generation",))
 
-        verdict = self._ledger.verdict()
-        if verdict is None:
-            return VerificationVerdict(
-                passed=False,
-                checks=("ledger",),
-                failures=("the verification hook did not run for this turn",),
-            )
+        checks: list[str] = []
+        failures: list[str] = []
+
+        checks.append("grounding")
+        permitted = permitted_values(retrieved, constants=structural_constants())
+        failures += [f"ungrounded:{value}" for value in ungrounded(generated, permitted)]
+
+        checks.append("forbidden-claims")
+        failures += [
+            f"forbidden:{marker}"
+            for marker in forbidden_matches(generated, self._forbidden_patterns)
+        ]
+
+        checks.append("medication-closure")
+        failures += [
+            f"unlisted-medication:{name}"
+            for name in unlisted_medications(generated, retrieved.medications)
+        ]
+
+        checks.append("guardrail")
+        result = self._guardrail.check(generated)
+        if result.verdict is not GuardrailVerdict.PASSED:
+            # Req 34.6 fails closed on UNAVAILABLE as well as INTERVENED: an operator must be
+            # able to tell "the guardrail stopped this" from "the guardrail could not look", and
+            # both withhold the text.
+            failures.append(f"guardrail:{result.verdict.value}")
+            failures += [f"guardrail-category:{name}" for name in result.categories]
+
+        verdict = VerificationVerdict(
+            passed=not failures, checks=tuple(checks), failures=tuple(failures)
+        )
+        self._ledger.record(verdict)
         return verdict
 
     # --- step 5 ---------------------------------------------------------

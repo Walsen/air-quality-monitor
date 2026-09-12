@@ -12,7 +12,7 @@ import datetime as dt
 
 import pytest
 
-from aqm_advisor.adapters.local import InMemoryAdviceAuditStore
+from aqm_advisor.adapters.local import InMemoryAdviceAuditStore, LocalGuardrailChecker
 from aqm_advisor.agent.advisory import AdvisoryTurnPipeline, build_turn_runner
 from aqm_advisor.agent.audit import AuditWriter
 from aqm_advisor.agent.generation import ModelGeneration
@@ -46,6 +46,7 @@ def _pipeline(
     served: object = None,
     guidance: str = "Conditions are moderate; consider a quieter route.",
     store: InMemoryAdviceAuditStore | None = None,
+    guardrail: LocalGuardrailChecker | None = None,
 ) -> AdvisoryTurnPipeline:
     def invoke() -> ModelGeneration:
         return ModelGeneration(guidance=guidance)
@@ -62,6 +63,7 @@ def _pipeline(
         red_flag_rules=_RULES,
         emergency_guidance=_EMERGENCY,
         forbidden_patterns=(),
+        guardrail=guardrail or LocalGuardrailChecker(),
         retrieve_snapshot=lambda: served,
     )
 
@@ -107,22 +109,73 @@ def test_a_failed_retrieval_degrades_rather_than_raising() -> None:
 # --- the unverified generation cannot be published ---------------------
 
 
-def test_a_turn_with_no_recorded_verdict_fails_verification() -> None:
-    # Absence is failure, not neutrality. A turn whose hook never fired has no verdict, and
-    # treating that as a pass is exactly the bypass Req 31.5 forbids.
-    pipeline = _pipeline(served=_SERVED)
-    verdict = pipeline.verify("some guidance", RetrievalRecorder().values())
+def test_ungrounded_guidance_fails_verification() -> None:
+    # The check now runs HERE rather than in a hook, because a probe showed the hook cannot see
+    # the text: on `agent.structured_output`, AfterInvocationEvent.result is None and
+    # agent.messages is empty. See the module docstring.
+    pipeline = _pipeline(served=_SERVED, guidance="The index is 4242 right now.")
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("The index is 4242 right now.", retrieved)
 
     assert verdict.passed is False
-    assert "hook did not run" in " ".join(verdict.failures)
+    assert "ungrounded:4242" in verdict.failures, verdict.failures
+    assert "grounding" in verdict.checks
 
 
-def test_run_refuses_to_assemble_without_a_verdict() -> None:
+def test_run_refuses_to_assemble_an_ungrounded_generation() -> None:
     # End to end through the Template Method: `run` raises BEFORE assembly, so an unverified
-    # generation is never built into a response.
-    pipeline = _pipeline(served=_SERVED)
+    # generation is never built into a response. This is what makes the checks unbypassable now
+    # that they are not in a hook — the order is fixed and `run` is not overridden.
+    pipeline = _pipeline(served=_SERVED, guidance="The index is 4242 right now.")
     with pytest.raises(RuntimeError, match="not verified"):
         pipeline.run(_request())
+
+
+def test_a_guardrail_intervention_fails_verification() -> None:
+    # Req 34.6 withholds on an intervention, and the verdict names the KIND, not the text.
+    pipeline = _pipeline(
+        served=_SERVED,
+        guidance="Take two puffs of your inhaler now.",
+        guardrail=LocalGuardrailChecker(),
+    )
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("Take two puffs of your inhaler now.", retrieved)
+
+    assert verdict.passed is False
+    assert "guardrail" in verdict.checks
+    assert not any("inhaler" in failure for failure in verdict.failures), (
+        "a failure quoted the offending text, which Req 8.6 forbids"
+    )
+
+
+def test_an_unavailable_guardrail_also_withholds() -> None:
+    # Req 34.6 fails CLOSED on UNAVAILABLE as well, and keeps it distinct from INTERVENED so an
+    # operator can tell "the guardrail stopped this" from "the guardrail could not look".
+    pipeline = _pipeline(
+        served=_SERVED,
+        guidance="Conditions are moderate.",
+        guardrail=LocalGuardrailChecker(unavailable=True),
+    )
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("Conditions are moderate.", retrieved)
+
+    assert verdict.passed is False
+    assert any("unavailable" in failure for failure in verdict.failures), verdict.failures
+
+
+def test_the_verdict_names_every_check_that_ran() -> None:
+    # A verdict with an empty check list is refused at construction, and a PASS naming
+    # nothing is indistinguishable from a verifier that did nothing.
+    pipeline = _pipeline(served=_SERVED)
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("Conditions are moderate today.", retrieved)
+
+    assert verdict.checks == (
+        "grounding",
+        "forbidden-claims",
+        "medication-closure",
+        "guardrail",
+    )
 
 
 def test_a_verified_turn_answers_with_the_guidance() -> None:
@@ -159,6 +212,7 @@ def test_an_escalating_turn_never_calls_the_model() -> None:
         red_flag_rules=_RULES,
         emergency_guidance=_EMERGENCY,
         forbidden_patterns=(),
+        guardrail=LocalGuardrailChecker(),
         retrieve_snapshot=lambda: _SERVED,
     )
 

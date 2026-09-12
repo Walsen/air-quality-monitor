@@ -1596,7 +1596,39 @@ directory.
       adapter by name, with the Clock and all ports injected at one place; a test asserting the adapter
       factory table agrees exactly with the loader's registry, so a name the configuration permits but
       nothing builds fails offline
-    - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2_
+    - DONE SO FAR: `composition.py`'s `ADAPTER_FACTORIES` (6 ports, 11 names) with the registry-agreement
+      test in both directions, and `agent/advisory.py`'s `AdvisoryTurnPipeline` — the first concrete
+      `TurnPipeline`, per turn by construction because the recorder, the ledger and the tools are all
+      per-turn state, which is also what makes the injected `run_turn` concurrency-safe
+    - REQ 31.5 DIVERGENCE, MEASURED AND DELIBERATE. The requirement wants the Req 8 and Req 29 output
+      checks "registered through Strands hooks at the point after generation, so no return path can
+      bypass them". A HOOK CANNOT DO THAT on the pinned SDK, and a probe established why rather than
+      inferring it: on `agent.structured_output`, `AfterInvocationEvent.result` is `None` — the SDK's own
+      docstring says so and the probe confirmed it — AND `agent.messages` is EMPTY (count 0). So the event
+      exposes no generated text. The hook also fires INSIDE the model call, before the text returns to the
+      pipeline, so a closure reading pipeline state would read nothing either
+    - RESOLVED as Option A: the checks run in the pipeline's `verify` step on the returned text —
+      grounding, forbidden claims, medication closure and the guardrail, each named in the verdict. What
+      makes them unbypassable is the Template Method rather than the hook: `run` fixes the order, raises
+      BEFORE assembly on a failed verdict, is not overridden, and an AST test reads it. The ledger keeps
+      the fail-closed half, since an absent verdict is a failure rather than neutrality.
+      `VerificationHook` is left in place for anything a hook genuinely can see
+    - ALSO FOUND, not yet acted on: `Agent.structured_output` is DEPRECATED on the pinned version, which
+      tells callers to pass `structured_output_model` into the invocation instead. That path drives the
+      model for TWO turns rather than one, so every existing `ScriptedModel` script becomes insufficient
+      and the migration touches existing tests. Req 31.1 pins an exact version, so staying on the
+      deprecated call is safe for now — but it is a known future break, recorded here rather than
+      discovered later
+    - `ruff`'s ARG002 caught a stub in my own new code: `audit` ignored `retrieved` because
+      `threshold_crossed` and `driving_pollutant` were hardcoded. Both are derived from the basis now,
+      with the threshold counted as crossed only when the driving species' sub-index actually reached it
+    - PR #22's config-completeness staleness test then forced `red_flag_rules` and `forbidden_patterns`
+      out of `AWAITING_COMPOSITION`, which is exactly what that test exists to do
+    - STILL TO DO in 21.1: construct the Strands `Agent` per turn with this turn's tools and the
+      `invoke` closure, then `src/aqm_advisor/main.py` — which DELIBERATELY fails task 20's entry-module
+      test, to be resolved in the same commit
+    - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
+      rather than a hook — see above)_
 
   - [ ] 21.2 Write the README from values read in code
     - Commands, every configuration default, the routes, the tool set, and the guardrail posture, with a
