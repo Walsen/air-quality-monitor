@@ -1,0 +1,41 @@
+[project]
+name = "aqm-advisor-infra"
+version = "0.1.0"
+description = "CDK infrastructure for the AI Advisor Agent on Amazon Bedrock AgentCore Runtime."
+requires-python = ">=3.12"
+dependencies = [
+    "aws-cdk-lib==2.263.0",
+    "constructs==10.5.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "ruff==0.14.0",
+    "mypy==1.14.1",
+]
+
+[tool.ruff]
+line-length = 96
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "ARG", "D"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D103", "ARG001", "ARG002"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["aqm_advisor_infra", "tests", "app.py"]
+
+[tool.pytest.ini_options]
+# Own config so the parent agent-advisor/pyproject.toml's does not apply — its minversion
+# and markers belong to the service, not to this infra project.
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

@@ -1596,7 +1596,73 @@ directory.
       adapter by name, with the Clock and all ports injected at one place; a test asserting the adapter
       factory table agrees exactly with the loader's registry, so a name the configuration permits but
       nothing builds fails offline
-    - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2_
+    - DONE SO FAR: `composition.py`'s `ADAPTER_FACTORIES` (6 ports, 11 names) with the registry-agreement
+      test in both directions, and `agent/advisory.py`'s `AdvisoryTurnPipeline` — the first concrete
+      `TurnPipeline`, per turn by construction because the recorder, the ledger and the tools are all
+      per-turn state, which is also what makes the injected `run_turn` concurrency-safe
+    - REQ 31.5 DIVERGENCE, MEASURED AND DELIBERATE. The requirement wants the Req 8 and Req 29 output
+      checks "registered through Strands hooks at the point after generation, so no return path can
+      bypass them". A HOOK CANNOT DO THAT on the pinned SDK, and a probe established why rather than
+      inferring it: on `agent.structured_output`, `AfterInvocationEvent.result` is `None` — the SDK's own
+      docstring says so and the probe confirmed it — AND `agent.messages` is EMPTY (count 0). So the event
+      exposes no generated text. The hook also fires INSIDE the model call, before the text returns to the
+      pipeline, so a closure reading pipeline state would read nothing either
+    - RESOLVED as Option A: the checks run in the pipeline's `verify` step on the returned text —
+      grounding, forbidden claims, medication closure and the guardrail, each named in the verdict. What
+      makes them unbypassable is the Template Method rather than the hook: `run` fixes the order, raises
+      BEFORE assembly on a failed verdict, is not overridden, and an AST test reads it. The ledger keeps
+      the fail-closed half, since an absent verdict is a failure rather than neutrality.
+      `VerificationHook` is left in place for anything a hook genuinely can see
+    - ALSO FOUND, not yet acted on: `Agent.structured_output` is DEPRECATED on the pinned version, which
+      tells callers to pass `structured_output_model` into the invocation instead. That path drives the
+      model for TWO turns rather than one, so every existing `ScriptedModel` script becomes insufficient
+      and the migration touches existing tests. Req 31.1 pins an exact version, so staying on the
+      deprecated call is safe for now — but it is a known future break, recorded here rather than
+      discovered later
+    - `ruff`'s ARG002 caught a stub in my own new code: `audit` ignored `retrieved` because
+      `threshold_crossed` and `driving_pollutant` were hardcoded. Both are derived from the basis now,
+      with the threshold counted as crossed only when the driving species' sub-index actually reached it
+    - PR #22's config-completeness staleness test then forced `red_flag_rules` and `forbidden_patterns`
+      out of `AWAITING_COMPOSITION`, which is exactly what that test exists to do
+    - VALIDATED FOR REAL, the first time this service ran outside pytest. The image BUILT, reported
+      `arm64/linux` NATIVELY on an aarch64 host so the platform pin is genuinely correct rather than
+      emulated, started with only two `AQM_ADVISOR_*` variables and NO AWS configuration, and emitted
+      Req 23.1's startup line as single-line JSON. `GET /ping` answered `{"status":"Healthy",...}` 200,
+      and `POST /invocations` answered **HTTP 200 with a degraded envelope** rather than a 500 — so
+      Req 32.5's rule that a failure never reaches the caller as an opaque 424 holds against a real
+      server, not only against `httpx.ASGITransport`
+    - THAT LIVE TURN DEGRADED FOR THE RIGHT REASON: `_identity_for` raised, the boundary converted it
+      into a fail-closed degraded answer naming no exception, so the identity gap is operationally
+      visible instead of silently writing a wrong audit subject
+    - A CONFIG GAP FOUND WHILE WIRING, which exposes a blind spot in 21.1's own deliverable.
+      `REGISTERED_ADAPTERS` offers `advice_audit_store=dynamodb` and `ADAPTER_FACTORIES` has a factory
+      for it, so the agreement test passes — but `AdvisorConfig` carries NO TABLE NAME, so the factory
+      cannot be called. That test proves a name maps to a CALLABLE, never that the callable can be
+      called with what configuration supplies. `main.py` refuses the combination loudly until the
+      loader gains the field
+    - `VerificationHook` HAD NEVER BEEN WIRED TO AN AGENT. Passing it to `Agent(hooks=[...])` failed
+      `mypy --strict` because its `register_hooks` lacked the `**kwargs` the SDK's `HookProvider`
+      protocol declares. The SDK calls it positionally (`registry.py`: `hook.register_hooks(self)`) so
+      it would have worked at runtime — but the class had only ever been TYPED as a provider, never
+      used as one
+    - The existing "nothing writes to stdout" test caught a `print()` added for the config-error path.
+      Correct: the logger emits single-line JSON on stdout, so a stray print corrupts it
+    - STILL TO DO in 21.1: the audit table name, and the pseudonymous user identity
+    - CDK DEPLOYMENT ADDED (out of task-21 scope, driven by the deadline): `agent-advisor/infra/` is
+      a self-contained CDK project that deploys the advisor to AgentCore Runtime. `CfnRuntime` fed by
+      a `DockerImageAsset(platform=LINUX_ARM64)` so the image exists before the runtime; execution
+      role trusts `bedrock-agentcore.amazonaws.com` with `aws:SourceAccount`/`aws:SourceArn`
+      confused-deputy guards and grants `bedrock:InvokeModel` on `us.anthropic.claude-sonnet-4-6`
+      (the `us.` inference-profile prefix is mandatory — the bare id errors in every US region);
+      customJwtAuthorizer audience is `AQM_COGNITO_CLIENT_ID`, the same client Service 2 validates.
+      Six offline synth-assertion tests + a real `cdk synth` both pass with NO account and NO daemon,
+      because DockerImageAsset builds at deploy. `just synth-advisor-infra` runs the gate. A real
+      `cdk deploy` is blocked on three operator steps the agent cannot take: grant + `cdk bootstrap`
+      from an admin identity, the Anthropic model-access console form, and a running Buildx engine.
+      Recorded here rather than in a deployment spec because none existed for Service 3 and the
+      deadline did not allow writing one first; a Service 3 deployment spec is still owed
+    - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
+      rather than a hook — see above)_
 
   - [ ] 21.2 Write the README from values read in code
     - Commands, every configuration default, the routes, the tool set, and the guardrail posture, with a
