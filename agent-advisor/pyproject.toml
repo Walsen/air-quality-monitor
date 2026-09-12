@@ -63,6 +63,7 @@ select = [
     "SIM",               # simplify
     "RUF",               # ruff-specific
     "ANN",               # missing annotations
+    "ARG",               # unused arguments -- a parameter accepted and then dropped
     "D",                 # docstrings
 ]
 ignore = [
@@ -72,13 +73,19 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # Tests document themselves through their names; a docstring per assertion adds noise.
-"tests/**" = ["D103"]
+# ARG001/ARG002: a test double exists to SATISFY a port signature, so ignoring most of what it is
+# handed is its normal condition rather than a defect. 43 sites, none of which a reader would learn
+# anything from. The `src/` side is annotated per site instead, so a real dropped parameter there
+# still fails the gate.
+"tests/**" = ["D103", "ARG001", "ARG002"]
 # The scripted Model OVERRIDES the Strands `Model` ABC, whose own signatures are typed `Any`
 # (`update_config(**model_config: Any)`, `get_config() -> Any`, `stream(messages: Any, ...)`,
 # `structured_output(prompt: Any, ...)`). Narrowing them here would break the override that DD2
 # depends on — the whole point is that this class IS a `Model` wherever one is expected. The
 # untyped boundary stops at this file: everything the pipeline reads off it is typed.
-"src/aqm_advisor/adapters/model/scripted.py" = ["ANN401"]
+# ARG002 for the same reason: the ABC decides the parameters, and a scripted stand-in has no use
+# for `system_prompt` or `**kwargs`. It cannot drop them without ceasing to be a `Model`.
+"src/aqm_advisor/adapters/model/scripted.py" = ["ANN401", "ARG002"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"

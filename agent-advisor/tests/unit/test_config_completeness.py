@@ -14,14 +14,15 @@ a setting no builder even accepts.
 
 WHAT IT DOES NOT CATCH, stated so nobody mistakes a green run for proof:
 
-* A parameter ACCEPTED and then dropped in the body. `ruff`'s `ARG` rules would see this and
-  are not enabled here; the 9 sites in `src/` today are all scripted adapters legitimately
-  ignoring a `credential` they have no remote to send it to, so switching `ARG` on is a real
-  change with a real cost rather than a free win.
 * A parameter accepted and then NEUTRALISED for some values. The turn budget was once read
   as `asyncio.timeout(budget or None)`, which honoured every value but `0` -- where
   `0 or None` is `None` and the turn became unbounded. No static check sees that; only a
   test that varies the value does.
+
+A parameter ACCEPTED and then dropped in the body USED to be the other gap here. `ruff`'s
+`ARG` rules are now enabled and cover it: the 9 pre-existing sites in `src/` were all
+scripted adapters ignoring a `credential` they have no remote for, annotated per site so a
+genuinely dropped parameter still fails the gate.
 
 So this file narrows the gap, it does not close it. The loader tests assert a setting
 PARSES, this asserts it is PLUMBED, and only a behavioural test asserts it MATTERS.
