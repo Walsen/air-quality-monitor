@@ -1,0 +1,8 @@
+[
+  {
+    "name": "default",
+    "description": "POC advisor deploy - account 862307432587, us-east-1.",
+    "account": "862307432587",
+    "region": "us-east-1"
+  }
+]

@@ -5,7 +5,12 @@
 .git
 infra
 tests
+# The AgentCore deploy scaffold lives under deploy/ and contains this very cdk.out
+# tree; without excluding it the build-context asset copies cdk.out into itself and
+# recurses until the path is too long (ENAMETOOLONG at synth).
+deploy
 cdk.out
+**/cdk.out
 **/__pycache__
 **/*.pyc
 .pytest_cache
