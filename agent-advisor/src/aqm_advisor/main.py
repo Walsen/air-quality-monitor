@@ -38,15 +38,13 @@ from aqm_advisor.adapters.serving.http import HttpServingClient
 from aqm_advisor.agent.advisory import build_turn_runner
 from aqm_advisor.agent.prompt import load_system_prompt
 from aqm_advisor.agentcore.app import build_app
-from aqm_advisor.composition import IdentityUnavailableError, build_pipeline_factory
+from aqm_advisor.composition import build_pipeline_factory, identity_from_snapshot
 from aqm_advisor.config.loader import (
     REGISTERED_ADAPTERS,
     AdvisorConfig,
     ConfigError,
     resolve_and_validate,
 )
-from aqm_advisor.domain.idempotency import TurnIdentity
-from aqm_advisor.domain.models import AdvisoryRequest
 from aqm_advisor.observability.logging import configure_logging, get_logger
 from aqm_advisor.ports.clock import Clock, FixedClock, SystemClock
 from aqm_advisor.ports.protocols import AdviceAuditStore, GuardrailChecker, ServingClient
@@ -60,28 +58,13 @@ class UnbuildableAdapterError(RuntimeError):
     """A configured adapter name has a factory but no way to supply its arguments."""
 
 
-def _identity_for(_request: AdvisoryRequest) -> TurnIdentity:
-    """The pseudonymous user identity for this turn — currently unobtainable.
-
-    See the module docstring. This is a deliberate refusal rather than an omission: the three
-    candidate sources are each closed off by a requirement or by the platform, so inventing a
-    value here would put a wrong subject into an audit record that exists to be trustworthy.
-    """
-    raise IdentityUnavailableError(
-        "no compliant source of the pseudonymous user identity: Req 5.6 forbids parsing the "
-        "credential, AgentCore forwards no verified claim, and Service 2 does not return one. "
-        "See tasks.md, task 21.1."
-    )
-
-
 def _selected(config: AdvisorConfig, port: str) -> str:
     """The adapter name configuration chose for `port`, defaulting to the registry's first."""
     return config.adapters.get(port) or REGISTERED_ADAPTERS[port][0]
 
 
 def _serving_client(config: AdvisorConfig) -> ServingClient:
-    name = _selected(config, "serving_client")
-    if name == "http":
+    if _selected(config, "serving_client") == "http":
         return HttpServingClient(
             base_url=config.serving_base_url,
             timeout_seconds=config.request_timeout_seconds,
@@ -90,8 +73,7 @@ def _serving_client(config: AdvisorConfig) -> ServingClient:
 
 
 def _guardrail(config: AdvisorConfig) -> GuardrailChecker:
-    name = _selected(config, "guardrail_checker")
-    if name == "bedrock":
+    if _selected(config, "guardrail_checker") == "bedrock":
         if not config.guardrail_identifier or not config.guardrail_version:
             raise UnbuildableAdapterError(
                 "guardrail_checker=bedrock needs guardrail_identifier and guardrail_version"
@@ -105,15 +87,12 @@ def _guardrail(config: AdvisorConfig) -> GuardrailChecker:
 
 
 def _audit_store(config: AdvisorConfig) -> AdviceAuditStore:
-    name = _selected(config, "advice_audit_store")
-    if name == "dynamodb":
-        # A CONFIG GAP FOUND HERE, at task 21.1, and recorded rather than papered over.
-        # `REGISTERED_ADAPTERS` offers `dynamodb`, and `ADAPTER_FACTORIES` has a factory for it,
-        # so the registry-agreement test passes — but `AdvisorConfig` carries no TABLE NAME, so
-        # the factory cannot be called. That test proves a name maps to a CALLABLE, not that the
-        # callable can be called with what configuration provides, which is the same blind spot
-        # `test_config_completeness.py` documents for a parameter accepted and then dropped.
-        # Adding the field is a loader change; refusing loudly is correct until then.
+    if _selected(config, "advice_audit_store") == "dynamodb":
+        # A CONFIG GAP, recorded rather than papered over. `REGISTERED_ADAPTERS` offers
+        # `dynamodb` and `ADAPTER_FACTORIES` has a factory, so the agreement test passes — but
+        # `AdvisorConfig` carries no TABLE NAME, so the factory cannot be called. That test
+        # proves a name maps to a CALLABLE, never that the callable can be called with what
+        # configuration supplies. Adding the field is a loader change.
         raise UnbuildableAdapterError(
             "advice_audit_store=dynamodb needs a table name, and AdvisorConfig has no "
             "field for one. See tasks.md, task 21.1."
@@ -122,8 +101,7 @@ def _audit_store(config: AdvisorConfig) -> AdviceAuditStore:
 
 
 def _model(config: AdvisorConfig) -> Model:
-    name = _selected(config, "model")
-    if name == "bedrock":
+    if _selected(config, "model") == "bedrock":
         return build_bedrock_model(
             model_id=config.model_id,
             model_region=config.model_region,
@@ -149,7 +127,7 @@ def build_from_config(config: AdvisorConfig) -> object:
     """
     logger = get_logger(_LOGGER_NAME)
     make_pipeline = build_pipeline_factory(
-        identity_for=_identity_for,
+        identity_for=identity_from_snapshot,
         serving_client=_serving_client(config),
         guardrail=_guardrail(config),
         audit_store=_audit_store(config),

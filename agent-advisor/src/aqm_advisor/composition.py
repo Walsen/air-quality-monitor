@@ -50,6 +50,7 @@ from aqm_advisor.agent.verification import VerificationHook, VerificationLedger
 from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import AdvisoryRequest
 from aqm_advisor.domain.redflag import RedFlagRule
+from aqm_advisor.observability.correlation import current_session_id, new_session_id
 from aqm_advisor.observability.logging import EventLogger
 from aqm_advisor.ports.clock import Clock, FixedClock, SystemClock
 from aqm_advisor.ports.protocols import (
@@ -96,7 +97,12 @@ instances would also make two turns share one `RecordingAssociationTrigger`, whi
 the cross-turn leakage the per-turn tool construction rule exists to prevent.
 """
 
-__all__ = ["ADAPTER_FACTORIES", "IdentityUnavailableError", "build_pipeline_factory"]
+__all__ = [
+    "ADAPTER_FACTORIES",
+    "IdentityUnavailableError",
+    "build_pipeline_factory",
+    "identity_from_snapshot",
+]
 
 
 class IdentityUnavailableError(RuntimeError):
@@ -118,7 +124,7 @@ class IdentityUnavailableError(RuntimeError):
 
 def build_pipeline_factory(
     *,
-    identity_for: Callable[[AdvisoryRequest], TurnIdentity],
+    identity_for: Callable[[AdvisoryRequest, object], TurnIdentity],
     serving_client: ServingClient,
     guardrail: GuardrailChecker,
     audit_store: AdviceAuditStore,
@@ -144,10 +150,24 @@ def build_pipeline_factory(
     """
 
     def make_pipeline(request: AdvisoryRequest) -> AdvisoryTurnPipeline:
-        identity = identity_for(request)
         recorder = RetrievalRecorder()
         ledger = VerificationLedger()
         credential = request.credential.get_secret_value()
+
+        # THE SNAPSHOT IS FETCHED ONCE, HERE, and serves two purposes: it is step 2's body,
+        # and it carries the pseudonymous user identity in its `user` field.
+        #
+        # THAT FIELD IS THE ANSWER TO WHAT LOOKED LIKE A SPEC GAP. Req 20.2 needs the identity
+        # for the audit record; Req 5.6 forbids parsing the credential to get it; AgentCore
+        # forwards no verified claim. I concluded Service 2 never returned one, having grepped
+        # its source for `userId` — the field is `user`, and a live call showed it as the
+        # response's FIRST field. So the identity arrives the lawful way: a value Service 2
+        # served this turn.
+        #
+        # Fetching once rather than twice matters beyond efficiency: two calls could return two
+        # different bodies, and the audit record would then name a different turn from basis.
+        snapshot = _snapshot(serving_client, credential)
+        identity = identity_for(request, snapshot)
 
         tools = build_retrieval_tools(
             client=serving_client,
@@ -181,10 +201,35 @@ def build_pipeline_factory(
             emergency_guidance=emergency_guidance,
             forbidden_patterns=forbidden_patterns,
             guardrail=guardrail,
-            retrieve_snapshot=lambda: _snapshot(serving_client, credential),
+            retrieve_snapshot=lambda: snapshot,
         )
 
     return make_pipeline
+
+
+def identity_from_snapshot(request: AdvisoryRequest, snapshot: object) -> TurnIdentity:
+    """The pseudonymous identity Service 2 served, paired with this turn's session id.
+
+    Req 5.6 keeps the credential opaque, so the identity cannot come from the token. It comes
+    from the `user` field of the Air_Quality_Snapshot — a value Service 2 derived from the token
+    IT verified, which is the same pseudonymous identity its own audit uses.
+
+    The session id comes from the correlation baggage task 17 wired, so a retried trigger
+    resumes the same session (Req 33.11) and the write keys stay stable across a redelivery.
+
+    Raises:
+        IdentityUnavailableError: when the snapshot carried no identity. Failing is correct — an
+            audit record with an invented subject is one `forget_user` could never erase.
+    """
+    del request
+    user = snapshot.get("user") if isinstance(snapshot, dict) else None
+    if not isinstance(user, str) or not user.strip():
+        raise IdentityUnavailableError(
+            "the air-quality snapshot carried no `user`, so this turn has no pseudonymous "
+            "identity to audit against"
+        )
+    session_id = current_session_id() or new_session_id()
+    return TurnIdentity(user_id=user.strip(), session_id=session_id)
 
 
 def _snapshot(client: ServingClient, credential: str) -> object | None:
