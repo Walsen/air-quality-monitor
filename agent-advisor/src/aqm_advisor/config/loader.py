@@ -122,19 +122,21 @@ must pass with no credentials and no network, so a cloud default would make the 
 command fail on a clean checkout.
 """
 
-_ADAPTERS_NEEDING_A_CREDENTIAL: Mapping[str, tuple[str, str]] = {
+_ADAPTERS_WITH_AN_OPTIONAL_CREDENTIAL: Mapping[str, tuple[str, str]] = {
     "model": ("model_credential_path", "the configured Model_Port adapter"),
 }
-"""Req 6.6 and 23.4: which adapter selection makes a credential REQUIRED.
+"""Req 6.6 and 23.4: which adapter selection MAY be given a credential path.
 
-Keyed by adapter rather than checked unconditionally, because the scripted model needs none and
-demanding one would make the offline suite unstartable. "Validate every value" does not mean
-"demand every value".
+Req 6.6 resolves the credential "from the environment OR a runtime path". A path is therefore
+OPTIONAL, not required: when one is supplied it must resolve, and when none is, the adapter
+falls back to the SDK's own credential chain — on AgentCore Runtime, the execution IAM role.
+An earlier version REQUIRED a path whenever the bedrock adapter was selected, which refused the
+one deployment target `build_bedrock_model`'s no-path branch was written for. "Validate every
+value" does not mean "demand every value".
+
+No adapter-name exemption is needed any more: since a path is never required, the scripted model
+that needs none is covered by the same "validate only when supplied" rule as everything else.
 """
-
-_CREDENTIAL_EXEMPT_NAMES: Mapping[str, frozenset[str]] = {
-    "model": frozenset({"scripted"}),
-}
 
 _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
     "turn": frozenset({"max_utterance_length", "locale"}),
@@ -578,20 +580,20 @@ def _validate_guardrail(resolved: Mapping[str, Any], problems: _Problems) -> Non
 def _validate_credentials(
     resolved: Mapping[str, Any], problems: _Problems, exists: object
 ) -> None:
-    """Req 6.6 and 23.4: a credential the SELECTED adapter needs must resolve.
+    """Req 6.6 and 23.4: a credential path, WHEN SUPPLIED, must resolve.
 
-    Reports the configuration KEY, never the value, and never reads the file — it only asks
-    whether the path resolves, so no key material enters this process.
+    A path is optional (Req 6.6 permits "the environment OR a runtime path"): an ABSENT path is
+    the ambient-chain case the adapter supports (the SDK resolves credentials itself), so it is
+    not an error. Only a path that is supplied and does not resolve is refused — reported by the
+    KEY, never the value, and the file is never opened, so no key material enters this process.
     """
     checker = exists if callable(exists) else Path.exists
-    for port, (key, needed_by) in sorted(_ADAPTERS_NEEDING_A_CREDENTIAL.items()):
-        if resolved["adapters"][port] in _CREDENTIAL_EXEMPT_NAMES.get(port, frozenset()):
-            continue
+    for key, needed_by in sorted(_ADAPTERS_WITH_AN_OPTIONAL_CREDENTIAL.values()):
         supplied = resolved.get(key)
         if not supplied:
-            problems.add(key, f"required by {needed_by} but not configured")
-        elif not checker(Path(str(supplied))):
-            problems.add(key, f"required by {needed_by} but does not resolve")
+            continue  # ambient chain (e.g. the AgentCore execution role); Req 6.6 permits it
+        if not checker(Path(str(supplied))):
+            problems.add(key, f"supplied for {needed_by} but does not resolve")
 
 
 def _build_bounds(resolved: Mapping[str, Any], problems: _Problems) -> InvocationBounds | None:
