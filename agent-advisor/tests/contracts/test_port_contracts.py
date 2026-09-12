@@ -43,7 +43,7 @@ def test_an_offline_case_is_never_skipped() -> None:
     # environment.
     offline = next(case for case in synthetic_cases() if case.is_offline)
     assert would_skip(offline, {}) is False
-    assert would_skip(offline, {"AQM_ADVISOR_TEST_ENDPOINT": "https://x"}) is False
+    assert would_skip(offline, {"AQM_ADVISOR_TEST_ENDPOINT": "https://x.invalid"}) is False
 
 
 def test_a_cloud_case_skips_only_when_its_endpoint_is_absent() -> None:
@@ -54,7 +54,7 @@ def test_a_cloud_case_skips_only_when_its_endpoint_is_absent() -> None:
     assert would_skip(cloud, {"AQM_ADVISOR_TEST_ENDPOINT": "   "}) is True, (
         "a blank endpoint is not a configured endpoint"
     )
-    assert would_skip(cloud, {"AQM_ADVISOR_TEST_ENDPOINT": "https://x"}) is False
+    assert would_skip(cloud, {"AQM_ADVISOR_TEST_ENDPOINT": "https://x.invalid"}) is False
 
 
 # --- THE fence ---------------------------------------------------------
