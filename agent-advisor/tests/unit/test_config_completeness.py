@@ -46,8 +46,6 @@ AWAITING_COMPOSITION: dict[str, str] = {
     "locale": "task 21 -- selects the response language",
     "bounds": "task 21 -- InvocationBounds reaches the turn pipeline",
     "guardrail_enabled": "task 21 -- decides whether the guardrail is constructed at all",
-    "forbidden_patterns": "task 21 -- Req 30.2's local fast path",
-    "red_flag_rules": "task 21 -- the emergency detector",
     "emergency_guidance_fallback": "task 21 -- build_app already takes emergency_guidance",
     "system_prompt_path": "task 21 -- loads the prompt the agent is built with",
     "adapters": "task 21 -- selects real adapter over scripted, per port",
