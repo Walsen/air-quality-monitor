@@ -59,6 +59,15 @@ _ALLOWED_TRIGGER_REFERENCES = {
     "ports/protocols.py": "declares the port -- the design's DD13 seam",
     "adapters/local.py": "RecordingAssociationTrigger, the test double",
     "config/loader.py": "registers the port's adapter names, none of them production",
+    "composition.py": (
+        "maps the registry's only name to the recording double. Added at task 21.1, when "
+        "this fence fired on it -- which is the fence working. Allowing the FILE does not "
+        "weaken the protection, because the registry gate stands in front of it: a "
+        "production trigger would need a REGISTERED_ADAPTERS entry, and the test above "
+        "pins that mapping to exactly ('recording',). So a new factory here without a "
+        "registry entry is unreachable and fails the composition agreement test, and one "
+        "WITH an entry fails the task 18 test instead."
+    ),
 }
 """Where the trigger may be named. Anywhere else means somebody wired it.
 
