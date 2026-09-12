@@ -1,0 +1,14 @@
+[project]
+name = "aqm-infra"
+version = "0.1.0"
+description = "POC AWS deployment (CDK) for the Air Quality Monitor services"
+requires-python = "==3.12.*"
+# Pinned exact per the dev-environment steering. aws-cdk-lib is a uv dependency
+# (imported); the cdk CLI is a devbox package (invoked) — see that steering.
+dependencies = [
+    "aws-cdk-lib==2.170.0",
+    "constructs==10.4.2",
+]
+
+[dependency-groups]
+dev = ["mypy==1.19.1", "ruff==0.15.4"]
