@@ -179,4 +179,4 @@ synth:
 # DockerImageAsset builds at deploy, not synth, so this contacts nothing.
 synth-advisor-infra:
     cd agent-advisor/infra && uv run pytest tests/ -c pyproject.toml -q
-    cd agent-advisor/infra && npx cdk synth --no-lookups > /dev/null && echo "synth OK"
+    cd agent-advisor/infra && AQM_CDK_SYNTH_PLACEHOLDER=1 npx cdk synth --no-lookups > /dev/null && echo "synth OK"
