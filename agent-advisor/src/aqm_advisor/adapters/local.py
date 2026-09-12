@@ -197,6 +197,29 @@ class ScriptedServingClient:
     A failure is scripted as a :class:`ServingFailureKind` rather than an arbitrary exception,
     because Requirement 21.1 requires a degraded response naming the KIND — so the fake can only
     produce failures the pipeline is obliged to handle.
+
+    EVERY METHOD IGNORES `credential`, each marked `noqa: ARG002` at its own site. That is
+    the normal condition of a client with no remote to send one to.
+
+    RENAMING IT TO `_credential` WOULD SILENCE THE RULE WITHOUT THE ANNOTATION, and is
+    rejected on measured grounds: `mypy --strict` was checked and does NOT flag the rename,
+    even though the port declares `credential` as positional-or-keyword and the real HTTP
+    client shares that signature. So a caller invoking the port with `credential=` would keep
+    working against the real adapter and raise `TypeError` against this one, at runtime, with
+    no type error to warn anybody first. The annotation keeps the signatures identical; the
+    rename buys tidiness at the price of a divergence the type checker provably cannot see.
+
+    The annotations are PER SITE rather than a file-wide ignore deliberately. `profile_put`'s
+    own docstring makes the point — an adapter that accepted `idempotency_key` and ignored it
+    would let every idempotency test pass while the real protection existed nowhere. A
+    blanket ignore here would hide exactly that defect, which was confirmed by dropping the
+    key and watching `ARG002` fire. Anything unused in this file OTHER than `credential`
+    still fails the gate.
+
+    The credential is deliberately NOT recorded in `calls` either. It would put a bearer
+    token in a list that tests print on failure, which Requirement 8.6 forbids — so "use the
+    parameter to silence the warning" is not available, and the annotation is the honest
+    option.
     """
 
     air_quality_body: Mapping[str, object] | ServingFailureKind = field(
@@ -234,13 +257,13 @@ class ScriptedServingClient:
             raise ServingClientError(body)
         return body
 
-    def air_quality(self, credential: str) -> Mapping[str, object]:
+    def air_quality(self, credential: str) -> Mapping[str, object]:  # noqa: ARG002
         """Return the canned air-quality body."""
         return self._answer("air_quality", self.air_quality_body)
 
     def history(
         self,
-        credential: str,
+        credential: str,  # noqa: ARG002
         site_code: str,
         start: dt.datetime,
         end: dt.datetime,
@@ -249,13 +272,13 @@ class ScriptedServingClient:
         """Return the canned history body, recording the site and window asked for."""
         return self._answer("history", self.history_body, site_code, start, end, species)
 
-    def profile_get(self, credential: str) -> Mapping[str, object]:
+    def profile_get(self, credential: str) -> Mapping[str, object]:  # noqa: ARG002
         """Return the canned profile."""
         return self._answer("profile_get", self.profile_body)
 
     def profile_put(
         self,
-        credential: str,
+        credential: str,  # noqa: ARG002
         patch: Mapping[str, object],
         idempotency_key: str,
     ) -> Mapping[str, object]:
@@ -271,12 +294,12 @@ class ScriptedServingClient:
         self._applied_write_keys.add(idempotency_key)
         return self._answer("profile_put", self.profile_body, patch)
 
-    def profile_delete(self, credential: str) -> Mapping[str, object]:
+    def profile_delete(self, credential: str) -> Mapping[str, object]:  # noqa: ARG002
         """Record an erasure."""
         return self._answer("profile_delete", {"profileDeleted": True})
 
     def symptom_entry_put(
-        self, credential: str, entry: Mapping[str, object]
+        self, credential: str, entry: Mapping[str, object]  # noqa: ARG002
     ) -> Mapping[str, object]:
         """Record a diary write and echo it back."""
         return self._answer("symptom_entry_put", {"entry": dict(entry)}, entry)
