@@ -22,6 +22,9 @@ separately rather than folded in, because a set comparison passes over exactly t
 
 from __future__ import annotations
 
+import ast
+import pathlib
+
 from aqm_advisor.composition import ADAPTER_FACTORIES
 from aqm_advisor.config.loader import REGISTERED_ADAPTERS
 
@@ -91,3 +94,44 @@ def test_the_default_adapter_name_is_the_registry_first_entry_and_buildable() ->
             f"{port}'s DEFAULT name {default!r} has no factory, so a service started with no "
             f"configuration for this port cannot build one"
         )
+
+
+# --- the production model invocation must run the tool-use loop --------
+
+_COMPOSITION_SRC = (
+    pathlib.Path(__file__).resolve().parents[2] / "src" / "aqm_advisor" / "composition.py"
+)
+
+
+def _invoke_source() -> str:
+    """The source of `build_pipeline_factory`'s inner `invoke`, as text.
+
+    Read from disk and located by AST so the assertion is about the code that ACTUALLY runs in
+    production, not a re-description of it a comment could let drift.
+    """
+    source = _COMPOSITION_SRC.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "invoke":
+            return ast.get_source_segment(source, node) or ""
+    raise AssertionError("no `invoke` function found in composition.py")
+
+
+def test_the_production_invoke_runs_the_tool_loop_then_takes_structured_output() -> None:
+    # THE BUG THIS PINS. `agent.structured_output(...)` (deprecated in strands 1.55.1) does a
+    # single structured extraction and does NOT run the agentic loop, so the live model never
+    # calls the retrieval tools: a probe had Claude report it had only the ModelGeneration tool,
+    # ground nothing, and every turn degraded. The scripted-model tests could not see it because
+    # the scripted model answers `structured_output` in isolation. The fix — and what this
+    # pins — is passing `structured_output_model` to the ORDINARY agent invocation, which
+    # runs the loop and then produces the structured output. A regression to the deprecated
+    # call fails here.
+    src = _invoke_source()
+    assert "structured_output_model" in src, (
+        "the production invoke must pass `structured_output_model` to the agent invocation so "
+        "the tool-use loop runs before structured output is produced"
+    )
+    assert ".structured_output(" not in src, (
+        "the production invoke must not call the deprecated `agent.structured_output(...)`, "
+        "which skips the tool loop and leaves the model unable to ground its answer"
+    )

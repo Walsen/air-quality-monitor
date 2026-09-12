@@ -30,6 +30,7 @@ from typing import Final
 
 from strands import Agent
 from strands.models.model import Model
+from strands.types.exceptions import StructuredOutputException
 
 from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
 from aqm_advisor.adapters.guardrail.bedrock import ApplyGuardrailChecker
@@ -188,7 +189,29 @@ def build_pipeline_factory(
         )
 
         def invoke() -> ModelGeneration:
-            return agent.structured_output(ModelGeneration, request.utterance)
+            # RUN THE TOOL-USE LOOP, THEN TAKE THE STRUCTURED OUTPUT. `agent.structured_output`
+            # (now deprecated in strands 1.55.1) does a single structured extraction and does
+            # NOT run the agentic loop, so the model never calls the retrieval tools: a live
+            # probe had Claude report "I only have the ModelGeneration tool", produce no
+            # grounded values, and every turn then failed grounding and degraded. The
+            # scripted-model tests missed it: the scripted model answers
+            # `structured_output` in isolation, never running the loop.
+            #
+            # Passing `structured_output_model` to the ordinary invocation runs the full loop —
+            # the model calls air_quality/profile/etc., the recorder fills, and the structured
+            # ModelGeneration is produced from a grounded turn. This is the path strands' own
+            # deprecation notice points to.
+            result = agent(request.utterance, structured_output_model=ModelGeneration)
+            generation = result.structured_output
+            if not isinstance(generation, ModelGeneration):
+                # No structured output despite a completed loop: there is no validated text to
+                # publish. Raise the SDK's own structured-output failure so
+                # `obtain_structured_generation` classifies it as a MODEL failure (Req 6.3b)
+                # rather than letting a None slip through as if it were a generation.
+                raise StructuredOutputException(
+                    "the agent completed without producing structured output"
+                )
+            return generation
 
         return AdvisoryTurnPipeline(
             recorder=recorder,
