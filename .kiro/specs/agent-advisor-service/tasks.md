@@ -1524,17 +1524,51 @@ directory.
     - **Property 19: Claims require retrieval**
     - **Validates: Requirements 2.1, 35.5**
 
-- [ ] 20. Container packaging
-  - [ ] 20.1 Write the Dockerfile and packaging assertions
+- [x] 20. Container packaging
+  - [x] 20.1 Write the Dockerfile and packaging assertions
     - `linux/arm64` base, dependencies installed from the committed lockfile with a frozen resolve, an
       unprivileged user, no baked secret, `0.0.0.0:8080` exposed; packaging assertions read the parsed
       structure rather than raw text so a comment cannot satisfy them
+    - THE "PARSED STRUCTURE" CLAUSE IS NOT PEDANTRY, AND SERVICE 2 PROVES IT. Its equivalent test
+      asserts `"--frozen" in dockerfile` over the whole file, and its image explains itself in a header
+      comment containing the words `uv sync --frozen`. Removing `--frozen` from BOTH of that image's
+      `RUN uv sync` lines was tried: ITS TEST STILL PASSED. That image would re-resolve dependencies at
+      build time and ship a set its suite never gated, with the gate reporting success. Recorded as a
+      finding against Service 2 — not fixed here, since it is a separate service with its own tests
+    - The advisor's assertions run over instructions from a parser that drops comments whole and joins
+      backslash continuations. The same mutation Service 2's gate missed fails here, as do dropping the
+      arm64 platform, floating the interpreter patch, and exposing 8000 instead of 8080
+    - The interpreter is pinned to an exact PATCH (`python:3.12.14-slim`, matching Service 1) rather than
+      Service 2's floating `python:3.12-slim`, so two builds a month apart cannot differ
+    - THE ENTRY MODULE IS TASK 21'S AND IS NOT INVENTED HERE. `CMD` names `aqm_advisor.main`, which task
+      21.1 creates with the composition root. A stand-in that loaded config and then could not build a
+      turn runner would be a broken image that looked packaged, and every packaging assertion would be
+      measuring the placeholder. A test asserts the module's ABSENCE and fails the moment it appears,
+      forcing the note and the test to be deleted in the commit that makes the image runnable
     - _Requirements: 26.2, 26.7, 32.1_
 
-  - [ ] 20.2 Verify the offline guarantee
+  - [x] 20.2 Verify the offline guarantee
     - Assert the default suite passes with no AWS credentials and no network beyond localhost, exercising
       a local adapter for every port; a scrubbed-environment run with every AWS variable removed and the
       SDK config files pointed at nonexistent paths; no offline test names a non-reserved host
+    - THIS FIXED THE STANDING `test-integration-advisor` BUG, as a consequence of doing the task properly
+      rather than as scope creep. That recipe selected ZERO tests since the service began and pytest exits
+      5 on an empty selection, so `just test-integration` could not pass. The scrubbed-environment run is
+      the advisor's first `integration`-marked test; the leg now reports `1 passed, 1647 deselected`,
+      exit 0. Task 19.3's live-model and live-guardrail checks are still owed and TASK 19 REMAINS OPEN
+    - THE MARKER IS LOAD-BEARING, NOT COSMETIC. The test re-invokes the suite as a subprocess with
+      `-m "not integration"`, so an unmarked version would collect itself and recurse until something
+      ran out. Req 26.6's fence is what makes it terminate
+    - MY OWN FIRST RUN PRODUCED FOUR FALSE FINDINGS, all this file's fault, none the codebase's. The host
+      scanner split the authority on ":" before "@", so `https://svcuser:PW@serving.test/api` — a
+      deliberate credential-redaction fixture — reported `svcuser` as the host. Userinfo is stripped
+      first now. Two `https://x` placeholders in the contract tests became `https://x.invalid` rather
+      than the rule being loosened to permit a one-letter host
+    - `boto3.dynamodb.conditions` is exempted from the module-level cloud-import ban BY MODULE, with the
+      reason recorded and a staleness test: it is an expression BUILDER that constructs no session, and
+      it is load-bearing — the task 16.5 review found `forget_user` passing a bare string as
+      `KeyConditionExpression`, which boto3 forwards verbatim, so `Key(...)` from that module IS the fix
+      and banning the import would undo it. A further test proves the premise by building an expression
     - _Requirements: 26.5, 26.6_
 
 - [ ] 21. Final wiring and checkpoint
