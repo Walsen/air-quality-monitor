@@ -52,12 +52,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8080
 
-# THE ENTRY MODULE IS TASK 21'S, AND NAMING IT HERE IS DELIBERATE. Task 21.1 wires the composition
-# root — the pipeline, the tools, the hooks and the entrypoint built from configuration — and this
-# image cannot start until it exists. Task 20 does not invent a stand-in: a module that loaded
-# config and then failed to build a turn runner would be a broken image that looked packaged, and
-# the packaging tests would then be asserting against a placeholder rather than the real entry.
-#
-# A test records the absence and fails once the module appears, which forces this comment to be
-# deleted at the same commit that makes the image runnable.
+# THE ENTRY MODULE EXISTS AS OF TASK 21.1. It loads configuration, selects each adapter by name
+# from the registry, assembles the turn pipeline and serves `/invocations` and `/ping`. A test
+# asserts it builds a servable app from a validated config with no AWS involved, so the image's
+# CMD cannot drift from a module that starts.
 CMD ["python", "-m", "aqm_advisor.main"]

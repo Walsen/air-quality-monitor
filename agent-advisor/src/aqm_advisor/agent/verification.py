@@ -24,6 +24,7 @@ shape available: it looks verified.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from strands.hooks import AfterInvocationEvent, HookRegistry
 
@@ -117,8 +118,19 @@ class VerificationHook:
         self._ledger = ledger
         self._verify = verify
 
-    def register_hooks(self, registry: HookRegistry) -> None:
-        """Subscribe to the after-invocation event."""
+    def register_hooks(
+        self,
+        registry: HookRegistry,
+        **kwargs: Any,  # noqa: ANN401, ARG002 - the SDK protocol declares this shape
+    ) -> None:
+        """Subscribe to the after-invocation event.
+
+        `**kwargs` is required by the SDK's `HookProvider` protocol even though the registry
+        calls this positionally with no extras (`registry.py`: `hook.register_hooks(self)`).
+        Without it `mypy --strict` refuses to pass this class to `Agent(hooks=[...])` — which
+        is how task 21.1 discovered the class had never been wired to an agent at all, only
+        typed as though it had.
+        """
         registry.add_callback(AfterInvocationEvent, self._on_after_invocation)
 
     def _on_after_invocation(self, event: AfterInvocationEvent) -> None:

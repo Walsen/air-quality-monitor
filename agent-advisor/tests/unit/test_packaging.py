@@ -183,18 +183,33 @@ def test_the_image_starts_the_entry_module() -> None:
     assert any(_ENTRY_MODULE in c for c in cmds), cmds
 
 
-def test_the_entry_module_is_task_21s_and_is_not_here_yet() -> None:
-    # RECORDED, NOT HIDDEN. Task 21.1 wires the composition root and creates this module; task
-    # 20 packages the image around it. A stand-in that loaded config and then could not build a
-    # turn runner would be a broken image that looked packaged, and every assertion above would
-    # be measuring the placeholder.
-    #
-    # This test FAILS the moment the module appears, which forces whoever adds it to delete this
-    # test and the Dockerfile note beside it in the same commit -- so the image cannot quietly
-    # stay documented as unrunnable once it runs.
+def test_the_entry_module_exists_and_is_importable() -> None:
+    # REPLACED the absence test at task 21.1, per the instruction that test carried. The
+    # Dockerfile's note about the entry module being task 21's went in the same commit, so the
+    # image can no longer be documented as unrunnable once its entry point exists.
     module = _ADVISOR / "src" / "aqm_advisor" / "main.py"
-    assert not module.is_file(), (
-        "aqm_advisor/main.py now exists, so task 21 has wired the composition root: delete "
-        "this test, drop the Dockerfile's note about the entry module, and add a test that "
-        "the module builds the app from configuration."
-    )
+    assert module.is_file(), f"the image's CMD names {_ENTRY_MODULE}, which does not exist"
+
+
+def test_the_entry_module_builds_the_app_from_configuration() -> None:
+    # The assertion that matters: the module the container starts must actually assemble a
+    # servable app from a validated config, with no AWS involved. Local adapters throughout, so
+    # this belongs in the offline suite.
+    import os
+
+    from aqm_advisor.config.loader import resolve_and_validate
+    from aqm_advisor.main import build_from_config
+
+    env = {
+        "AQM_ADVISOR_SERVING_BASE_URL": "https://serving.test",
+        "AQM_ADVISOR_EMERGENCY_GUIDANCE_FALLBACK": "If you cannot breathe, call 999.",
+        "AQM_ADVISOR_ADAPTERS": (
+            "serving_client=scripted,guardrail_checker=local,advice_audit_store=memory,"
+            "model=scripted,clock=system,association_trigger=recording"
+        ),
+    }
+    config = resolve_and_validate({**{k: v for k, v in os.environ.items() if False}, **env})
+    app = build_from_config(config)
+
+    paths = {str(getattr(route, "path", "")) for route in app.routes}  # type: ignore[attr-defined]
+    assert paths == {"/invocations", "/ping"}

@@ -1624,9 +1624,30 @@ directory.
       with the threshold counted as crossed only when the driving species' sub-index actually reached it
     - PR #22's config-completeness staleness test then forced `red_flag_rules` and `forbidden_patterns`
       out of `AWAITING_COMPOSITION`, which is exactly what that test exists to do
-    - STILL TO DO in 21.1: construct the Strands `Agent` per turn with this turn's tools and the
-      `invoke` closure, then `src/aqm_advisor/main.py` — which DELIBERATELY fails task 20's entry-module
-      test, to be resolved in the same commit
+    - VALIDATED FOR REAL, the first time this service ran outside pytest. The image BUILT, reported
+      `arm64/linux` NATIVELY on an aarch64 host so the platform pin is genuinely correct rather than
+      emulated, started with only two `AQM_ADVISOR_*` variables and NO AWS configuration, and emitted
+      Req 23.1's startup line as single-line JSON. `GET /ping` answered `{"status":"Healthy",...}` 200,
+      and `POST /invocations` answered **HTTP 200 with a degraded envelope** rather than a 500 — so
+      Req 32.5's rule that a failure never reaches the caller as an opaque 424 holds against a real
+      server, not only against `httpx.ASGITransport`
+    - THAT LIVE TURN DEGRADED FOR THE RIGHT REASON: `_identity_for` raised, the boundary converted it
+      into a fail-closed degraded answer naming no exception, so the identity gap is operationally
+      visible instead of silently writing a wrong audit subject
+    - A CONFIG GAP FOUND WHILE WIRING, which exposes a blind spot in 21.1's own deliverable.
+      `REGISTERED_ADAPTERS` offers `advice_audit_store=dynamodb` and `ADAPTER_FACTORIES` has a factory
+      for it, so the agreement test passes — but `AdvisorConfig` carries NO TABLE NAME, so the factory
+      cannot be called. That test proves a name maps to a CALLABLE, never that the callable can be
+      called with what configuration supplies. `main.py` refuses the combination loudly until the
+      loader gains the field
+    - `VerificationHook` HAD NEVER BEEN WIRED TO AN AGENT. Passing it to `Agent(hooks=[...])` failed
+      `mypy --strict` because its `register_hooks` lacked the `**kwargs` the SDK's `HookProvider`
+      protocol declares. The SDK calls it positionally (`registry.py`: `hook.register_hooks(self)`) so
+      it would have worked at runtime — but the class had only ever been TYPED as a provider, never
+      used as one
+    - The existing "nothing writes to stdout" test caught a `print()` added for the config-error path.
+      Correct: the logger emits single-line JSON on stdout, so a stray print corrupts it
+    - STILL TO DO in 21.1: the audit table name, and the pseudonymous user identity
     - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
       rather than a hook — see above)_
 
