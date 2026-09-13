@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Callable
 from typing import Any, Protocol
 
 # A session id AgentCore accepts must be at least this long (the advisor's own
@@ -33,8 +34,17 @@ class AdvisorError(Exception):
 class AdvisorClient(Protocol):
     """One advisory turn: an utterance in, the Advisory_Response mapping out."""
 
-    def advise(self, utterance: str, *, session_id: str) -> dict[str, Any]:
-        """Send `utterance` to the advisor and return its parsed response body."""
+    def advise(
+        self, utterance: str, *, session_id: str, credential: str | None
+    ) -> dict[str, Any]:
+        """Send `utterance` to the advisor and return its parsed response body.
+
+        `credential` is the signed-in user's raw bearer token (the `Bearer `
+        framing already stripped by the caller), or None when the turn carries no
+        user identity. When present it is forwarded to the advisor runtime as the
+        `Authorization: Bearer <credential>` header and is passed through
+        byte-for-byte — never decoded, parsed, logged, or reissued (Property 2).
+        """
         ...
 
 
@@ -61,10 +71,25 @@ class AgentCoreAdvisorClient:
 
             self._client = boto3.client("bedrock-agentcore", region_name=region)
 
-    def advise(self, utterance: str, *, session_id: str) -> dict[str, Any]:
-        """Invoke the runtime and parse its JSON body, mapping failures to a kind."""
+    def advise(
+        self, utterance: str, *, session_id: str, credential: str | None
+    ) -> dict[str, Any]:
+        """Invoke the runtime and parse its JSON body, mapping failures to a kind.
+
+        When `credential` is supplied it is placed on the outgoing request as the
+        `Authorization: Bearer <credential>` header — the exact header the advisor's
+        entrypoint reads (`context.request_headers["Authorization"]`). The
+        `invoke_agent_runtime` API models no Authorization parameter, so the header
+        is injected with a per-call botocore `before-send` handler that runs after
+        SigV4 signing and overwrites the signer's Authorization value; AgentCore
+        forwards that header verbatim into the runtime container. The token is
+        passed through unmodified and is never decoded, parsed, or logged
+        (Property 2). No credential means no override — the SigV4 Authorization
+        stands and the turn carries no user identity.
+        """
         if len(session_id) < _MIN_SESSION_ID_LEN:
             session_id = new_session_id()
+        unregister = self._register_credential_header(credential)
         try:
             response = self._client.invoke_agent_runtime(
                 agentRuntimeArn=self._runtime_arn,
@@ -76,6 +101,8 @@ class AgentCoreAdvisorClient:
             raw = response["response"].read()
         except Exception as error:
             raise AdvisorError("advisor_unreachable") from error
+        finally:
+            unregister()
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError) as error:
@@ -83,6 +110,35 @@ class AgentCoreAdvisorClient:
         if not isinstance(parsed, dict):
             raise AdvisorError("advisor_bad_response")
         return parsed
+
+    def _register_credential_header(self, credential: str | None) -> Callable[[], None]:
+        """Register a per-call `before-send` hook that sets the Authorization header.
+
+        Returns a no-argument function that removes the hook again, so the token
+        never outlives the one call it belongs to — a client-level header would
+        leak the previous user's credential onto the next turn. `before-send` is
+        botocore's post-signing hook point: the request handed to the handler is
+        already SigV4-signed, and overwriting `Authorization` here replaces the
+        signature with the user's bearer for the hop AgentCore forwards to the
+        runtime. With no credential nothing is registered and the signature stands.
+        """
+        if credential is None:
+            return lambda: None
+
+        # A unique id keeps concurrent/nested calls from unregistering each other.
+        event = "before-send.bedrock-agentcore.InvokeAgentRuntime"
+        unique_id = f"aqm-user-credential-{uuid.uuid4().hex}"
+        bearer = f"Bearer {credential}"
+
+        def _inject(request: Any, **_kwargs: Any) -> None:
+            # The token is set, never read back or logged (Property 2). Returning
+            # None lets botocore proceed to actually send the (now re-headered)
+            # request rather than short-circuiting it.
+            request.headers["Authorization"] = bearer
+
+        events = self._client.meta.events
+        events.register(event, _inject, unique_id=unique_id)
+        return lambda: events.unregister(event, _inject, unique_id=unique_id)
 
 
 __all__ = [

@@ -25,7 +25,9 @@ _PASSWORD = "sup3r-secret-pw"
 class _FakeAdvisor:
     """A no-op advisor; /login does not touch it, but build_app requires one."""
 
-    def advise(self, utterance: str, *, session_id: str) -> dict[str, Any]:
+    def advise(
+        self, utterance: str, *, session_id: str, credential: str | None
+    ) -> dict[str, Any]:
         raise AdvisorError("advisor_unreachable")
 
 

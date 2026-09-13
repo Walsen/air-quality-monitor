@@ -46,6 +46,24 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+def _bearer_token(authorization: str | None) -> str | None:
+    """The raw token from a canonical `Bearer <token>` header, else None.
+
+    Only the transport framing is inspected: the scheme is matched
+    case-insensitively (RFC 6750) and the single following field is returned
+    unchanged. The token itself is never decoded, parsed, or validated here — that
+    is the ingestion service's job (Property 2). An absent header, a non-Bearer
+    scheme, or an empty token all yield None so `/chat` can refuse the turn.
+    """
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) != 2 or parts[0].casefold() != "bearer":
+        return None
+    token = parts[1].strip()
+    return token or None
+
+
 def _render(response: dict[str, Any]) -> dict[str, Any]:
     """Shape the Advisory_Response into what the page needs, dropping nothing safe.
 
@@ -106,14 +124,35 @@ def build_app(
     def chat(
         body: ChatRequest,
         x_access_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
     ) -> JSONResponse:
-        """Gate, forward one turn to the advisor, and return the shaped response."""
+        """Gate, forward one turn to the advisor, and return the shaped response.
+
+        Two gates, in order. The shared `X-Access-Key` is the coarse outer gate
+        against an open proxy; it does NOT identify the user. The user's identity
+        is the Cognito JWT the browser sends as `Authorization: Bearer <jwt>`. A
+        diary turn needs that identity, so a turn with no usable bearer is refused
+        with a generic 401 the page shows as "sign in again" — and the advisor is
+        never called, so no anonymous turn reaches the runtime.
+
+        The raw token (the `Bearer ` framing stripped as a transport detail, not
+        parsed) is handed to the advisor client as `credential`; from there it is
+        forwarded to the runtime unchanged. It is never logged or echoed back
+        (Property 2).
+        """
         if not _authorized(x_access_key):
             # 401 with a bare reason: never echo the supplied value or the expected one.
             raise HTTPException(status_code=401, detail="invalid or missing access key")
+        credential = _bearer_token(authorization)
+        if credential is None:
+            # No verified identity: refuse rather than write a diary turn to no one.
+            # Generic body so the page prompts a fresh sign-in; never names the JWT.
+            raise HTTPException(status_code=401, detail="please sign in")
         session_id = body.session_id or new_session_id()
         try:
-            raw = advisor.advise(body.utterance.strip(), session_id=session_id)
+            raw = advisor.advise(
+                body.utterance.strip(), session_id=session_id, credential=credential
+            )
         except AdvisorError as error:
             # A handled boundary failure: name the kind, never a stack trace.
             return JSONResponse(

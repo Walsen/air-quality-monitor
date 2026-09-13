@@ -86,7 +86,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     an injected client so the test uses a fake — no AWS.
   - _Requirements: 1.2, 1.3, 1.4, 2.6_
 
-- [ ] 7. Chatbot `/chat` forwards the JWT to the advisor (TDD)
+- [x] 7. Chatbot `/chat` forwards the JWT to the advisor (TDD)
   - Failing tests: `/chat` takes the browser's `Authorization` bearer and passes
     it to the advisor client unchanged; a turn without a JWT is refused with a
     "sign in" response; the JWT is never logged.
