@@ -46,7 +46,7 @@ class LambdaRestStack(Stack):
         if api_key_value:
             env[api_key_env] = api_key_value
         else:
-            self.node.add_error(
+            cdk.Annotations.of(self).add_error(
                 f"{construct_id}: no API key supplied. Deploy with "
                 f"-c {construct_id.split('-')[-1]}_api_key=<value> "
                 "(synth succeeds without it; deploy does not)."

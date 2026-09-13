@@ -10,6 +10,7 @@ docker := env_var_or_default("DOCKER", "docker")
 sim_dir := "sensor-simulator"
 ing_dir := "data-processing"
 adv_dir := "agent-advisor"
+chat_dir := "web-chatbot"
 
 # List available recipes.
 default:
@@ -23,7 +24,7 @@ default:
 # Run every service's offline suite (Hypothesis ci profile, >=100 examples).
 # Excludes the integration marker so the suites pass offline with no
 # credentials and no network beyond localhost.
-test: test-simulator test-ingestion test-advisor
+test: test-simulator test-ingestion test-advisor test-chatbot
 
 # Run every service's integration checks (container engine or local broker).
 # FIXED at task 20.2. This note used to say the aggregate could not pass, because
@@ -42,13 +43,13 @@ test: test-simulator test-ingestion test-advisor
 test-integration: test-integration-simulator test-integration-ingestion test-integration-advisor
 
 # Lint every service with ruff.
-lint: lint-simulator lint-ingestion lint-advisor
+lint: lint-simulator lint-ingestion lint-advisor lint-chatbot
 
 # Static type check every service with mypy.
-typecheck: typecheck-simulator typecheck-ingestion typecheck-advisor
+typecheck: typecheck-simulator typecheck-ingestion typecheck-advisor typecheck-chatbot
 
 # Auto-fix lint findings and format every service.
-fmt: fmt-simulator fmt-ingestion fmt-advisor
+fmt: fmt-simulator fmt-ingestion fmt-advisor fmt-chatbot
 
 # Run ONE Exposure_Association derivation cycle and exit (Requirement 32.12).
 # A one-shot process, not a loop: the schedule belongs outside this code (cron, an
@@ -94,6 +95,27 @@ typecheck-advisor:
 # AgentCore deployment contract (Requirement 26.5a).
 run-advisor:
     cd {{adv_dir}} && uv run python -m aqm_advisor.agentcore.app
+
+# --- Web Chatbot ---------------------------------------------------------
+# A browser chat UI in front of the advisor. Its tests use a fake advisor client
+# and a tiny in-process ASGI caller, so the suite needs no AWS and no network.
+
+test-chatbot:
+    cd {{chat_dir}} && uv run pytest
+
+lint-chatbot:
+    cd {{chat_dir}} && uv run ruff check .
+
+fmt-chatbot:
+    cd {{chat_dir}} && uv run ruff check --fix . && uv run ruff format .
+
+typecheck-chatbot:
+    cd {{chat_dir}} && uv run mypy
+
+# Run the chatbot locally against the live advisor runtime (needs AWS creds).
+# The access key and runtime ARN come from the environment.
+run-chatbot:
+    cd {{chat_dir}} && uv run python -m aqm_chatbot.app
 
 # --- Sensor Simulator (Service 1) ----------------------------------------
 
