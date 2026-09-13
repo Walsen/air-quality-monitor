@@ -111,6 +111,35 @@ def test_the_jwt_authorizer_carries_the_cognito_client() -> None:
     )
 
 
+def _custom_jwt_authorizer() -> dict[str, object]:
+    """The synthesized CustomJWTAuthorizer block of the single runtime resource."""
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    authorizer = runtimes[0]["AuthorizerConfiguration"]["CustomJWTAuthorizer"]
+    assert isinstance(authorizer, dict)
+    return authorizer
+
+
+def test_the_authorizer_validates_the_id_tokens_aud_not_client_id() -> None:
+    # The runtime forwards the Cognito ID token (Service 2 requires token_use=id). An ID token
+    # carries `aud` (= the app client id) but has NO `client_id` claim — that claim is only on
+    # the Cognito access token. The authorizer verifies ALL of AllowedAudience/AllowedClients
+    # when both are set, so an AllowedClients entry validates the absent `client_id` and 401s
+    # every real turn ("Claim 'client_id' value mismatch"). It must validate `aud` ONLY.
+    authorizer = _custom_jwt_authorizer()
+    assert authorizer["AllowedAudience"] == [_CLIENT]
+    assert authorizer["DiscoveryUrl"] == _DISCOVERY
+    assert "AllowedClients" not in authorizer, (
+        "AllowedClients validates the `client_id` claim, which a Cognito ID token lacks; its "
+        "presence rejects every forwarded ID token with a 401 at invoke"
+    )
+
+
 def test_the_runtime_carries_the_serving_base_url() -> None:
     # serving_client=http needs a target: the env var carries the Service 2 serving base URL the
     # advisor's HTTP ServingClient calls. The PAIR is what makes the client usable — a base URL

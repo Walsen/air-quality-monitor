@@ -27,11 +27,13 @@ support in any US region and errors at invoke. The `bedrock:InvokeModel` grant i
 the profile ARN and the underlying foundation-model ARNs the profile routes to, because the
 service checks the resolved model, not the profile alone.
 
-THE JWT AUTHORIZER IS THE SAME COGNITO APP CLIENT SERVICE 2 USES. `allowed_audience` /
-`allowed_clients` come from `AQM_COGNITO_CLIENT_ID`, which task 17 already made the advisor read
-—
-so the token AgentCore validates inbound is the token Service 2 validates on receipt, and there
-is one identity, not two that can drift.
+THE JWT AUTHORIZER VALIDATES THE ID TOKEN'S `aud`, NOT `client_id`. The runtime is invoked with
+the Cognito ID token the whole system forwards (Service 2 requires token_use=id). That token
+carries `aud` (= the app client id from `AQM_COGNITO_CLIENT_ID`, which task 17 already made the
+advisor read) but has NO `client_id` claim — that claim is only on the Cognito access token. So
+the authorizer sets `allowed_audience` ONLY: adding `allowed_clients` would make AgentCore
+verify the absent `client_id` and 401 every real turn. Validating `aud` still binds the token to
+the SAME Cognito app client Service 2 validates on receipt — one identity, not two that drift.
 
 WHAT THIS STACK DOES NOT DO. It does not enable the Anthropic model (a one-time console form,
 not
@@ -116,10 +118,19 @@ class AdvisorRuntimeStack(cdk.Stack):
                 network_mode="PUBLIC",
             ),
             authorizer_configuration=bac.CfnRuntime.AuthorizerConfigurationProperty(
+                # Validate the `aud` claim ONLY, via allowed_audience. The runtime is
+                # invoked with the Cognito ID token the whole system forwards (Service 2's
+                # authenticator requires token_use=id). An ID token carries `aud` (= the app
+                # client id) but has NO `client_id` claim — that claim is only on the Cognito
+                # access token. When both allowed_audience and allowed_clients are set the
+                # authorizer verifies ALL of them (allowed_clients validates `client_id`), so
+                # an allowed_clients entry would reject every forwarded ID token with a 401
+                # ("Claim 'client_id' value mismatch"). Validating `aud` alone still binds the
+                # token to the SAME Cognito app client Service 2 validates — one identity, not
+                # two that can drift.
                 custom_jwt_authorizer=bac.CfnRuntime.CustomJWTAuthorizerConfigurationProperty(
                     discovery_url=cognito_discovery_url,
                     allowed_audience=[cognito_client_id],
-                    allowed_clients=[cognito_client_id],
                 ),
             ),
             environment_variables={
