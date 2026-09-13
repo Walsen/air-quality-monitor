@@ -171,7 +171,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     idempotence (a second run is a no-op).
   - _Requirements: 10.2, 10.3, 10.4_
 
-- [ ] 18. Deploy the association Lambda + schedule; on-demand invoke
+- [x] 18. Deploy the association Lambda + schedule; on-demand invoke
   - Deploy `AssociationStack`; provide a `just` recipe to invoke it on demand for
     the demo; confirm it writes thresholds for a seeded user.
   - _Requirements: 4.3_
