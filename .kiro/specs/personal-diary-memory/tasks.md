@@ -93,7 +93,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
   - Implement the pass-through in the advisor client call. (Property 2.)
   - _Requirements: 2.1, 2.2, 2.5, 5.4_
 
-- [ ] 8. Chatbot sign-in UI
+- [x] 8. Chatbot sign-in UI
   - Add the username/password sign-in step to the page; hold the JWT in the
     browser session only; block chat until signed in; "sign in again" on 401.
     Assert the page embeds no token and no client secret.

@@ -224,5 +224,34 @@ def test_the_index_page_loads_and_has_no_embedded_key() -> None:
     assert _KEY not in res.text, "the shared key must never be embedded in the page"
 
 
+def test_the_index_page_has_a_sign_in_form_and_no_embedded_secret() -> None:
+    # The page must gate chat behind a sign-in step (Req 1.2): a login form with
+    # username + password + a submit control. And it must bake in NO credential —
+    # no access key, JWT, or client secret literal — the user types those.
+    res = call(_app(), "GET", "/")
+    assert res.status == 200
+    page = res.text
+
+    # A sign-in step is present: the form and its identity inputs.
+    assert 'id="signin' in page, "the page must present a sign-in step"
+    assert 'id="username"' in page and 'id="password"' in page
+    assert "Sign in" in page, "the page must offer a sign-in control"
+
+    # The chat turn wiring the sign-in feeds is present too.
+    assert "Bearer " in page, "chat turns must send the JWT as a bearer token"
+
+    # No secret/token literal is embedded. The real JWT and access key used by
+    # the tests must never appear, and neither must a hard-coded bearer/jwt/
+    # client-secret literal that would mean a credential was baked in.
+    assert _KEY not in page
+    assert _JWT not in page
+    lowered = page.lower()
+    for marker in ("client_secret", "clientsecret", "cognito_client_secret"):
+        assert marker not in lowered, f"no {marker} may be embedded in the page"
+    # A bearer token is only ever built from the in-memory `token` variable,
+    # never written as a literal like `Bearer eyJ...` (a real JWT header).
+    assert "bearer eyj" not in lowered, "no literal JWT may be embedded after Bearer"
+
+
 def test_health_is_open_and_reveals_nothing() -> None:
     assert call(_app(), "GET", "/health").json() == {"status": "ok"}
