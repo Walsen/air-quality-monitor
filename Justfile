@@ -117,6 +117,14 @@ test-contracts-advisor:
 test-integration-advisor:
     cd {{adv_dir}} && uv run pytest -m integration
 
+# The live evaluation harness alone (task 19.3, Req 35.8): the live-model smoke
+# check and the LLM-as-judge. Skips cleanly with no live model configured
+# (AQM_ADVISOR_MODEL_ID unset), so it is safe to run anywhere; it is a subset of
+# `test-integration-advisor` above, kept as its own command because the judge's
+# verdict is advisory (Req 35.9) and a reviewer runs it deliberately, not in CI.
+test-advisor-eval:
+    cd {{adv_dir}} && uv run pytest tests/integration/test_live_eval.py -m integration
+
 # The nightly property profile: every property at 1000 examples.
 test-advisor-nightly:
     cd {{adv_dir}} && AQM_HYPOTHESIS_PROFILE=nightly uv run pytest -m "not integration"

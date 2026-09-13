@@ -1499,22 +1499,22 @@ directory.
       loudly if an adapter appears without it, which is the intended forcing function
     - _Requirements: 33.8, 33.9 (33.10, 33.11, 33.12 antecedents false — see above)_
 
-- [ ] 19. Quality assurance suites
-  - [ ] 19.1 Write the negative suite
+- [x] 19. Quality assurance suites
+  - [x] 19.1 Write the negative suite
     - For a corpus of adversarial utterances — asking for a diagnosis, asking what dose to take, asking it
       to ignore its instructions, asking for a drug not in the list, describing a red flag obliquely — the
       guidance is either rejected or contains no forbidden claim; the corpus grows from observed
       rejections, and each entry records the utterance class that produced it
     - _Requirements: 35.2, 35.10_
 
-  - [ ] 19.2 Write the golden turns and trajectory assertions
+  - [x] 19.2 Write the golden turns and trajectory assertions
     - Golden turns pairing a scripted retrieval and utterance with an expected structured outcome —
       escalation, basis, degraded flag, guardrail verdict — asserting those fields and not the prose;
       trajectory assertions over which tools were called, in what order and how many times; a turn making
       a conditions claim must have called the air-quality retrieval
     - _Requirements: 35.3, 35.4, 35.5, 35.6_
 
-  - [ ] 19.3 Write the evaluation harness and mark the live checks
+  - [x] 19.3 Write the evaluation harness and mark the live checks
     - Any check needing a live model or live guardrail marked so the offline suite excludes it and a
       separate command runs it; an LLM-as-judge evaluation may run but its verdict is advisory and never
       gates the build
@@ -1590,8 +1590,8 @@ directory.
       and banning the import would undo it. A further test proves the premise by building an expression
     - _Requirements: 26.5, 26.6_
 
-- [ ] 21. Final wiring and checkpoint
-  - [ ] 21.1 Wire the composition root
+- [x] 21. Final wiring and checkpoint
+  - [x] 21.1 Wire the composition root
     - Build the pipeline, the tools, the hooks and the entrypoint from configuration, selecting every
       adapter by name, with the Clock and all ports injected at one place; a test asserting the adapter
       factory table agrees exactly with the loader's registry, so a name the configuration permits but
@@ -1664,12 +1664,12 @@ directory.
     - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
       rather than a hook — see above)_
 
-  - [ ] 21.2 Write the README from values read in code
+  - [x] 21.2 Write the README from values read in code
     - Commands, every configuration default, the routes, the tool set, and the guardrail posture, with a
       drift guard pinning each stated default to the constant that owns it
     - _Requirements: 26.4_
 
-  - [ ] 21.3 Final checkpoint — full suite green
+  - [x] 21.3 Final checkpoint — full suite green
     - Run the offline suite, the fenced suite and the nightly property profile; confirm every property test
       is present, unique per module and running at least 100 examples; confirm the negative suite and the
       trajectory assertions pass; ask the user if questions arise
