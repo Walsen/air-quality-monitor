@@ -15,6 +15,7 @@ routes answer against empty or absent stores.
 from __future__ import annotations
 
 import os
+from typing import Any, cast
 
 from mangum import Mangum
 
@@ -35,4 +36,8 @@ if not hasattr(_runtime, "app") or _runtime.app is None:
         "serving is not enabled in this configuration; set AQM_ENABLE_SERVING"
     )
 
-handler = Mangum(_runtime.app, lifespan="off", api_gateway_base_path="/")
+# `Runtime.app` is typed `object | None` because composition keeps FastAPI out of that
+# boundary's types; here it is concretely the ASGI serving app, and the guard above
+# excluded None. Cast so Mangum's ASGI-typed parameter is satisfied without loosening the
+# composition's own type.
+handler = Mangum(cast(Any, _runtime.app), lifespan="off", api_gateway_base_path="/")
