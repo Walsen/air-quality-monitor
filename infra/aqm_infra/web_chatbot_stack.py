@@ -6,6 +6,10 @@ role is granted `bedrock-agentcore:InvokeAgentRuntime` on exactly that runtime A
 the runtime ARN arrive as deploy-time context, never committed; a synth with no
 key still succeeds so `cdk synth` stays credential-free for CI, and the deploy is
 refused without one.
+
+The Cognito app-client id is optional: the chatbot runs chat-only without it, and
+the handler already degrades `/login` to 503 when it is absent. Wiring it in is
+what lets a deployed chatbot sign a user in against the live pool (Task 20).
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ class WebChatbotStack(Stack):
         runtime_arn: str | None,
         region: str,
         access_key: str | None,
+        cognito_client_id: str | None = None,
         env: cdk.Environment | None = None,
         description: str | None = None,
     ) -> None:
@@ -56,6 +61,10 @@ class WebChatbotStack(Stack):
             "AQM_CHATBOT_RUNTIME_ARN": runtime_arn or "",
             "AQM_CHATBOT_REGION": region,
             "AQM_CHATBOT_ACCESS_KEY": access_key or "",
+            # Optional, unlike the two above: without it /login is unavailable
+            # (503) and the app handles that; the chatbot still serves chat. Only
+            # the CLIENT id is needed (InitiateAuth), not the pool id or issuer.
+            "AQM_CHATBOT_COGNITO_CLIENT_ID": cognito_client_id or "",
         }
 
         # Bundle the service source + pinned deps with uv, including its static/

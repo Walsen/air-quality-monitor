@@ -89,6 +89,10 @@ WebChatbotStack(
     runtime_arn=app.node.try_get_context("chatbot_runtime_arn") or _DEFAULT_ADVISOR_RUNTIME_ARN,
     region=REGION,
     access_key=app.node.try_get_context("chatbot_access_key"),
+    # Cognito app-client id from context only, never committed; None at synth. With
+    # it the deployed chatbot can sign a user in against the live pool (Task 20),
+    # without it /login is unavailable (503) and chat still works.
+    cognito_client_id=app.node.try_get_context("chatbot_cognito_client_id"),
     description="POC: web chatbot proxying to the AI Advisor on Bedrock AgentCore",
 )
 
