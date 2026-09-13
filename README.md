@@ -78,6 +78,9 @@ Design principles carried through every service:
   and runs before the model; its output is verified (grounding, forbidden claims,
   medication closure, guardrail) before it can leave the process.
 
+For the deployed AWS footprint — the services, their relationships, the JWT
+identity path, and least-privilege IAM — see the cloud deployment diagram in
+[`docs/architecture/03-cloud-deployment.md`](docs/architecture/03-cloud-deployment.md).
 Deeper background lives in [`docs/architecture/`](docs/architecture/) (the
 original investigation and per-service design) and [`docs/research/`](docs/research/).
 Each service README documents its own commands, configuration, and contracts.
