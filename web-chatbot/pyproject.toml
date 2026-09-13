@@ -5,11 +5,13 @@ description = "Web Chatbot — a browser chat UI that proxies to the AI Advisor 
 requires-python = "==3.12.*"
 # Its own manifest, per the monorepo rule that a service owns its manifest, tests
 # and container. This service imports NO other service's code: it talks to the
-# advisor only over the network via bedrock-agentcore invoke_agent_runtime.
+# JWT-authorized advisor runtime over plain HTTPS (httpx) to the AgentCore
+# data-plane, and uses boto3 only for the /login Cognito exchange.
 # Every direct dependency is pinned to one exact version, with uv.lock committed.
 dependencies = [
     "boto3==1.43.90",
     "fastapi==0.141.1",
+    "httpx==0.28.1",
     "mangum==0.22.0",
     "pydantic==2.13.5",
     "uvicorn[standard]==0.52.4",
@@ -17,7 +19,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "httpx==0.28.1",
     "mypy==1.19.1",
     "pytest==9.1.1",
     "ruff==0.15.4",
