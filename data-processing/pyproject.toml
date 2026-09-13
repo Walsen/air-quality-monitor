@@ -15,7 +15,12 @@ dependencies = [
     "mangum==0.22.0",
     "paho-mqtt==2.1.0",
     "pydantic==2.13.5",
-    "pyjwt==2.13.0",
+    # Cognito signs ID tokens with RS256, which PyJWT can only verify through the `cryptography`
+    # backend it exposes as the optional `crypto` extra. The bare `pyjwt==2.13.0` pin left that
+    # backend out of the production (`--no-dev`) closure, so the serving Lambda shipped without
+    # it and rejected every valid token as `invalid_signature`. The extra pulls `cryptography`
+    # (and its `cffi` dependency) into `uv.lock` at exact pinned versions.
+    "pyjwt[crypto]==2.13.0",
     "uvicorn[standard]==0.52.4",
 ]
 
