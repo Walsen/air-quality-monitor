@@ -370,14 +370,47 @@ invoke-association function_name:
         --cli-binary-format raw-in-base64-out /dev/stdout
 
 # Tear down the diary stacks in REVERSE dependency order (Task 22): association
-# (imports serving's exports) -> serving -> cognito. Demo-user cleanup and the
-# advisor env revert are SEPARATE steps, also part of Task 22.
+# (imports serving's exports) -> serving -> cognito. This recipe removes ONLY
+# those three stacks. The rest of the feature's live footprint is torn down by
+# SEPARATE steps, all documented in .kiro/specs/personal-diary-memory/DEPLOY.md:
+# the CDK advisor runtime (`just teardown-advisor`), the chatbot stack
+# (`cdk destroy --exclusively aqm-poc-chatbot ...`), the demo users
+# (`just delete-demo-user`), and the OLD starter-toolkit advisor stack
+# `AgentCore-aqmadvisor-default` (not CDK-managed by this repo's infra app). So
+# `teardown-diary` alone does NOT remove everything — see the DEPLOY doc.
 teardown-diary:
     {{cdk_env}} cd {{infra_dir}} && \
         uv run cdk destroy --exclusively \
             aqm-poc-association aqm-poc-serving aqm-poc-cognito \
             -c deploy_diary_memory=true --force
     @{{cdk_clean}}
+
+# Tear down the CDK advisor runtime (Task 22). The advisor is a SEPARATE cdk app
+# under agent-advisor/infra, whose app.py raises SystemExit without a deploy env
+# even to synth for a destroy — so we export the same env the deploy used. The
+# identifiers (client id, discovery url, serving base url) are recipe ARGUMENTS,
+# never literals (§7); the model id defaults to the `us.` inference profile (the
+# bare id has no in-region on-demand support and errors at invoke). Carries the
+# node/TMPDIR preamble and cleans its staging like the other cdk recipes, but
+# runs in the advisor's own infra dir, not {{infra_dir}}.
+teardown-advisor client_id discovery_url serving_base_url:
+    {{cdk_env}} cd {{adv_dir}}/infra && \
+        CDK_DEPLOY_ACCOUNT="${CDK_DEPLOY_ACCOUNT:?set CDK_DEPLOY_ACCOUNT}" \
+        CDK_DEPLOY_REGION="${CDK_DEPLOY_REGION:-us-east-1}" \
+        AQM_ADVISOR_MODEL_ID="${AQM_ADVISOR_MODEL_ID:-us.anthropic.claude-sonnet-4-6}" \
+        AQM_COGNITO_CLIENT_ID={{client_id}} \
+        AQM_COGNITO_DISCOVERY_URL={{discovery_url}} \
+        AQM_ADVISOR_SERVING_BASE_URL={{serving_base_url}} \
+        uv run cdk destroy AqmAdvisorRuntime --force
+    @{{cdk_clean}}
+
+# Delete a demo user from the Cognito pool (Task 22). Demo-user cleanup is a
+# SEPARATE teardown step from `teardown-diary` — destroying the Cognito stack
+# removes the pool, but this is the documented way to remove an individual user
+# (e.g. before retaining the pool). Pass the pool id and username as arguments.
+delete-demo-user user_pool_id username:
+    aws cognito-idp admin-delete-user \
+        --user-pool-id {{user_pool_id}} --username {{username}}
 
 # Synthesize the advisor's AgentCore CDK stack — OFFLINE: no account, no Docker daemon.
 # DockerImageAsset builds at deploy, not synth, so this contacts nothing.

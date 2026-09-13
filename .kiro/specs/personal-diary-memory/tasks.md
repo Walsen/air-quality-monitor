@@ -196,7 +196,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     history versus a history-less user (Property 4). All from documented commands.
   - _Requirements: 9.1, 9.2, 9.3, 9.4_
 
-- [ ] 22. Document teardown
+- [x] 22. Document teardown
   - Document and verify `cdk destroy --exclusively` per new stack, the advisor env
     revert, and demo-user cleanup, so the whole feature can be removed cleanly.
   - _Requirements: 7.4, 8.3_
