@@ -176,7 +176,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     the demo; confirm it writes thresholds for a seeded user.
   - _Requirements: 4.3_
 
-- [ ] 19. Redeploy the advisor at real serving
+- [x] 19. Redeploy the advisor at real serving
   - Redeploy the AgentCore runtime with `serving_client=http` and
     `AQM_ADVISOR_SERVING_BASE_URL` = the ingestion serving URL. Confirm a turn now
     reaches the real store (a diary write persists; a profile read returns it).
