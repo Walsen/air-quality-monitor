@@ -1,0 +1,57 @@
+[project]
+name = "web-chatbot"
+version = "0.1.0"
+description = "Web Chatbot — a browser chat UI that proxies to the AI Advisor on Bedrock AgentCore"
+requires-python = "==3.12.*"
+# Its own manifest, per the monorepo rule that a service owns its manifest, tests
+# and container. This service imports NO other service's code: it talks to the
+# advisor only over the network via bedrock-agentcore invoke_agent_runtime.
+# Every direct dependency is pinned to one exact version, with uv.lock committed.
+dependencies = [
+    "boto3==1.43.90",
+    "fastapi==0.141.1",
+    "mangum==0.22.0",
+    "pydantic==2.13.5",
+    "uvicorn[standard]==0.52.4",
+]
+
+[dependency-groups]
+dev = [
+    "httpx==0.28.1",
+    "mypy==1.19.1",
+    "pytest==9.1.1",
+    "ruff==0.15.4",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "aqm_chatbot"
+module-root = "src"
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
+warn_unused_configs = true
+
+# boto3 ships no type information, and only the AgentCore client adapter imports it.
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true

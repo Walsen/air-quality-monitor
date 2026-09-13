@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Air Quality Advisor</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#0f1720; --panel:#16212e; --me:#2563eb;
+      --bot:#1f2d3d; --text:#e6edf3; --muted:#9fb0c0; --warn:#f59e0b; --err:#ef4444; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
+    header { padding:14px 18px; background:var(--panel); border-bottom:1px solid #26313f;
+      display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+    header h1 { font-size:17px; margin:0; font-weight:600; }
+    header .sub { color:var(--muted); font-size:13px; }
+    #key { margin-left:auto; display:flex; gap:8px; align-items:center; }
+    #key input { background:#0b1219; color:var(--text); border:1px solid #2b3745;
+      border-radius:8px; padding:7px 10px; font-size:14px; width:220px; }
+    #log { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+    .msg { max-width:min(680px,90%); padding:11px 14px; border-radius:14px; white-space:pre-wrap;
+      word-wrap:break-word; }
+    .me { align-self:flex-end; background:var(--me); color:#fff; border-bottom-right-radius:4px; }
+    .bot { align-self:flex-start; background:var(--bot); border-bottom-left-radius:4px; }
+    .bot h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.04em;
+      color:var(--muted); font-weight:600; }
+    .note { font-size:13px; margin-top:8px; padding:8px 10px; border-radius:8px; }
+    .emergency { background:rgba(239,68,68,.14); border:1px solid rgba(239,68,68,.4); color:#fca5a5; }
+    .disclaimer { color:var(--muted); font-size:12px; margin-top:8px; }
+    .degraded { color:var(--warn); font-size:12px; margin-top:6px; }
+    .escalation { background:rgba(245,158,11,.14); border:1px solid rgba(245,158,11,.4); }
+    form { display:flex; gap:10px; padding:14px 18px; background:var(--panel);
+      border-top:1px solid #26313f; }
+    #utterance { flex:1; background:#0b1219; color:var(--text); border:1px solid #2b3745;
+      border-radius:10px; padding:11px 14px; font-size:15px; resize:none; }
+    button { background:var(--me); color:#fff; border:0; border-radius:10px; padding:0 18px;
+      font-size:15px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .typing { color:var(--muted); font-style:italic; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Air Quality Advisor</h1>
+      <div class="sub">Ask about your local air quality. Not medical advice.</div>
+    </div>
+    <div id="key">
+      <label for="accessKey" class="sub">Access key</label>
+      <input id="accessKey" type="password" placeholder="shared key" autocomplete="off" />
+    </div>
+  </header>
+
+  <div id="log" aria-live="polite"></div>
+
+  <form id="form">
+    <textarea id="utterance" rows="1" placeholder="e.g. What is my current local air quality?"
+      autocomplete="off"></textarea>
+    <button id="send" type="submit">Send</button>
+  </form>
+
+  <script>
+    const log = document.getElementById('log');
+    const form = document.getElementById('form');
+    const input = document.getElementById('utterance');
+    const sendBtn = document.getElementById('send');
+    const keyInput = document.getElementById('accessKey');
+    let sessionId = null;
+
+    function bubble(cls) {
+      const el = document.createElement('div');
+      el.className = 'msg ' + cls;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+      return el;
+    }
+    function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+    function renderBot(el, data) {
+      let html = '';
+      if (data.escalation) {
+        html += '<div class="note escalation"><strong>Seek care.</strong> ' +
+          esc(typeof data.escalation === 'string' ? data.escalation : JSON.stringify(data.escalation)) + '</div>';
+      }
+      html += '<h3>Advisor</h3>' + esc(data.guidance || '(no guidance returned)');
+      if (data.degraded) html += '<div class="degraded">Answer is degraded — some data was unavailable.</div>';
+      if (data.emergency_guidance) html += '<div class="note emergency">' + esc(data.emergency_guidance) + '</div>';
+      if (data.disclaimer) html += '<div class="disclaimer">' + esc(data.disclaimer) + '</div>';
+      el.innerHTML = html;
+      log.scrollTop = log.scrollHeight;
+    }
+
+    async function send(text) {
+      bubble('me').textContent = text;
+      const botEl = bubble('bot');
+      botEl.innerHTML = '<span class="typing">thinking…</span>';
+      sendBtn.disabled = true;
+      try {
+        const res = await fetch('chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Access-Key': keyInput.value },
+          body: JSON.stringify({ utterance: text, session_id: sessionId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) { botEl.innerHTML = '<h3>Advisor</h3>Access key is missing or wrong.'; return; }
+        if (!res.ok) { botEl.innerHTML = '<h3>Advisor</h3>Could not reach the advisor (' + esc(data.error || res.status) + ').'; return; }
+        sessionId = data.session_id || sessionId;
+        renderBot(botEl, data);
+      } catch (e) {
+        botEl.innerHTML = '<h3>Advisor</h3>Network error. Try again.';
+      } finally {
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+      send(text);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
+    });
+  </script>
+</body>
+</html>

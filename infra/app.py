@@ -18,6 +18,7 @@ import os
 import aws_cdk as cdk
 
 from aqm_infra.lambda_rest_stack import LambdaRestStack
+from aqm_infra.web_chatbot_stack import WebChatbotStack
 
 REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT")
@@ -70,5 +71,24 @@ if app.node.try_get_context("deploy_ingestion"):
         api_key_value=ing_key,
         description="POC: ingestion serving API on Lambda (ingestion POC addendum)",
     )
+
+# Web Chatbot: a browser chat UI in front of the advisor runtime on AgentCore.
+# The runtime ARN defaults to the deployed advisor but can be overridden by
+# context; the shared access key is required at deploy (never committed).
+_DEFAULT_ADVISOR_RUNTIME_ARN = (
+    "arn:aws:bedrock-agentcore:us-east-1:862307432587:runtime/"
+    "aqmadvisor_aqm_advisor-ws73wzAfQJ"
+)
+WebChatbotStack(
+    app,
+    "aqm-poc-chatbot",
+    env=env,
+    service_dir="../web-chatbot",
+    runtime_arn=app.node.try_get_context("chatbot_runtime_arn") or _DEFAULT_ADVISOR_RUNTIME_ARN,
+    region=REGION,
+    access_key=app.node.try_get_context("chatbot_access_key"),
+    description="POC: web chatbot proxying to the AI Advisor on Bedrock AgentCore",
+)
+
 
 app.synth()
