@@ -99,7 +99,7 @@ class AdvisorRuntimeStack(cdk.Stack):
 
         execution_role = self._execution_role(image, model_inference_profile)
 
-        bac.CfnRuntime(
+        runtime = bac.CfnRuntime(
             self,
             "AdvisorRuntime",
             agent_runtime_name="aqm_advisor",
@@ -137,6 +137,18 @@ class AdvisorRuntimeStack(cdk.Stack):
                 ),
             },
         )
+
+        # ORDER THE POLICY BEFORE THE RUNTIME. AgentCore validates the ECR image URI
+        # SYNCHRONOUSLY during runtime creation, using the execution role — so the role's pull
+        # permissions must already be attached when that validation runs. Those permissions live
+        # on the role's inline DefaultPolicy, a SEPARATE `AWS::IAM::Policy` resource. Passing
+        # `role_arn=execution_role.role_arn` (a string attribute) makes CloudFormation capture a
+        # dependency on the Role but NOT on that policy, so the runtime could be created — and
+        # its ECR URI validated — before the policy is attached, failing with an ECR access-
+        # denied on an otherwise correctly-permissioned role. Make the dependency explicit so
+        # CloudFormation creates and attaches the DefaultPolicy first.
+        default_policy = execution_role.node.find_child("DefaultPolicy")
+        runtime.node.add_dependency(default_policy)
 
     def _execution_role(
         self, image: DockerImageAsset, model_inference_profile: str

@@ -144,6 +144,41 @@ def test_exactly_one_runtime_and_one_execution_role() -> None:
     )
 
 
+def test_the_runtime_depends_on_the_execution_role_policy() -> None:
+    # AgentCore validates the ECR URI SYNCHRONOUSLY at runtime-create using the execution role,
+    # so the role's inline pull policy (a separate AWS::IAM::Policy, the DefaultPolicy) must
+    # exist and be attached BEFORE the runtime is created. Passing role_arn as a string captures
+    # a DependsOn on the Role but NOT on that policy, so the runtime must carry an explicit
+    # DependsOn naming the policy. Without it the deploy races and fails with an ECR access-
+    # denied on an otherwise correctly-permissioned role.
+    body = _template().to_json()
+    resources = body["Resources"]
+
+    runtimes = {
+        logical_id: res
+        for logical_id, res in resources.items()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    }
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    runtime = next(iter(runtimes.values()))
+
+    policy_ids = {
+        logical_id
+        for logical_id, res in resources.items()
+        if res["Type"] == "AWS::IAM::Policy"
+    }
+    assert policy_ids, "expected at least one AWS::IAM::Policy (the role's DefaultPolicy)"
+
+    depends_on = runtime.get("DependsOn", [])
+    if isinstance(depends_on, str):
+        depends_on = [depends_on]
+
+    assert policy_ids.intersection(depends_on), (
+        "the runtime does not depend on the execution role's DefaultPolicy; the ECR pull "
+        "permissions may not be attached before AgentCore validates the image URI"
+    )
+
+
 def test_no_model_literal_leaks_a_bare_id() -> None:
     # A regression guard for the single sharpest fact: a bare `anthropic.claude-...` without the
     # `us.` prefix in the invoke grant would deploy clean and fail every real turn.
