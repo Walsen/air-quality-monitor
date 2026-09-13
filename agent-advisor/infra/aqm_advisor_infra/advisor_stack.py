@@ -133,19 +133,38 @@ class AdvisorRuntimeStack(cdk.Stack):
                     allowed_audience=[cognito_client_id],
                 ),
             ),
+            # THE LOADER READS PER-PORT VARS, NOT A COMBINED STRING. The advisor's config
+            # loader (agent-advisor/src/aqm_advisor/config/loader.py) resolves each adapter from
+            # its own `AQM_ADVISOR_<PORT>` variable, falling back to the first registered
+            # adapter — the scripted/local/memory OFFLINE defaults. It NEVER parses a combined
+            # `AQM_ADVISOR_ADAPTERS` string. An earlier version set exactly that combined
+            # string, which the loader silently ignored, so the runtime answered FULLY SCRIPTED
+            # (CloudWatch: `advisor_composed model=scripted serving=scripted`) while the wiring
+            # read as correct. So each selection that must change is its own variable here.
+            #
+            # Only the two ports that MUST leave their offline default are set:
+            #   - serving_client=http + AQM_ADVISOR_SERVING_BASE_URL makes the advisor call the
+            #     real Service 2 (forwarding the same Cognito JWT, so one identity end to end).
+            #   - model=bedrock + AQM_ADVISOR_MODEL_ID + AQM_ADVISOR_MODEL_REGION makes the turn
+            #     call the real Bedrock model (both the bedrock model and guardrail clients read
+            #     config.model_region).
+            # guardrail_checker, advice_audit_store, clock and association_trigger are LEFT to
+            # their safe defaults (local / memory / system / recording): the local guardrail
+            # needs no provisioned Bedrock Guardrail resource (we have none) and the domain
+            # forbidden-claims rules run regardless, memory audit is the POC default, and
+            # selecting the bedrock guardrail would demand a guardrail identifier we have not
+            # created and would fail every turn.
+            #
+            # self.region is a concrete string at synth because app.py sets an explicit
+            # cdk.Environment(region=...), so AQM_ADVISOR_MODEL_REGION renders as the literal
+            # region (e.g. "us-east-1"), not an unresolved token.
             environment_variables={
                 "AQM_ADVISOR_MODEL_ID": model_inference_profile,
                 "AQM_COGNITO_CLIENT_ID": cognito_client_id,
-                # serving_client=http (below) has no target without this: it is the Service 2
-                # serving base URL the advisor's HTTP ServingClient calls. Forwarding the same
-                # Cognito JWT to that URL keeps one identity end to end — the token AgentCore
-                # validated inbound is the token Service 2 validates on receipt.
                 "AQM_ADVISOR_SERVING_BASE_URL": serving_base_url,
-                "AQM_ADVISOR_ADAPTERS": (
-                    "serving_client=http,guardrail_checker=bedrock,"
-                    "advice_audit_store=memory,model=bedrock,clock=system,"
-                    "association_trigger=recording"
-                ),
+                "AQM_ADVISOR_SERVING_CLIENT": "http",
+                "AQM_ADVISOR_MODEL": "bedrock",
+                "AQM_ADVISOR_MODEL_REGION": self.region,
             },
         )
 

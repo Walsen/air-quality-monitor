@@ -140,10 +140,8 @@ def test_the_authorizer_validates_the_id_tokens_aud_not_client_id() -> None:
     )
 
 
-def test_the_runtime_carries_the_serving_base_url() -> None:
-    # serving_client=http needs a target: the env var carries the Service 2 serving base URL the
-    # advisor's HTTP ServingClient calls. The PAIR is what makes the client usable — a base URL
-    # with a scripted client, or http with no URL, is the bug this pins against.
+def _runtime_environment() -> dict[str, object]:
+    """The synthesized EnvironmentVariables map of the single runtime resource."""
     body = _template().to_json()
     runtimes = [
         res["Properties"]
@@ -152,11 +150,51 @@ def test_the_runtime_carries_the_serving_base_url() -> None:
     ]
     assert len(runtimes) == 1, "expected exactly one runtime resource"
     env = runtimes[0]["EnvironmentVariables"]
+    assert isinstance(env, dict)
+    return env
+
+
+def test_the_runtime_carries_the_serving_base_url() -> None:
+    # serving_client=http needs a target: the env var carries the Service 2 serving base URL the
+    # advisor's HTTP ServingClient calls. The PAIR is what makes the client usable — a base URL
+    # with a scripted client, or http with no URL, is the bug this pins against.
+    env = _runtime_environment()
     assert env["AQM_ADVISOR_SERVING_BASE_URL"] == _SERVING, (
         "the runtime does not carry the serving base URL the http client targets"
     )
-    assert "serving_client=http" in env["AQM_ADVISOR_ADAPTERS"], (
-        "the http serving adapter is not selected; the base URL would have no client"
+
+
+def test_the_runtime_selects_the_real_model_and_serving_adapters() -> None:
+    # The loader (agent-advisor/src/aqm_advisor/config/loader.py) resolves each adapter from a
+    # PER-PORT env var, `AQM_ADVISOR_<PORT>`, falling back to the first registered adapter (the
+    # scripted/local/memory offline defaults). It NEVER parses a combined `AQM_ADVISOR_ADAPTERS`
+    # string. So the runtime must set the individual per-port vars, or every port silently
+    # defaults to scripted and the deployed advisor answers FULLY SCRIPTED while looking wired.
+    env = _runtime_environment()
+    # The real Bedrock model and the real HTTP serving client — the two selections that make a
+    # turn reach the actual model and Service 2 rather than the canned scripts.
+    assert env["AQM_ADVISOR_SERVING_CLIENT"] == "http", (
+        "the http serving adapter is not selected; the base URL would have no client and the "
+        "turn would run against the scripted serving client"
+    )
+    assert env["AQM_ADVISOR_MODEL"] == "bedrock", (
+        "the bedrock model adapter is not selected; the turn would run against the scripted "
+        "model"
+    )
+    # The bedrock model AND bedrock guardrail clients read config.model_region; the runtime's
+    # region (rendered as a literal because app.py sets an explicit env) supplies it.
+    assert env["AQM_ADVISOR_MODEL_REGION"] == "us-east-1", (
+        "the model region is missing or not a synth-time literal; the bedrock client needs it"
+    )
+    # The model id and serving base URL are the targets the two selections above point at.
+    assert env["AQM_ADVISOR_MODEL_ID"] == _MODEL
+    assert env["AQM_ADVISOR_SERVING_BASE_URL"] == _SERVING
+    # Regression guard: a combined AQM_ADVISOR_ADAPTERS string is a silent no-op the loader
+    # ignores, so its presence would hide a fully-scripted deploy behind wiring that reads as
+    # correct. It must NOT be set.
+    assert "AQM_ADVISOR_ADAPTERS" not in env, (
+        "AQM_ADVISOR_ADAPTERS is ignored by the loader (it reads per-port vars); setting it "
+        "silently leaves every port scripted"
     )
 
 
