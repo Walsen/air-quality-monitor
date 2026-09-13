@@ -189,7 +189,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase G — end-to-end demonstration
 
-- [ ] 21. Demonstrate persistence, isolation, and influence
+- [x] 21. Demonstrate persistence, isolation, and influence
   - Sign in as user A, record a day, start a new conversation, confirm the entry
     persisted and the profile is recalled (Property 6). Sign in as user B, confirm
     isolation (Property 1). Run the association and show A's advice changes with
