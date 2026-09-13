@@ -61,12 +61,20 @@ class WebChatbotStack(Stack):
         code = lambda_.Code.from_asset(
             service_dir,
             bundling=BundlingOptions(
-                image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+                # ARM64 so the compiled pydantic-core wheel matches the ARM_64 function
+                # below; a mismatch fails at import with 'No module named
+                # pydantic_core._pydantic_core'.
+                platform="linux/arm64",
+                image=cdk.DockerImage("public.ecr.aws/sam/build-python3.12:latest-arm64"),
                 command=[
                     "bash",
                     "-c",
                     " && ".join(
                         [
+                            # CDK runs bundling as uid 1000 with no writable HOME, so point uv's
+                            # and pip's caches at /tmp; without this uv fails on /.cache/uv.
+                            "export HOME=/tmp XDG_CACHE_HOME=/tmp UV_CACHE_DIR=/tmp/uv-cache "
+                            "PIP_CACHE_DIR=/tmp/pip-cache",
                             "pip install uv -q",
                             "uv export --frozen --no-dev --no-emit-project "
                             "-o /tmp/req.txt 2>/dev/null || uv pip compile pyproject.toml -o /tmp/req.txt",
@@ -82,6 +90,7 @@ class WebChatbotStack(Stack):
             self,
             "Fn",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="aqm_chatbot.lambda_handler.handler",
             code=code,
             timeout=Duration.seconds(29),  # HTTP API integration ceiling
