@@ -1,0 +1,17 @@
+{
+  "targets": {
+    "default": {
+      "resources": {
+        "runtimes": {
+          "aqm_advisor": {
+            "runtimeId": "aqmadvisor_aqm_advisor-ws73wzAfQJ",
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:862307432587:runtime/aqmadvisor_aqm_advisor-ws73wzAfQJ",
+            "roleArn": "arn:aws:iam::862307432587:role/AgentCore-aqmadvisor-defa-ApplicationAgentAqmAdviso-d55KROanuX2q"
+          }
+        },
+        "stackName": "AgentCore-aqmadvisor-default",
+        "deployHash": "ffc075e9334baab3"
+      }
+    }
+  }
+}

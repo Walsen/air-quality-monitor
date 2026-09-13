@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.agentcore.aws.dev/v1/agentcore.json",
+  "name": "aqmadvisor",
+  "version": 1,
+  "managedBy": "CDK",
+  "tags": {
+    "agentcore:created-by": "agentcore-cli",
+    "agentcore:project-name": "aqmadvisor"
+  },
+  "runtimes": [
+    {
+      "name": "aqm_advisor",
+      "build": "Container",
+      "entrypoint": "aqm_advisor/main.py",
+      "codeLocation": "../../src/",
+      "runtimeVersion": "PYTHON_3_12",
+      "networkMode": "PUBLIC",
+      "protocol": "HTTP",
+      "dockerfile": "Dockerfile",
+      "buildContextPath": "../../",
+      "instrumentation": {
+        "enableOtel": false
+      },
+      "description": "AI Advisor (POC): real Bedrock Claude, scripted serving, local guardrail, in-memory audit.",
+      "envVars": [
+        {
+          "name": "AQM_ADVISOR_MODEL",
+          "value": "bedrock"
+        },
+        {
+          "name": "AQM_ADVISOR_MODEL_ID",
+          "value": "global.anthropic.claude-sonnet-4-6"
+        },
+        {
+          "name": "AQM_ADVISOR_MODEL_REGION",
+          "value": "us-east-1"
+        },
+        {
+          "name": "AQM_ADVISOR_SERVING_CLIENT",
+          "value": "scripted"
+        },
+        {
+          "name": "AQM_ADVISOR_GUARDRAIL_CHECKER",
+          "value": "local"
+        },
+        {
+          "name": "AQM_ADVISOR_ADVICE_AUDIT_STORE",
+          "value": "memory"
+        },
+        {
+          "name": "AQM_ADVISOR_CLOCK",
+          "value": "system"
+        },
+        {
+          "name": "AQM_ADVISOR_ASSOCIATION_TRIGGER",
+          "value": "recording"
+        },
+        {
+          "name": "AQM_ADVISOR_SERVING_BASE_URL",
+          "value": "https://serving.poc.invalid"
+        },
+        {
+          "name": "AQM_ADVISOR_LOG_LEVEL",
+          "value": "info"
+        }
+      ]
+    }
+  ],
+  "memories": [],
+  "knowledgeBases": [],
+  "credentials": [],
+  "evaluators": [],
+  "onlineEvalConfigs": [],
+  "agentCoreGateways": [],
+  "policyEngines": [],
+  "configBundles": [],
+  "abTests": [],
+  "harnesses": [],
+  "datasets": [],
+  "capacityProviders": [],
+  "payments": []
+}

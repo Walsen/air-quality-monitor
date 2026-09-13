@@ -30,6 +30,7 @@ from typing import Final
 
 from strands import Agent
 from strands.models.model import Model
+from strands.types.exceptions import StructuredOutputException
 
 from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
 from aqm_advisor.adapters.guardrail.bedrock import ApplyGuardrailChecker
@@ -167,6 +168,11 @@ def build_pipeline_factory(
         # Fetching once rather than twice matters beyond efficiency: two calls could return two
         # different bodies, and the audit record would then name a different turn from basis.
         snapshot = _snapshot(serving_client, credential)
+        # The profile is fetched once here, alongside the snapshot, and handed to the
+        # pipeline as `retrieve_profile`. Step 2 records it so a medication the user has is not
+        # rejected merely because the live model did not call profile_get. Fetched once, not per
+        # tool call, so two reads cannot disagree.
+        profile = _profile(serving_client, credential)
         identity = identity_for(request, snapshot)
 
         tools = build_retrieval_tools(
@@ -188,7 +194,29 @@ def build_pipeline_factory(
         )
 
         def invoke() -> ModelGeneration:
-            return agent.structured_output(ModelGeneration, request.utterance)
+            # RUN THE TOOL-USE LOOP, THEN TAKE THE STRUCTURED OUTPUT. `agent.structured_output`
+            # (now deprecated in strands 1.55.1) does a single structured extraction and does
+            # NOT run the agentic loop, so the model never calls the retrieval tools: a live
+            # probe had Claude report "I only have the ModelGeneration tool", produce no
+            # grounded values, and every turn then failed grounding and degraded. The
+            # scripted-model tests missed it: the scripted model answers
+            # `structured_output` in isolation, never running the loop.
+            #
+            # Passing `structured_output_model` to the ordinary invocation runs the full loop —
+            # the model calls air_quality/profile/etc., the recorder fills, and the structured
+            # ModelGeneration is produced from a grounded turn. This is the path strands' own
+            # deprecation notice points to.
+            result = agent(request.utterance, structured_output_model=ModelGeneration)
+            generation = result.structured_output
+            if not isinstance(generation, ModelGeneration):
+                # No structured output despite a completed loop: there is no validated text to
+                # publish. Raise the SDK's own structured-output failure so
+                # `obtain_structured_generation` classifies it as a MODEL failure (Req 6.3b)
+                # rather than letting a None slip through as if it were a generation.
+                raise StructuredOutputException(
+                    "the agent completed without producing structured output"
+                )
+            return generation
 
         return AdvisoryTurnPipeline(
             recorder=recorder,
@@ -202,6 +230,7 @@ def build_pipeline_factory(
             forbidden_patterns=forbidden_patterns,
             guardrail=guardrail,
             retrieve_snapshot=lambda: snapshot,
+            retrieve_profile=lambda: profile,
         )
 
     return make_pipeline
@@ -241,5 +270,20 @@ def _snapshot(client: ServingClient, credential: str) -> object | None:
     """
     try:
         return client.air_quality(credential)
+    except ServingClientError:
+        return None
+
+
+def _profile(client: ServingClient, credential: str) -> object | None:
+    """Fetch the user's profile once, so medication-closure has their recorded medications.
+
+    Mirrors `_snapshot`: a client error becomes `None` and the turn simply names no medication,
+    rather than failing. No tool call is recorded — the trajectory (Req 35.4) is what the MODEL
+    called, and this is the service's own fetch. Naming a medication remains permitted only when
+    it is in THIS profile, so a body that does not resolve tightens the check rather than
+    loosening it.
+    """
+    try:
+        return client.profile_get(credential)
     except ServingClientError:
         return None

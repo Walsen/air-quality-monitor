@@ -44,6 +44,7 @@ def _pipeline(
     ledger: VerificationLedger | None = None,
     recorder: RetrievalRecorder | None = None,
     served: object = None,
+    profile: object = None,
     guidance: str = "Conditions are moderate; consider a quieter route.",
     store: InMemoryAdviceAuditStore | None = None,
     guardrail: LocalGuardrailChecker | None = None,
@@ -65,6 +66,7 @@ def _pipeline(
         forbidden_patterns=(),
         guardrail=guardrail or LocalGuardrailChecker(),
         retrieve_snapshot=lambda: served,
+        retrieve_profile=lambda: profile,
     )
 
 
@@ -92,6 +94,25 @@ def test_the_prefetch_records_no_tool_call() -> None:
     retrieved = pipeline.retrieve(_request(), None)
 
     assert retrieved.tool_calls == ()
+
+
+def test_step_two_prefetches_the_profile_so_medications_are_retrieved_this_turn() -> None:
+    # The medication-closure check permits naming a medication only if it is in the profile
+    # RETRIEVED THIS TURN. A live model does not reliably call profile_get, so the profile is
+    # pre-fetched here exactly as the air-quality snapshot is — and by the same glossary rule
+    # (a value from a Serving_Client response in this turn), its medications qualify. The
+    # guarantee is unchanged: a medication NOT in the profile still fails the check. The
+    # trajectory stays clean because a pre-fetch records no tool call.
+    recorder = RetrievalRecorder()
+    profile = {
+        "condition": "asthma",
+        "medications": [{"name": "salbutamol", "role": "reliever"}],
+    }
+    pipeline = _pipeline(recorder=recorder, served=_SERVED, profile=profile)
+    retrieved = pipeline.retrieve(_request(), None)
+
+    assert "salbutamol" in retrieved.medications
+    assert retrieved.tool_calls == (), "the profile pre-fetch must not inflate the trajectory"
 
 
 def test_a_failed_retrieval_degrades_rather_than_raising() -> None:

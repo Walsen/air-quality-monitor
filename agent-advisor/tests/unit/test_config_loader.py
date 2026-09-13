@@ -490,6 +490,43 @@ def test_a_credential_is_only_required_by_the_adapter_that_needs_one() -> None:
     assert config.model_credential_path is None
 
 
+def test_bedrock_without_a_credential_path_uses_the_ambient_chain() -> None:
+    # Req 6.6: the credential is "resolved from the environment OR a runtime path". On AgentCore
+    # Runtime the execution IAM role supplies Bedrock access through boto3's own chain and there
+    # is no file, so an ABSENT path is a valid, supported configuration — build_bedrock_model
+    # already takes the no-path branch. Requiring a file here refused the one deployment target
+    # the adapter was written for. An absent path must therefore resolve clean, leaving the
+    # credential path None so the adapter falls back to the ambient chain.
+    config = resolve_and_validate(
+        _env(
+            AQM_ADVISOR_MODEL="bedrock",
+            AQM_ADVISOR_MODEL_ID="global.anthropic.claude-sonnet-4-6",
+            AQM_ADVISOR_MODEL_REGION="us-east-1",
+        ),
+        {},
+        credential_exists=lambda _: False,
+    )
+    assert config.adapters["model"] == "bedrock"
+    assert config.model_credential_path is None
+
+
+def test_bedrock_with_a_supplied_path_that_does_not_resolve_is_still_refused() -> None:
+    # The guarantee that survives: opting INTO a credential file and pointing it at nothing is a
+    # deploy error, reported by key never value. Only the "no path at all" case changed.
+    with pytest.raises(ConfigError) as caught:
+        resolve_and_validate(
+            _env(
+                AQM_ADVISOR_MODEL="bedrock",
+                AQM_ADVISOR_MODEL_CREDENTIAL_PATH="/secrets/SENTINEL-KEY-Q7X",
+            ),
+            {},
+            credential_exists=lambda _: False,
+        )
+    joined = "; ".join(caught.value.problems)
+    assert "model_credential_path" in joined
+    assert "SENTINEL-KEY-Q7X" not in joined, "the loader rendered a credential path"
+
+
 # --- Req 23.1: the resolved non-secret configuration is loggable ------
 
 
