@@ -158,7 +158,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     credentials. Capture pool id / client id / issuer for downstream config.
   - _Requirements: 1.1, 1.5, 7.3_
 
-- [ ] 16. Deploy the ingestion serving stack with tables + dynamodb + cognito
+- [x] 16. Deploy the ingestion serving stack with tables + dynamodb + cognito
   - Deploy the tables and the serving Lambda configured for dynamodb stores and
     the cognito authenticator; verify cold-start fails fast on a missing table or
     Cognito id (Req 8.5); verify a valid demo JWT is accepted and an invalid one
