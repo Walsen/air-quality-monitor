@@ -1499,22 +1499,22 @@ directory.
       loudly if an adapter appears without it, which is the intended forcing function
     - _Requirements: 33.8, 33.9 (33.10, 33.11, 33.12 antecedents false — see above)_
 
-- [ ] 19. Quality assurance suites
-  - [ ] 19.1 Write the negative suite
+- [x] 19. Quality assurance suites
+  - [x] 19.1 Write the negative suite
     - For a corpus of adversarial utterances — asking for a diagnosis, asking what dose to take, asking it
       to ignore its instructions, asking for a drug not in the list, describing a red flag obliquely — the
       guidance is either rejected or contains no forbidden claim; the corpus grows from observed
       rejections, and each entry records the utterance class that produced it
     - _Requirements: 35.2, 35.10_
 
-  - [ ] 19.2 Write the golden turns and trajectory assertions
+  - [x] 19.2 Write the golden turns and trajectory assertions
     - Golden turns pairing a scripted retrieval and utterance with an expected structured outcome —
       escalation, basis, degraded flag, guardrail verdict — asserting those fields and not the prose;
       trajectory assertions over which tools were called, in what order and how many times; a turn making
       a conditions claim must have called the air-quality retrieval
     - _Requirements: 35.3, 35.4, 35.5, 35.6_
 
-  - [ ] 19.3 Write the evaluation harness and mark the live checks
+  - [x] 19.3 Write the evaluation harness and mark the live checks
     - Any check needing a live model or live guardrail marked so the offline suite excludes it and a
       separate command runs it; an LLM-as-judge evaluation may run but its verdict is advisory and never
       gates the build
