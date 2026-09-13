@@ -101,7 +101,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase C — association Lambda handler (repo-only)
 
-- [ ] 9. Association Lambda handler against fakes (TDD)
+- [x] 9. Association Lambda handler against fakes (TDD)
   - Failing tests: the handler builds the `AssociationJob` from config and runs it
     for the enrolled users; a per-user failure is logged with the pseudonymous id
     and skipped, leaving others processed (Property 4's additive behaviour and the
