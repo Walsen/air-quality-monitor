@@ -165,7 +165,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     rejected before store access.
   - _Requirements: 1.5, 1.6, 2.3, 2.4, 3.2, 4.2, 8.5_
 
-- [ ] 17. Seed the readings + registry tables
+- [x] 17. Seed the readings + registry tables
   - Run the seeding loader against the deployed readings + sensor-registry tables
     so the association has a persisted exposure history for the demo sites. Verify
     idempotence (a second run is a no-op).
