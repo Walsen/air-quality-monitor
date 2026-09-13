@@ -120,20 +120,20 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase D — container-fenced round-trips (LocalStack)
 
-- [ ] 11. Profile + diary round-trip through the DynamoDB adapters (LocalStack)
+- [x] 11. Profile + diary round-trip through the DynamoDB adapters (LocalStack)
   - Integration-marked test: write a profile and a diary entry for a user, read
     them back; a second entry for the same date replaces; a second user's data is
     isolated (Property 1). Runs in the fenced suite, not offline.
   - _Requirements: 3.2, 3.3, 4.2, 9.2_
 
-- [ ] 12. Association end-to-end over LocalStack
+- [x] 12. Association end-to-end over LocalStack
   - Integration-marked test: seed a diary + readings, run the association job,
     read Learned_Thresholds back through the serving path, and assert the served
     advice reflects them for that user while a history-less user is unchanged
     (Property 4).
   - _Requirements: 4.3, 4.4, 4.5_
 
-- [ ] 13. Erasure over LocalStack
+- [x] 13. Erasure over LocalStack
   - Integration-marked test: forget a user; the profile and diary are gone and the
     Learned_Thresholds with them; a later read serves the default; one user cannot
     erase another's data (Property 5).
