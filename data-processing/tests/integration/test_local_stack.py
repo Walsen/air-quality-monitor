@@ -554,7 +554,7 @@ def test_a_profile_and_diary_round_trip_and_isolate_by_user() -> None:
     profile_a = build_profile(_profile_fields(_USER_A))
     profiles.put(profile_a)
     entry_a = build_symptom_entry(
-        _diary_fields(on, severity=3, note="round trip a"), now=_T0
+        {"user_id": _USER_A, **_diary_fields(on, severity=3, note="round trip a")}, now=_T0
     )
     diary.put(entry_a)
 
@@ -571,7 +571,11 @@ def test_a_profile_and_diary_round_trip_and_isolate_by_user() -> None:
     assert held_a[0].note == "round trip a"
 
     # --- Req 3.3 / 31.7: a second write for the SAME date replaces, not accumulates ---
-    diary.put(build_symptom_entry(_diary_fields(on, severity=5, note="replaced"), now=_T0))
+    diary.put(
+        build_symptom_entry(
+            {"user_id": _USER_A, **_diary_fields(on, severity=5, note="replaced")}, now=_T0
+        )
+    )
     replaced = diary.query_window(_USER_A, on, on)
     assert len(replaced) == 1, "a second entry for the same date must replace the first"
     assert replaced[0].severity == 5
@@ -579,7 +583,11 @@ def test_a_profile_and_diary_round_trip_and_isolate_by_user() -> None:
 
     # --- user B: written, and each user's reads see only their own (Property 1) ---
     profiles.put(build_profile(_profile_fields(_USER_B)))
-    diary.put(build_symptom_entry(_diary_fields(on, severity=2, note="b only"), now=_T0))
+    diary.put(
+        build_symptom_entry(
+            {"user_id": _USER_B, **_diary_fields(on, severity=2, note="b only")}, now=_T0
+        )
+    )
 
     b_profile = profiles.get(_USER_B)
     assert b_profile is not None and b_profile.user_id == _USER_B
