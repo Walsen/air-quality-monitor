@@ -458,3 +458,386 @@ def test_the_compose_definition_is_valid() -> None:
     # pass: Compose exits zero for a file defining no services at all.
     for service in ("ingestion", "mosquitto", "localstack"):
         assert service in completed.stdout
+
+# --------------------------------------------------------------------------------------
+# Personal diary memory (Phase D, tasks 11-13)
+#
+# WHAT THIS BLOCK ADDS AND WHY IT IS HERE. The offline job and serving tests
+# (test_association_job, test_serving_diary, test_escalation) already pin the BEHAVIOUR against
+# in-memory stores. What they take as given is that the profile, diary, association and erasure
+# reads and writes traverse the REAL DynamoDB key layout — the profile partition key, the diary
+# composite key, the reserved ``#learned`` sort key, the readings ``SITE#..#SP#..`` composite
+# key. Only a real table settles that the derivation's handoff to the serving path works over
+# that layout end to end. So these checks exercise profile+diary together, the association over
+# a persisted exposure history, and a total erasure — none of which the round trips above this
+# line touch — and each proves a cross-user isolation the offline suite can only assert against
+# a dict.
+# --------------------------------------------------------------------------------------
+
+_USER_A = "diary-user-a"
+_USER_B = "diary-user-b"
+_TABLE_ID = "epa-2024-05-06"
+
+
+def _profile_fields(user_id: str, **overrides: object) -> dict[str, object]:
+    """A lawful profile payload for ``build_profile``, homed at the demo Cochabamba site.
+
+    The home coordinate matches ``seed_readings.DEMO_SITES`` (near ``-17.394, -66.157``) so the
+    same ``GeoSelector`` the serving path uses resolves the seeded sites for this user — which
+    is what lets the association in task 12 reach the seeded exposure history.
+    """
+    from aqm_ingestion.domain.profile import (
+        RECOGNIZED_CONSENT_VERSIONS,
+        Condition,
+        SensitivityLevel,
+    )
+
+    base: dict[str, object] = {
+        "user_id": user_id,
+        "condition": Condition.ASTHMA,
+        "sensitivity_level": SensitivityLevel.STANDARD,
+        "locations": [{"name": "home", "latitude": -17.394, "longitude": -66.157}],
+        "consent": {
+            "version": next(iter(sorted(RECOGNIZED_CONSENT_VERSIONS))),
+            "given_at": _T0,
+        },
+        "created_at": _T0,
+        "updated_at": _T0,
+    }
+    return base | overrides
+
+
+def _diary_fields(on: dt.date, severity: int, **overrides: object) -> dict[str, object]:
+    """A lawful diary payload for ``build_symptom_entry``."""
+    base: dict[str, object] = {
+        "entry_date": on,
+        "severity": severity,
+        "markers": ["cough", "wheeze"],
+        "reliever_used": True,
+    }
+    return base | overrides
+
+
+def test_a_profile_and_diary_round_trip_and_isolate_by_user() -> None:
+    """Profile + diary together over the real store, and Property 1 isolation (task 11).
+
+    Requirements 3.2, 3.3, 4.2, 9.2. Distinct from the readings/diary round trips above: this is
+    the FIRST check to exercise a profile and a diary through their adapters at once, the
+    same-date REPLACE (Req 3.3 / 31.7) through the real composite key, and that one user's reads
+    never see another's (Req 9.2, Property 1) — which a dict-backed store cannot prove about the
+    real ``user_id`` partition key.
+    """
+    _require_localstack()
+    _create_tables_and_bucket()
+
+    from aqm_ingestion.adapters.dynamodb import (
+        DynamoDbProfileStore,
+        DynamoDbSymptomLogStore,
+    )
+    from aqm_ingestion.domain.profile import build_profile
+    from aqm_ingestion.domain.symptoms import build_symptom_entry
+    from aqm_ingestion.ports.clock import FixedClock
+
+    clock = FixedClock(_T0)
+    profiles = DynamoDbProfileStore(table_name="aqm-profiles", endpoint_url=_ENDPOINT)
+    diary = DynamoDbSymptomLogStore(
+        table_name="aqm-symptoms", clock=clock, endpoint_url=_ENDPOINT
+    )
+    # A clean slate for the two users this check owns, so a prior run's rows cannot mask a bug.
+    for user in (_USER_A, _USER_B):
+        profiles.delete(user)
+        diary.forget_user(user)
+
+    on = _T0.date()
+
+    # --- user A: profile + diary written and read back ---
+    profile_a = build_profile(_profile_fields(_USER_A))
+    profiles.put(profile_a)
+    entry_a = build_symptom_entry(
+        {"user_id": _USER_A, **_diary_fields(on, severity=3, note="round trip a")}, now=_T0
+    )
+    diary.put(entry_a)
+
+    read_profile_a = profiles.get(_USER_A)
+    assert read_profile_a is not None
+    assert read_profile_a.user_id == _USER_A
+    assert read_profile_a.condition == profile_a.condition
+    assert read_profile_a.sensitivity_level == profile_a.sensitivity_level
+    assert read_profile_a.locations == profile_a.locations
+
+    held_a = diary.query_window(_USER_A, on, on)
+    assert len(held_a) == 1
+    assert held_a[0].severity == 3
+    assert held_a[0].note == "round trip a"
+
+    # --- Req 3.3 / 31.7: a second write for the SAME date replaces, not accumulates ---
+    diary.put(
+        build_symptom_entry(
+            {"user_id": _USER_A, **_diary_fields(on, severity=5, note="replaced")}, now=_T0
+        )
+    )
+    replaced = diary.query_window(_USER_A, on, on)
+    assert len(replaced) == 1, "a second entry for the same date must replace the first"
+    assert replaced[0].severity == 5
+    assert replaced[0].note == "replaced"
+
+    # --- user B: written, and each user's reads see only their own (Property 1) ---
+    profiles.put(build_profile(_profile_fields(_USER_B)))
+    diary.put(
+        build_symptom_entry(
+            {"user_id": _USER_B, **_diary_fields(on, severity=2, note="b only")}, now=_T0
+        )
+    )
+
+    b_profile = profiles.get(_USER_B)
+    assert b_profile is not None and b_profile.user_id == _USER_B
+
+    a_after_b = diary.query_window(_USER_A, on, on)
+    assert len(a_after_b) == 1 and a_after_b[0].note == "replaced", (
+        "user B's write must not appear in user A's diary"
+    )
+    b_diary = diary.query_window(_USER_B, on, on)
+    assert len(b_diary) == 1 and b_diary[0].note == "b only", (
+        "user A's writes must not appear in user B's diary"
+    )
+
+
+def test_the_association_derives_a_threshold_the_serving_path_then_applies() -> None:
+    """The association end to end over the real store, and its serving-path handoff (task 12).
+
+    Requirements 4.3, 4.4, 4.5. Seeds a persisted exposure history through the registry +
+    readings adapters (``seed_exposure_history``), writes a diary that correlates with an
+    ELEVATED exposure on the seeded sites, runs the ``AssociationJob`` assembled exactly as
+    ``build_association_job`` does (same ``GeoSelector`` for ``sites_for``), and asserts a
+    Learned_Threshold is written and
+    then READ back through the serving handoff — ``learned_thresholds`` and
+    ``resolve_escalation`` returning ``ThresholdSource.LEARNED``. A history-less user gets no
+    threshold and stays at ``SENSITIVITY_LEVEL`` (Req 4.5 fallback, Property 4 isolation).
+
+    The point of doing this over LocalStack rather than in-memory: it proves the derivation's
+    reads and writes traverse the REAL key layout — the ``#learned`` reserved sort key and the
+    readings composite key — which the offline job tests take as given.
+    """
+    _require_localstack()
+    _create_tables_and_bucket()
+
+    from aqm_ingestion.adapters.dynamodb import (
+        DynamoDbProfileStore,
+        DynamoDbReadingsStore,
+        DynamoDbSensorRegistryStore,
+        DynamoDbSymptomLogStore,
+    )
+    from aqm_ingestion.domain.aqi.breakpoints import BreakpointTableRegistry
+    from aqm_ingestion.domain.association import AssociationLimits
+    from aqm_ingestion.domain.escalation import ThresholdSource, resolve_escalation
+    from aqm_ingestion.domain.models import (
+        CalibratedReading,
+        Confidence,
+        DedupKey,
+        QualityFlag,
+    )
+    from aqm_ingestion.domain.profile import UserProfile, build_profile
+    from aqm_ingestion.domain.symptoms import build_symptom_entry
+    from aqm_ingestion.jobs.association import AssociationJob
+    from aqm_ingestion.jobs.seed_readings import DEMO_SITES, seed_exposure_history
+    from aqm_ingestion.ports.clock import FixedClock
+    from aqm_ingestion.serving.geo import GeoSelector, SelectionSettings
+
+    clock = FixedClock(_T0)
+    registry = DynamoDbSensorRegistryStore(table_name="aqm-registry", endpoint_url=_ENDPOINT)
+    readings = DynamoDbReadingsStore(
+        table_name="aqm-readings", clock=clock, endpoint_url=_ENDPOINT
+    )
+    profiles = DynamoDbProfileStore(table_name="aqm-profiles", endpoint_url=_ENDPOINT)
+    diary = DynamoDbSymptomLogStore(
+        table_name="aqm-symptoms", clock=clock, endpoint_url=_ENDPOINT
+    )
+
+    historied = "assoc-user-history"
+    historyless = "assoc-user-empty"
+    for user in (historied, historyless):
+        profiles.delete(user)
+        diary.forget_user(user)
+
+    # A persisted exposure history for the demo sites, written through the real store ports.
+    seed_exposure_history(registry=registry, readings=readings, clock=clock, seed=7)
+
+    # Correlate the diary with exposure by writing an elevated PM25 reading on each diary day,
+    # tracking the day's severity. The association takes each day's MAXIMUM Sub_Index, so these
+    # dominate the seeded background and give a clean same-day relationship to correlate on.
+    demo_site = DEMO_SITES[0].site_code
+    days = 20
+    today = _T0.date()
+    for offset in range(days):
+        on = today - dt.timedelta(days=offset)
+        severity = 1 + (offset % 5)
+        diary.put(
+            build_symptom_entry(
+                {
+                    "user_id": historied,
+                    **_diary_fields(on, severity=severity, markers=[], reliever_used=False),
+                },
+                now=_T0,
+            )
+        )
+        sub_index = 60 + 30 * (offset % 5)
+        at = dt.datetime.combine(on, dt.time(9), tzinfo=dt.UTC)
+        readings.put(
+            CalibratedReading(
+                key=DedupKey(
+                    site_code=demo_site,
+                    species="PM25",
+                    interval_start=at,
+                    duration="PT1H",
+                ),
+                reported_value=float(sub_index),
+                corrected_value=float(sub_index),
+                units="ug.m-3",
+                quality_flag=QualityFlag.CALIBRATED,
+                confidence=Confidence.HIGH,
+                calibration_strategy="rh_linear",
+                breakpoint_table=_TABLE_ID,
+                ratification_status="R",
+                ingested_at=at,
+                archive_id=f"assoc-{demo_site}-PM25-{on.isoformat()}",
+                sub_index=sub_index,
+                band="Moderate",
+            )
+        )
+
+    profiles.put(build_profile(_profile_fields(historied)))
+    profiles.put(build_profile(_profile_fields(historyless)))
+
+    # The job, assembled exactly as build_association_job does: sites come from the SAME
+    # GeoSelector the serving path uses, so the learned threshold rests on the sites a response
+    # would name. A wide radius so the Cochabamba home resolves the seeded sites.
+    selector = GeoSelector(
+        registry=registry,
+        readings=readings,
+        clock=clock,
+        settings=SelectionSettings(radius_km=50.0),
+    )
+
+    def sites_for(profile: UserProfile) -> tuple[str, ...]:
+        return tuple(site.site_code for site in selector.select(profile).sites)
+
+    # Guard the premise: if the selector resolves no seeded site for the home, the association
+    # could write nothing for a reason that has nothing to do with the derivation.
+    profile_historied = profiles.get(historied)
+    assert profile_historied is not None
+    assert sites_for(profile_historied) != (), (
+        "the demo home must resolve a seeded site, or the correlation has no exposure"
+    )
+
+    job = AssociationJob(
+        symptoms=diary,
+        readings=readings,
+        profiles=profiles,
+        clock=clock,
+        sites_for=sites_for,
+        limits=AssociationLimits(lags=(0,), min_observations=5, min_strength=0.1),
+    )
+    outcome = job.run_for(historied)
+    assert outcome.thresholds_written >= 1, (
+        "the correlated diary should clear the association bar"
+    )
+
+    # --- Req 4.4: read the derivation back through the serving handoff ---
+    learned = diary.learned_thresholds(historied)
+    assert "PM25" in learned, (
+        "the Learned_Threshold must survive the reserved #learned sort key"
+    )
+    derived = learned["PM25"]
+
+    registry_tables = BreakpointTableRegistry.with_defaults()
+    effective = resolve_escalation(
+        profile_historied,
+        species="PM25",
+        registry=registry_tables,
+        table_id=_TABLE_ID,
+        learned=learned,
+    )
+    assert effective.source is ThresholdSource.LEARNED
+    assert effective.sub_index == derived.sub_index
+
+    # --- Req 4.5 / Property 4: a history-less user gets no threshold and stays at the level ---
+    empty_outcome = job.run_for(historyless)
+    assert empty_outcome.thresholds_written == 0
+    assert diary.learned_thresholds(historyless) == {}
+    fallback = resolve_escalation(
+        profiles.get(historyless),
+        species="PM25",
+        registry=registry_tables,
+        table_id=_TABLE_ID,
+        learned=diary.learned_thresholds(historyless),
+    )
+    assert fallback.source is ThresholdSource.SENSITIVITY_LEVEL
+    # The derivation for one user must not have reached the other.
+    assert diary.learned_thresholds(historyless) == {}
+
+
+def test_forgetting_a_user_erases_profile_diary_and_thresholds() -> None:
+    """Total erasure over the real store, and Property 5 isolation (task 13).
+
+    Requirements 6.1, 6.2, 6.3, 6.4, 5.6. Writes a profile, a diary and a Learned_Threshold for
+    a user, forgets them the way the serving erasure path does (``DynamoDbProfileStore.delete``
+    + ``DynamoDbSymptomLogStore.forget_user``, which sweeps the reserved ``#learned`` item with
+    the entries), and asserts all three are gone and a later profile read serves the DEFAULT
+    (None, so the serving path falls back). One user's erasure leaves another's data intact
+    (Property 5).
+    """
+    _require_localstack()
+    _create_tables_and_bucket()
+
+    from aqm_ingestion.adapters.dynamodb import (
+        DynamoDbProfileStore,
+        DynamoDbSymptomLogStore,
+    )
+    from aqm_ingestion.domain.association import LearnedThreshold
+    from aqm_ingestion.domain.profile import build_profile
+    from aqm_ingestion.domain.symptoms import build_symptom_entry
+    from aqm_ingestion.ports.clock import FixedClock
+
+    clock = FixedClock(_T0)
+    profiles = DynamoDbProfileStore(table_name="aqm-profiles", endpoint_url=_ENDPOINT)
+    diary = DynamoDbSymptomLogStore(
+        table_name="aqm-symptoms", clock=clock, endpoint_url=_ENDPOINT
+    )
+
+    forgotten = "erase-user-a"
+    kept = "erase-user-b"
+    for user in (forgotten, kept):
+        profiles.delete(user)
+        diary.forget_user(user)
+
+    on = _T0.date()
+    learned = (LearnedThreshold(species="PM25", sub_index=88, lag_days=3, observations=20),)
+
+    # Both users get a profile, a diary entry, and a learned threshold.
+    for user in (forgotten, kept):
+        profiles.put(build_profile(_profile_fields(user)))
+        diary.put(
+            build_symptom_entry(
+                {"user_id": user, **_diary_fields(on, severity=4)}, now=_T0
+            )
+        )
+        diary.put_learned_thresholds(user, learned)
+
+    # --- forget the way the serving erasure path does: delete profile, forget the diary ---
+    profiles.delete(forgotten)
+    diary.forget_user(forgotten)
+
+    # --- Req 6.1/6.2/6.3: the profile, diary, and threshold are all gone ---
+    assert profiles.get(forgotten) is None
+    assert diary.query_window(forgotten, on, on) == ()
+    assert diary.learned_thresholds(forgotten) == {}
+
+    # --- Req 6.4: a later read serves the default — get returns None, so the fallback applies.
+    assert profiles.get(forgotten) is None
+
+    # --- Property 5 / Req 5.6: the other user's data is untouched ---
+    kept_profile = profiles.get(kept)
+    assert kept_profile is not None and kept_profile.user_id == kept
+    kept_diary = diary.query_window(kept, on, on)
+    assert len(kept_diary) == 1 and kept_diary[0].severity == 4
+    assert diary.learned_thresholds(kept)["PM25"].sub_index == 88

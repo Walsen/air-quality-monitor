@@ -27,11 +27,13 @@ support in any US region and errors at invoke. The `bedrock:InvokeModel` grant i
 the profile ARN and the underlying foundation-model ARNs the profile routes to, because the
 service checks the resolved model, not the profile alone.
 
-THE JWT AUTHORIZER IS THE SAME COGNITO APP CLIENT SERVICE 2 USES. `allowed_audience` /
-`allowed_clients` come from `AQM_COGNITO_CLIENT_ID`, which task 17 already made the advisor read
-—
-so the token AgentCore validates inbound is the token Service 2 validates on receipt, and there
-is one identity, not two that can drift.
+THE JWT AUTHORIZER VALIDATES THE ID TOKEN'S `aud`, NOT `client_id`. The runtime is invoked with
+the Cognito ID token the whole system forwards (Service 2 requires token_use=id). That token
+carries `aud` (= the app client id from `AQM_COGNITO_CLIENT_ID`, which task 17 already made the
+advisor read) but has NO `client_id` claim — that claim is only on the Cognito access token. So
+the authorizer sets `allowed_audience` ONLY: adding `allowed_clients` would make AgentCore
+verify the absent `client_id` and 401 every real turn. Validating `aud` still binds the token to
+the SAME Cognito app client Service 2 validates on receipt — one identity, not two that drift.
 
 WHAT THIS STACK DOES NOT DO. It does not enable the Anthropic model (a one-time console form,
 not
@@ -69,6 +71,7 @@ class AdvisorRuntimeStack(cdk.Stack):
         model_inference_profile: str,
         cognito_discovery_url: str,
         cognito_client_id: str,
+        serving_base_url: str,
         env: cdk.Environment,
     ) -> None:
         """Build the stack from values a deployment supplies, never from literals in code.
@@ -82,6 +85,8 @@ class AdvisorRuntimeStack(cdk.Stack):
             cognito_discovery_url: the OIDC discovery URL of the Cognito user pool.
             cognito_client_id: the Cognito app client id — the SAME one Service 2 validates
             against.
+            serving_base_url: the Service 2 serving base URL the advisor's HTTP ServingClient
+                calls; supplied at deploy, never a literal in code.
             env: the target account and region, set EXPLICITLY so synth performs no account
             lookup.
         """
@@ -96,7 +101,7 @@ class AdvisorRuntimeStack(cdk.Stack):
 
         execution_role = self._execution_role(image, model_inference_profile)
 
-        bac.CfnRuntime(
+        runtime = bac.CfnRuntime(
             self,
             "AdvisorRuntime",
             agent_runtime_name="aqm_advisor",
@@ -113,22 +118,87 @@ class AdvisorRuntimeStack(cdk.Stack):
                 network_mode="PUBLIC",
             ),
             authorizer_configuration=bac.CfnRuntime.AuthorizerConfigurationProperty(
+                # Validate the `aud` claim ONLY, via allowed_audience. The runtime is
+                # invoked with the Cognito ID token the whole system forwards (Service 2's
+                # authenticator requires token_use=id). An ID token carries `aud` (= the app
+                # client id) but has NO `client_id` claim — that claim is only on the Cognito
+                # access token. When both allowed_audience and allowed_clients are set the
+                # authorizer verifies ALL of them (allowed_clients validates `client_id`), so
+                # an allowed_clients entry would reject every forwarded ID token with a 401
+                # ("Claim 'client_id' value mismatch"). Validating `aud` alone still binds the
+                # token to the SAME Cognito app client Service 2 validates — one identity, not
+                # two that can drift.
                 custom_jwt_authorizer=bac.CfnRuntime.CustomJWTAuthorizerConfigurationProperty(
                     discovery_url=cognito_discovery_url,
                     allowed_audience=[cognito_client_id],
-                    allowed_clients=[cognito_client_id],
                 ),
             ),
+            # ALLOWLIST THE INBOUND `Authorization` HEADER OR THE ADVISOR NEVER SEES THE JWT.
+            # AgentCore STRIPS every inbound request header that is NOT on this allowlist before
+            # the container receives it — and it does so EVEN WHEN the JWT authorizer above has
+            # already accepted the token. The two are separate gates: the authorizer decides
+            # whether to admit the request, the allowlist decides which headers survive into the
+            # container. With no allowlist configured, `Authorization` is stripped, and the
+            # advisor entrypoint (`_credential_from` in
+            # agent-advisor/src/aqm_advisor/agentcore/app.py, which reads
+            # `context.request_headers["Authorization"]`) sees no credential — so every turn
+            # fails fast with `IdentityUnavailableError`, before any model or serving call. The
+            # entrypoint's own docstring predicts exactly this: "arriving here without a usable
+            # credential means the request-header allowlist is misconfigured."
+            #
+            # `Authorization` is explicitly PERMITTED for JWT auth per the AWS "Pass custom
+            # headers to Amazon Bedrock AgentCore Runtime" docs — it is NOT one of the
+            # restricted headers when a custom JWT authorizer is configured. Only
+            # `Authorization` is listed; nothing else is forwarded.
+            request_header_configuration=bac.CfnRuntime.RequestHeaderConfigurationProperty(
+                request_header_allowlist=["Authorization"],
+            ),
+            # THE LOADER READS PER-PORT VARS, NOT A COMBINED STRING. The advisor's config
+            # loader (agent-advisor/src/aqm_advisor/config/loader.py) resolves each adapter from
+            # its own `AQM_ADVISOR_<PORT>` variable, falling back to the first registered
+            # adapter — the scripted/local/memory OFFLINE defaults. It NEVER parses a combined
+            # `AQM_ADVISOR_ADAPTERS` string. An earlier version set exactly that combined
+            # string, which the loader silently ignored, so the runtime answered FULLY SCRIPTED
+            # (CloudWatch: `advisor_composed model=scripted serving=scripted`) while the wiring
+            # read as correct. So each selection that must change is its own variable here.
+            #
+            # Only the two ports that MUST leave their offline default are set:
+            #   - serving_client=http + AQM_ADVISOR_SERVING_BASE_URL makes the advisor call the
+            #     real Service 2 (forwarding the same Cognito JWT, so one identity end to end).
+            #   - model=bedrock + AQM_ADVISOR_MODEL_ID + AQM_ADVISOR_MODEL_REGION makes the turn
+            #     call the real Bedrock model (both the bedrock model and guardrail clients read
+            #     config.model_region).
+            # guardrail_checker, advice_audit_store, clock and association_trigger are LEFT to
+            # their safe defaults (local / memory / system / recording): the local guardrail
+            # needs no provisioned Bedrock Guardrail resource (we have none) and the domain
+            # forbidden-claims rules run regardless, memory audit is the POC default, and
+            # selecting the bedrock guardrail would demand a guardrail identifier we have not
+            # created and would fail every turn.
+            #
+            # self.region is a concrete string at synth because app.py sets an explicit
+            # cdk.Environment(region=...), so AQM_ADVISOR_MODEL_REGION renders as the literal
+            # region (e.g. "us-east-1"), not an unresolved token.
             environment_variables={
                 "AQM_ADVISOR_MODEL_ID": model_inference_profile,
                 "AQM_COGNITO_CLIENT_ID": cognito_client_id,
-                "AQM_ADVISOR_ADAPTERS": (
-                    "serving_client=http,guardrail_checker=bedrock,"
-                    "advice_audit_store=memory,model=bedrock,clock=system,"
-                    "association_trigger=recording"
-                ),
+                "AQM_ADVISOR_SERVING_BASE_URL": serving_base_url,
+                "AQM_ADVISOR_SERVING_CLIENT": "http",
+                "AQM_ADVISOR_MODEL": "bedrock",
+                "AQM_ADVISOR_MODEL_REGION": self.region,
             },
         )
+
+        # ORDER THE POLICY BEFORE THE RUNTIME. AgentCore validates the ECR image URI
+        # SYNCHRONOUSLY during runtime creation, using the execution role — so the role's pull
+        # permissions must already be attached when that validation runs. Those permissions live
+        # on the role's inline DefaultPolicy, a SEPARATE `AWS::IAM::Policy` resource. Passing
+        # `role_arn=execution_role.role_arn` (a string attribute) makes CloudFormation capture a
+        # dependency on the Role but NOT on that policy, so the runtime could be created — and
+        # its ECR URI validated — before the policy is attached, failing with an ECR access-
+        # denied on an otherwise correctly-permissioned role. Make the dependency explicit so
+        # CloudFormation creates and attaches the DefaultPolicy first.
+        default_policy = execution_role.node.find_child("DefaultPolicy")
+        runtime.node.add_dependency(default_policy)
 
     def _execution_role(
         self, image: DockerImageAsset, model_inference_profile: str

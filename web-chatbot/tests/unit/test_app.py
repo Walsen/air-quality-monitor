@@ -9,6 +9,7 @@ The gate is the security boundary, so it gets the most attention.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -39,10 +40,14 @@ class _FakeAdvisor:
     def __init__(self, response: dict[str, Any] | None = None, error: str | None = None) -> None:
         self._response = response if response is not None else _GOOD_RESPONSE
         self._error = error
-        self.calls: list[tuple[str, str]] = []
+        # Records (utterance, session_id, credential) so tests can assert exactly
+        # what the credential channel forwarded (Property 2).
+        self.calls: list[tuple[str, str, str | None]] = []
 
-    def advise(self, utterance: str, *, session_id: str) -> dict[str, Any]:
-        self.calls.append((utterance, session_id))
+    def advise(
+        self, utterance: str, *, session_id: str, credential: str | None
+    ) -> dict[str, Any]:
+        self.calls.append((utterance, session_id, credential))
         if self._error is not None:
             raise AdvisorError(self._error)
         return self._response
@@ -52,8 +57,22 @@ def _app(advisor: _FakeAdvisor | None = None) -> Any:
     return build_app(advisor=advisor or _FakeAdvisor(), access_key=_KEY)
 
 
-def _post(app: Any, body: dict[str, Any], key: str | None = None) -> Response:
-    headers = {"X-Access-Key": key} if key is not None else {}
+# A valid signed-in caller sends both the shared access key and a bearer JWT.
+_JWT = "id.jwt.token.value"
+_BEARER = f"Bearer {_JWT}"
+
+
+def _post(
+    app: Any,
+    body: dict[str, Any],
+    key: str | None = None,
+    authorization: str | None = _BEARER,
+) -> Response:
+    headers: dict[str, str] = {}
+    if key is not None:
+        headers["X-Access-Key"] = key
+    if authorization is not None:
+        headers["Authorization"] = authorization
     return call(app, "POST", "/chat", json_body=body, headers=headers)
 
 
@@ -98,6 +117,70 @@ def test_a_valid_turn_returns_the_shaped_guidance() -> None:
     assert advisor.calls[0][0] == "how is the air?"
 
 
+# --- the JWT pass-through (Requirements 2.1, 2.2, 2.5; Property 2) --------
+
+
+def test_a_valid_turn_forwards_the_bearer_token_to_the_advisor() -> None:
+    # /chat reads the browser's Authorization bearer, strips the framing, and
+    # hands the raw token to the advisor client as credential.
+    advisor = _FakeAdvisor()
+    _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=_BEARER)
+    assert advisor.calls[0][2] == _JWT
+
+
+def test_the_forwarded_credential_is_byte_identical_to_the_browser_token() -> None:
+    # Property 2: the credential is passed through unchanged — not decoded,
+    # parsed, or reframed. Only the transport "Bearer " framing is stripped.
+    token = "eyJhbGciOi.JIUzI1Ni.sig-With_Odd~Chars.and.dots=="
+    advisor = _FakeAdvisor()
+    _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=f"Bearer {token}")
+    assert advisor.calls[0][2] == token
+
+
+def test_a_lowercase_bearer_scheme_is_accepted() -> None:
+    # RFC 6750 makes the scheme case-insensitive; the token must survive intact.
+    advisor = _FakeAdvisor()
+    _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=f"bearer {_JWT}")
+    assert advisor.calls[0][2] == _JWT
+
+
+def test_a_turn_without_a_jwt_is_refused_and_never_reaches_the_advisor() -> None:
+    # A diary turn needs the user's identity; without a JWT the page is told to
+    # sign in and the advisor is not called (no Bedrock spend, no anonymous turn).
+    advisor = _FakeAdvisor()
+    res = _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=None)
+    assert res.status == 401
+    assert advisor.calls == []
+
+
+def test_an_empty_bearer_token_is_refused() -> None:
+    advisor = _FakeAdvisor()
+    res = _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization="Bearer ")
+    assert res.status == 401
+    assert advisor.calls == []
+
+
+def test_a_non_bearer_authorization_is_refused() -> None:
+    advisor = _FakeAdvisor()
+    res = _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization="Token abc")
+    assert res.status == 401
+    assert advisor.calls == []
+
+
+def test_the_jwt_is_never_echoed_in_the_response_body() -> None:
+    advisor = _FakeAdvisor()
+    res = _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=_BEARER)
+    assert _JWT not in res.text
+
+
+def test_the_jwt_is_never_logged(caplog: Any) -> None:
+    advisor = _FakeAdvisor()
+    with caplog.at_level(logging.DEBUG):
+        _post(_app(advisor), {"utterance": "hi"}, key=_KEY, authorization=_BEARER)
+    combined = "\n".join(record.getMessage() for record in caplog.records)
+    assert _JWT not in combined
+
+
 def test_a_supplied_session_id_is_forwarded_and_returned() -> None:
     advisor = _FakeAdvisor()
     sid = "web-" + "a" * 60
@@ -139,6 +222,35 @@ def test_the_index_page_loads_and_has_no_embedded_key() -> None:
     assert res.status == 200
     assert "Air Quality Advisor" in res.text
     assert _KEY not in res.text, "the shared key must never be embedded in the page"
+
+
+def test_the_index_page_has_a_sign_in_form_and_no_embedded_secret() -> None:
+    # The page must gate chat behind a sign-in step (Req 1.2): a login form with
+    # username + password + a submit control. And it must bake in NO credential —
+    # no access key, JWT, or client secret literal — the user types those.
+    res = call(_app(), "GET", "/")
+    assert res.status == 200
+    page = res.text
+
+    # A sign-in step is present: the form and its identity inputs.
+    assert 'id="signin' in page, "the page must present a sign-in step"
+    assert 'id="username"' in page and 'id="password"' in page
+    assert "Sign in" in page, "the page must offer a sign-in control"
+
+    # The chat turn wiring the sign-in feeds is present too.
+    assert "Bearer " in page, "chat turns must send the JWT as a bearer token"
+
+    # No secret/token literal is embedded. The real JWT and access key used by
+    # the tests must never appear, and neither must a hard-coded bearer/jwt/
+    # client-secret literal that would mean a credential was baked in.
+    assert _KEY not in page
+    assert _JWT not in page
+    lowered = page.lower()
+    for marker in ("client_secret", "clientsecret", "cognito_client_secret"):
+        assert marker not in lowered, f"no {marker} may be embedded in the page"
+    # A bearer token is only ever built from the in-memory `token` variable,
+    # never written as a literal like `Bearer eyJ...` (a real JWT header).
+    assert "bearer eyj" not in lowered, "no literal JWT may be embedded after Bearer"
 
 
 def test_health_is_open_and_reveals_nothing() -> None:

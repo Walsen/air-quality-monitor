@@ -16,7 +16,9 @@ never committed.
 import os
 
 import aws_cdk as cdk
-
+from aqm_infra.association_stack import AssociationStack
+from aqm_infra.cognito_stack import CognitoStack
+from aqm_infra.ingestion_serving_stack import IngestionServingStack
 from aqm_infra.lambda_rest_stack import LambdaRestStack
 from aqm_infra.web_chatbot_stack import WebChatbotStack
 
@@ -87,8 +89,67 @@ WebChatbotStack(
     runtime_arn=app.node.try_get_context("chatbot_runtime_arn") or _DEFAULT_ADVISOR_RUNTIME_ARN,
     region=REGION,
     access_key=app.node.try_get_context("chatbot_access_key"),
+    # Cognito app-client id from context only, never committed; None at synth. With
+    # it the deployed chatbot can sign a user in against the live pool (Task 20),
+    # without it /login is unavailable (503) and chat still works.
+    cognito_client_id=app.node.try_get_context("chatbot_cognito_client_id"),
     description="POC: web chatbot proxying to the AI Advisor on Bedrock AgentCore",
 )
+
+# Personal Diary Memory (personal-diary-memory feature): per-user Cognito login,
+# the serving API backed by DynamoDB, and the scheduled association job. Gated
+# behind a single opt-in flag — mirroring `deploy_ingestion` above — so these
+# three stacks don't synth into every run unless requested. Each is a separate
+# stack so it deploys/tears down independently (`cdk deploy --exclusively <id>`).
+#
+# Everything identity- or storage-related comes from deploy-time context, never
+# committed. At synth with no context the Cognito ids are None; the serving stack
+# already handles None -> add_error at deploy while staying synth-clean, so a
+# full-app synth with placeholder context resolves nothing from an account.
+#
+# Deploy ordering (Req 7.2, 7.3): CognitoStack first (its outputs supply the
+# Cognito ids), then the serving stack, then the association stack. The
+# association stack consumes the serving stack's CDK-generated table names, which
+# creates a cross-stack CloudFormation export/import — so the serving stack MUST
+# deploy before the association stack.
+if app.node.try_get_context("deploy_diary_memory"):
+    CognitoStack(
+        app,
+        "aqm-poc-cognito",
+        env=env,
+        description="POC: Cognito user pool for per-user diary sign-in (personal-diary-memory)",
+    )
+
+    serving_stack = IngestionServingStack(
+        app,
+        "aqm-poc-serving",
+        env=env,
+        service_dir="../data-processing",
+        region=REGION,
+        # Cognito ids from context only (from the CognitoStack outputs). None at
+        # synth -> the stack adds a deploy-time error but synthesizes cleanly.
+        cognito_user_pool_id=app.node.try_get_context("cognito_user_pool_id"),
+        cognito_client_id=app.node.try_get_context("cognito_client_id"),
+        cognito_issuer=app.node.try_get_context("cognito_issuer"),
+        description="POC: ingestion serving API on Lambda + DynamoDB (personal-diary-memory)",
+    )
+
+    # The association job needs the SAME tables the serving stack generates.
+    # Pass the serving stack's exposed instance attributes (Task 3 exposed them
+    # for exactly this): CDK turns each into a cross-stack export/import, so the
+    # serving stack must deploy first and the names never need to be committed.
+    AssociationStack(
+        app,
+        "aqm-poc-association",
+        env=env,
+        service_dir="../data-processing",
+        region=REGION,
+        profiles_table_name=serving_stack.profiles_table_name,
+        symptom_log_table_name=serving_stack.symptom_log_table_name,
+        readings_table_name=serving_stack.readings_table_name,
+        registry_table_name=serving_stack.sensor_registry_table_name,
+        description="POC: scheduled association-derivation Lambda (personal-diary-memory)",
+    )
 
 
 app.synth()

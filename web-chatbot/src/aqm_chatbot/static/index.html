@@ -14,9 +14,12 @@
       display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
     header h1 { font-size:17px; margin:0; font-weight:600; }
     header .sub { color:var(--muted); font-size:13px; }
-    #key { margin-left:auto; display:flex; gap:8px; align-items:center; }
-    #key input { background:#0b1219; color:var(--text); border:1px solid #2b3745;
-      border-radius:8px; padding:7px 10px; font-size:14px; width:220px; }
+    #who { margin-left:auto; display:flex; gap:10px; align-items:center; }
+    #who .signed-in { color:var(--muted); font-size:13px; }
+    #who button { padding:7px 12px; font-size:13px; }
+    label { color:var(--muted); font-size:13px; }
+    input { background:#0b1219; color:var(--text); border:1px solid #2b3745;
+      border-radius:8px; padding:7px 10px; font-size:14px; }
     #log { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
     .msg { max-width:min(680px,90%); padding:11px 14px; border-radius:14px; white-space:pre-wrap;
       word-wrap:break-word; }
@@ -29,7 +32,20 @@
     .disclaimer { color:var(--muted); font-size:12px; margin-top:8px; }
     .degraded { color:var(--warn); font-size:12px; margin-top:6px; }
     .escalation { background:rgba(245,158,11,.14); border:1px solid rgba(245,158,11,.4); }
-    form { display:flex; gap:10px; padding:14px 18px; background:var(--panel);
+
+    /* Sign-in step. Shown until a JWT is held for the session; the chat UI is
+       hidden meanwhile so a turn cannot be sent without an identity. */
+    #signin { flex:1; display:flex; align-items:center; justify-content:center; padding:18px; }
+    #signin form { flex-direction:column; gap:12px; width:min(360px,92%); background:var(--panel);
+      border:1px solid #26313f; border-radius:14px; padding:22px; }
+    #signin h2 { margin:0 0 4px; font-size:16px; font-weight:600; }
+    #signin .field { display:flex; flex-direction:column; gap:5px; }
+    #signin input { width:100%; }
+    #signin button { width:100%; padding:11px 14px; }
+    #signinError { color:var(--err); font-size:13px; min-height:1em; }
+    .hidden { display:none !important; }
+
+    form.chat { display:flex; gap:10px; padding:14px 18px; background:var(--panel);
       border-top:1px solid #26313f; }
     #utterance { flex:1; background:#0b1219; color:var(--text); border:1px solid #2b3745;
       border-radius:10px; padding:11px 14px; font-size:15px; resize:none; }
@@ -45,27 +61,70 @@
       <h1>Air Quality Advisor</h1>
       <div class="sub">Ask about your local air quality. Not medical advice.</div>
     </div>
-    <div id="key">
-      <label for="accessKey" class="sub">Access key</label>
-      <input id="accessKey" type="password" placeholder="shared key" autocomplete="off" />
+    <div id="who" class="hidden">
+      <span class="signed-in">Signed in as <span id="whoName"></span></span>
+      <button id="signout" type="button">Sign out</button>
     </div>
   </header>
 
-  <div id="log" aria-live="polite"></div>
+  <!-- Sign-in step: username + password + the shared access key (coarse outer
+       gate). The chat UI below stays hidden until a JWT is held. -->
+  <div id="signin">
+    <form id="signinForm" autocomplete="off">
+      <h2>Sign in</h2>
+      <div class="sub">Sign in with your account to record and recall your diary.</div>
+      <div class="field">
+        <label for="accessKey">Access key</label>
+        <input id="accessKey" name="accessKey" type="password" placeholder="shared key"
+          autocomplete="off" required />
+      </div>
+      <div class="field">
+        <label for="username">Username</label>
+        <input id="username" name="username" type="text" placeholder="username"
+          autocomplete="username" required />
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" placeholder="password"
+          autocomplete="current-password" required />
+      </div>
+      <button id="signinBtn" type="submit">Sign in</button>
+      <div id="signinError" role="alert" aria-live="assertive"></div>
+    </form>
+  </div>
 
-  <form id="form">
+  <div id="log" class="hidden" aria-live="polite"></div>
+
+  <form id="form" class="chat hidden">
     <textarea id="utterance" rows="1" placeholder="e.g. What is my current local air quality?"
-      autocomplete="off"></textarea>
+      aria-label="Message to the advisor" autocomplete="off"></textarea>
     <button id="send" type="submit">Send</button>
   </form>
 
   <script>
+    const signinView = document.getElementById('signin');
+    const signinForm = document.getElementById('signinForm');
+    const signinBtn = document.getElementById('signinBtn');
+    const signinError = document.getElementById('signinError');
+    const accessKeyInput = document.getElementById('accessKey');
+    const usernameInput = document.getElementById('username');
+    const passwordInput = document.getElementById('password');
+    const who = document.getElementById('who');
+    const whoName = document.getElementById('whoName');
+    const signoutBtn = document.getElementById('signout');
+
     const log = document.getElementById('log');
     const form = document.getElementById('form');
     const input = document.getElementById('utterance');
     const sendBtn = document.getElementById('send');
-    const keyInput = document.getElementById('accessKey');
+
     let sessionId = null;
+    // The JWT lives only for this browser session — never localStorage, so it
+    // does not persist beyond the session (Req 5.3). The shared access key is
+    // held in memory too, only to gate the /login and /chat calls; neither is
+    // baked into the page.
+    let token = null;
+    let accessKey = null;
 
     function bubble(cls) {
       const el = document.createElement('div');
@@ -75,6 +134,59 @@
       return el;
     }
     function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+    // Reveal the chat UI once a token is held; back to the sign-in step otherwise.
+    function showChat(username) {
+      signinView.classList.add('hidden');
+      log.classList.remove('hidden');
+      form.classList.remove('hidden');
+      who.classList.remove('hidden');
+      whoName.textContent = username;
+      input.focus();
+    }
+
+    // Drop the in-memory token and return to sign-in. Used on sign-out and on any
+    // 401 (Req: block chat, re-prompt on 401 — "sign in again").
+    function requireSignIn(message) {
+      token = null;
+      form.classList.add('hidden');
+      log.classList.add('hidden');
+      who.classList.add('hidden');
+      signinView.classList.remove('hidden');
+      signinError.textContent = message || '';
+      passwordInput.value = '';
+      passwordInput.focus();
+    }
+
+    async function signIn(username, password, key) {
+      signinBtn.disabled = true;
+      signinError.textContent = '';
+      try {
+        const res = await fetch('login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Access-Key': key },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          signinError.textContent = 'Sign-in failed. Check your credentials.';
+          return;
+        }
+        if (!res.ok || !data.token) {
+          signinError.textContent = 'Sign-in is unavailable right now (' +
+            esc(data.detail || data.error || res.status) + ').';
+          return;
+        }
+        token = data.token;
+        accessKey = key;
+        passwordInput.value = '';
+        showChat(username);
+      } catch (e) {
+        signinError.textContent = 'Network error. Try again.';
+      } finally {
+        signinBtn.disabled = false;
+      }
+    }
 
     function renderBot(el, data) {
       let html = '';
@@ -91,6 +203,7 @@
     }
 
     async function send(text) {
+      if (!token) { requireSignIn('Please sign in to continue.'); return; }
       bubble('me').textContent = text;
       const botEl = bubble('bot');
       botEl.innerHTML = '<span class="typing">thinking…</span>';
@@ -98,11 +211,19 @@
       try {
         const res = await fetch('chat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Access-Key': keyInput.value },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Access-Key': accessKey,
+            'Authorization': 'Bearer ' + token,
+          },
           body: JSON.stringify({ utterance: text, session_id: sessionId }),
         });
         const data = await res.json().catch(() => ({}));
-        if (res.status === 401) { botEl.innerHTML = '<h3>Advisor</h3>Access key is missing or wrong.'; return; }
+        if (res.status === 401) {
+          // Identity is missing or expired: drop the token and re-prompt sign-in.
+          requireSignIn('Your session ended. Please sign in again.');
+          return;
+        }
         if (!res.ok) { botEl.innerHTML = '<h3>Advisor</h3>Could not reach the advisor (' + esc(data.error || res.status) + ').'; return; }
         sessionId = data.session_id || sessionId;
         renderBot(botEl, data);
@@ -113,6 +234,23 @@
         input.focus();
       }
     }
+
+    signinForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const username = usernameInput.value.trim();
+      const password = passwordInput.value;
+      const key = accessKeyInput.value;
+      if (!username || !password || !key) {
+        signinError.textContent = 'Enter the access key, username, and password.';
+        return;
+      }
+      signIn(username, password, key);
+    });
+
+    signoutBtn.addEventListener('click', () => {
+      sessionId = null;
+      requireSignIn('');
+    });
 
     form.addEventListener('submit', (e) => {
       e.preventDefault();

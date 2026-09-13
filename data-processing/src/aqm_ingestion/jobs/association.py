@@ -178,12 +178,21 @@ class AssociationJob:
         failure in the simulator swarm — a batch that aborts on the first bad user silently
         stops
         maintaining everyone after them.
+
+        The except clause below is deliberately broad: this is a per-user ISOLATION BOUNDARY
+        (analogous to the per-sensor swarm boundary §5 explicitly blesses), not a bare
+        top-level swallow. The store adapters are DynamoDB/boto3 in production, whose
+        botocore ClientError subclasses Exception directly (not ValueError/KeyError/OSError),
+        so a narrower catch would fail to isolate a real per-user DynamoDB failure and abort
+        the whole scheduled cycle. Every failure is logged with the pseudonymous user_id via
+        log_handled_error (error type + stack, never a message body or health detail) and the
+        loop carries on.
         """
         outcomes: list[AssociationOutcome] = []
         for user_id in sorted(set(user_ids)):
             try:
                 outcomes.append(self.run_for(user_id))
-            except (ValueError, KeyError, OSError) as failure:
+            except Exception as failure:
                 log_handled_error(
                     _logger, "association_failed", failure, user_id=user_id
                 )

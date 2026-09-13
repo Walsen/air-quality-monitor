@@ -11,4 +11,31 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["mypy==1.19.1", "ruff==0.15.4"]
+# pytest is exact-pinned to match the other services' dev toolchain. aws-cdk-lib
+# ships aws_cdk.assertions, so the synth-assertion tests need no extra dep.
+dev = [
+    "pytest==9.1.1",
+    "mypy==1.19.1",
+    "ruff==0.15.4",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["aqm_infra", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests document themselves through their names; a docstring per assertion adds noise.
+"tests/**" = ["D103"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["aqm_infra", "tests", "app.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

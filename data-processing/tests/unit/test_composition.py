@@ -26,6 +26,7 @@ import datetime as dt
 import json
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from aqm_ingestion.config.loader import ServiceConfig
@@ -234,6 +235,86 @@ def test_main_returns_zero_when_wiring_succeeds_without_serving() -> None:
     from aqm_ingestion.composition import main
 
     assert main(env=_offline_env(), clock=FixedClock(_T0), serve=False) == 0
+
+
+# --------------------------------------------------------------------------------------
+# The diary is wired through the composition root (Requirements 31, 22.1)
+# --------------------------------------------------------------------------------------
+
+
+def _diary_call(
+    app: object, method: str, path: str, body: object | None = None
+) -> httpx.Response:
+    """Drive the composition-built app through its real authenticator, offline.
+
+    Mirrors the ASGI-transport pattern the serving-diary tests use, authenticating with the
+    LOCAL token the environment below configures — the only offline way to reach a /me-scoped
+    route without a network. Kept local to this module so it depends on nothing the other
+    serving tests own.
+    """
+    import asyncio
+
+    async def _run() -> httpx.Response:
+        transport = httpx.ASGITransport(app=cast("Any", app))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            return await client.request(
+                method,
+                path,
+                json=body,
+                headers={"Authorization": "Bearer dev-token"},
+            )
+
+    return asyncio.run(_run())
+
+
+def test_the_composition_root_wires_the_symptom_log_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Req 31: the diary routes must be reachable in the app the composition root builds.
+
+    This is the gap that let ``PUT``/``GET /v1/symptoms/me`` 500 in the deployed serving API
+    with ``RuntimeError: the diary routes need a symptom log service``: ``_build_app`` built the
+    profile service and the assembler but never a SymptomLogService, so ``build_app`` received
+    ``symptoms=None`` and the wiring guards fired on every diary request. No offline test
+    exercised that path, so the suite stayed green while the whole diary surface was dead.
+
+    Asserted as a real write-then-read round-trip against the composition-built app, so the test
+    FAILS (500 / RuntimeError) on the unfixed root and PASSES once the service is wired.
+    """
+    monkeypatch.setenv("AQM_LOCAL_CREDENTIALS", "dev-token=user-1")
+    from aqm_ingestion.composition import build_runtime
+
+    runtime = build_runtime(_config(), clock=FixedClock(_T0))
+    assert runtime.app is not None
+
+    # An empty diary reads as 200 with no entries rather than 500 with the RuntimeError.
+    empty = _diary_call(runtime.app, "GET", "/v1/symptoms/me")
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["entries"] == []
+
+    written = _diary_call(
+        runtime.app,
+        "PUT",
+        "/v1/symptoms/me",
+        {
+            "entryDate": "2026-02-28",
+            "severity": 3,
+            "markers": ["cough", "wheeze"],
+            "relieverUsed": True,
+        },
+    )
+    assert written.status_code == 200, written.text
+
+    listed = _diary_call(
+        runtime.app, "GET", "/v1/symptoms/me?start=2026-02-01&end=2026-03-01"
+    )
+    assert listed.status_code == 200, listed.text
+    entries = listed.json()["entries"]
+    assert len(entries) == 1
+    assert entries[0]["severity"] == 3
+    assert entries[0]["markers"] == ["cough", "wheeze"]
 
 
 # --------------------------------------------------------------------------------------

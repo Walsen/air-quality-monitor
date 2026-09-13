@@ -23,6 +23,7 @@ from aqm_advisor_infra.advisor_stack import AdvisorRuntimeStack
 _MODEL = "us.anthropic.claude-sonnet-4-6"
 _CLIENT = "cognito-client-xyz"
 _DISCOVERY = "https://cognito-idp.us-east-1.amazonaws.com/pool/.well-known/openid-configuration"
+_SERVING = "https://serving.example.com"
 
 
 def _template() -> assertions.Template:
@@ -34,6 +35,7 @@ def _template() -> assertions.Template:
         model_inference_profile=_MODEL,
         cognito_discovery_url=_DISCOVERY,
         cognito_client_id=_CLIENT,
+        serving_base_url=_SERVING,
     )
     return assertions.Template.from_stack(stack)
 
@@ -109,6 +111,129 @@ def test_the_jwt_authorizer_carries_the_cognito_client() -> None:
     )
 
 
+def _custom_jwt_authorizer() -> dict[str, object]:
+    """The synthesized CustomJWTAuthorizer block of the single runtime resource."""
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    authorizer = runtimes[0]["AuthorizerConfiguration"]["CustomJWTAuthorizer"]
+    assert isinstance(authorizer, dict)
+    return authorizer
+
+
+def _request_header_allowlist() -> list[object]:
+    """The synthesized request-header allowlist of the single runtime resource.
+
+    The CFN property renders as ``RequestHeaderConfiguration: {"RequestHeaderAllowlist":
+    [...]}`` (confirmed from the synthesized JSON).
+    """
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    config = runtimes[0]["RequestHeaderConfiguration"]
+    assert isinstance(config, dict)
+    allowlist = config["RequestHeaderAllowlist"]
+    assert isinstance(allowlist, list)
+    return allowlist
+
+
+def test_the_runtime_allowlists_the_authorization_header() -> None:
+    # AgentCore STRIPS every inbound header not on this allowlist before the container, even
+    # when the JWT authorizer accepts the token. The advisor entrypoint reads the caller's
+    # bearer from context.request_headers["Authorization"]
+    # (src/aqm_advisor/agentcore/app.py::_credential_from); if Authorization is not allowlisted
+    # here it never reaches the container, _credential_from sees nothing, and every turn fails
+    # fast with IdentityUnavailableError (before any model/serving call). So the allowlist MUST
+    # carry Authorization. (Authorization is explicitly permitted for JWT auth per the AWS
+    # header-allowlist docs — it is not one of the restricted headers when a custom JWT
+    # authorizer is configured.)
+    assert "Authorization" in _request_header_allowlist(), (
+        "the runtime does not allowlist Authorization; AgentCore strips it before the "
+        "container and the advisor fails every turn with IdentityUnavailableError"
+    )
+
+
+def test_the_authorizer_validates_the_id_tokens_aud_not_client_id() -> None:
+    # The runtime forwards the Cognito ID token (Service 2 requires token_use=id). An ID token
+    # carries `aud` (= the app client id) but has NO `client_id` claim — that claim is only on
+    # the Cognito access token. The authorizer verifies ALL of AllowedAudience/AllowedClients
+    # when both are set, so an AllowedClients entry validates the absent `client_id` and 401s
+    # every real turn ("Claim 'client_id' value mismatch"). It must validate `aud` ONLY.
+    authorizer = _custom_jwt_authorizer()
+    assert authorizer["AllowedAudience"] == [_CLIENT]
+    assert authorizer["DiscoveryUrl"] == _DISCOVERY
+    assert "AllowedClients" not in authorizer, (
+        "AllowedClients validates the `client_id` claim, which a Cognito ID token lacks; its "
+        "presence rejects every forwarded ID token with a 401 at invoke"
+    )
+
+
+def _runtime_environment() -> dict[str, object]:
+    """The synthesized EnvironmentVariables map of the single runtime resource."""
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    env = runtimes[0]["EnvironmentVariables"]
+    assert isinstance(env, dict)
+    return env
+
+
+def test_the_runtime_carries_the_serving_base_url() -> None:
+    # serving_client=http needs a target: the env var carries the Service 2 serving base URL the
+    # advisor's HTTP ServingClient calls. The PAIR is what makes the client usable — a base URL
+    # with a scripted client, or http with no URL, is the bug this pins against.
+    env = _runtime_environment()
+    assert env["AQM_ADVISOR_SERVING_BASE_URL"] == _SERVING, (
+        "the runtime does not carry the serving base URL the http client targets"
+    )
+
+
+def test_the_runtime_selects_the_real_model_and_serving_adapters() -> None:
+    # The loader (agent-advisor/src/aqm_advisor/config/loader.py) resolves each adapter from a
+    # PER-PORT env var, `AQM_ADVISOR_<PORT>`, falling back to the first registered adapter (the
+    # scripted/local/memory offline defaults). It NEVER parses a combined `AQM_ADVISOR_ADAPTERS`
+    # string. So the runtime must set the individual per-port vars, or every port silently
+    # defaults to scripted and the deployed advisor answers FULLY SCRIPTED while looking wired.
+    env = _runtime_environment()
+    # The real Bedrock model and the real HTTP serving client — the two selections that make a
+    # turn reach the actual model and Service 2 rather than the canned scripts.
+    assert env["AQM_ADVISOR_SERVING_CLIENT"] == "http", (
+        "the http serving adapter is not selected; the base URL would have no client and the "
+        "turn would run against the scripted serving client"
+    )
+    assert env["AQM_ADVISOR_MODEL"] == "bedrock", (
+        "the bedrock model adapter is not selected; the turn would run against the scripted "
+        "model"
+    )
+    # The bedrock model AND bedrock guardrail clients read config.model_region; the runtime's
+    # region (rendered as a literal because app.py sets an explicit env) supplies it.
+    assert env["AQM_ADVISOR_MODEL_REGION"] == "us-east-1", (
+        "the model region is missing or not a synth-time literal; the bedrock client needs it"
+    )
+    # The model id and serving base URL are the targets the two selections above point at.
+    assert env["AQM_ADVISOR_MODEL_ID"] == _MODEL
+    assert env["AQM_ADVISOR_SERVING_BASE_URL"] == _SERVING
+    # Regression guard: a combined AQM_ADVISOR_ADAPTERS string is a silent no-op the loader
+    # ignores, so its presence would hide a fully-scripted deploy behind wiring that reads as
+    # correct. It must NOT be set.
+    assert "AQM_ADVISOR_ADAPTERS" not in env, (
+        "AQM_ADVISOR_ADAPTERS is ignored by the loader (it reads per-port vars); setting it "
+        "silently leaves every port scripted"
+    )
+
+
 def test_exactly_one_runtime_and_one_execution_role() -> None:
     template = _template()
     template.resource_count_is("AWS::BedrockAgentCore::Runtime", 1)
@@ -119,6 +244,41 @@ def test_exactly_one_runtime_and_one_execution_role() -> None:
         assertions.Match.object_like(
             {"Description": "Execution role for the AQM advisor AgentCore runtime."}
         ),
+    )
+
+
+def test_the_runtime_depends_on_the_execution_role_policy() -> None:
+    # AgentCore validates the ECR URI SYNCHRONOUSLY at runtime-create using the execution role,
+    # so the role's inline pull policy (a separate AWS::IAM::Policy, the DefaultPolicy) must
+    # exist and be attached BEFORE the runtime is created. Passing role_arn as a string captures
+    # a DependsOn on the Role but NOT on that policy, so the runtime must carry an explicit
+    # DependsOn naming the policy. Without it the deploy races and fails with an ECR access-
+    # denied on an otherwise correctly-permissioned role.
+    body = _template().to_json()
+    resources = body["Resources"]
+
+    runtimes = {
+        logical_id: res
+        for logical_id, res in resources.items()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    }
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    runtime = next(iter(runtimes.values()))
+
+    policy_ids = {
+        logical_id
+        for logical_id, res in resources.items()
+        if res["Type"] == "AWS::IAM::Policy"
+    }
+    assert policy_ids, "expected at least one AWS::IAM::Policy (the role's DefaultPolicy)"
+
+    depends_on = runtime.get("DependsOn", [])
+    if isinstance(depends_on, str):
+        depends_on = [depends_on]
+
+    assert policy_ids.intersection(depends_on), (
+        "the runtime does not depend on the execution role's DefaultPolicy; the ECR pull "
+        "permissions may not be attached before AgentCore validates the image URI"
     )
 
 

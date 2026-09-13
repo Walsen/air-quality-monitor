@@ -35,6 +35,10 @@ _DEFAULT_REGION = "us-east-1"
 _DEFAULT_MODEL = "us.anthropic.claude-sonnet-4-6"
 _PLACEHOLDER_DISCOVERY = "https://example.invalid/.well-known/openid-configuration"
 _PLACEHOLDER_CLIENT = "placeholder-client-id"
+# The Service 2 serving base URL is a deploy input like discovery_url/client_id: a real deploy
+# sets AQM_ADVISOR_SERVING_BASE_URL, and the offline synth path falls back to a placeholder so
+# synth stays pure and never becomes a hard-required env that breaks it.
+_PLACEHOLDER_SERVING = "https://serving.invalid"
 
 _explicit_account = os.environ.get("CDK_DEPLOY_ACCOUNT")
 if _explicit_account:
@@ -62,6 +66,9 @@ AdvisorRuntimeStack(
         "AQM_COGNITO_DISCOVERY_URL", _PLACEHOLDER_DISCOVERY
     ),
     cognito_client_id=os.environ.get("AQM_COGNITO_CLIENT_ID", _PLACEHOLDER_CLIENT),
+    serving_base_url=os.environ.get(
+        "AQM_ADVISOR_SERVING_BASE_URL", _PLACEHOLDER_SERVING
+    ),
 )
 
 app.synth()

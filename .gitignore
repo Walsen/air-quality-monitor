@@ -19,6 +19,10 @@ certs/
 
 # CDK
 infra/cdk.out/
+# CDK asset staging on the root disk. The host `/tmp` is a small tmpfs a full
+# synth overflows, so the infra recipes point TMPDIR here (root disk) and clean
+# up after; the dir itself may persist but must never carry committed output.
+.cdk-tmp/
 
 # OS / editor
 .DS_Store

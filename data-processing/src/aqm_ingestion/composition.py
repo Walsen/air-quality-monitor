@@ -332,6 +332,7 @@ def _build_app(
     from aqm_ingestion.serving.enrichment import Enricher
     from aqm_ingestion.serving.geo import GeoSelector
     from aqm_ingestion.serving.profiles import ProfileService
+    from aqm_ingestion.serving.symptoms import SymptomLogService
 
     tables = BreakpointTableRegistry.with_defaults()
     audit = InMemoryAuditStore()
@@ -339,6 +340,11 @@ def _build_app(
         profiles=built["profile_store"],  # type: ignore[arg-type]
         audit=audit,
         limits=config.profile_limits,
+    )
+    symptoms = SymptomLogService(
+        store=built["symptom_log_store"],  # type: ignore[arg-type]
+        clock=clock,
+        limits=config.symptom_limits,
     )
     selector = GeoSelector(
         registry=built["sensor_registry_store"],  # type: ignore[arg-type]
@@ -363,12 +369,14 @@ def _build_app(
             species_precedence=config.species_precedence,
             guardrails=None,
         ),
+        symptoms=symptoms,
     )
     return build_app(
         authenticator=built["authenticator"],  # type: ignore[arg-type]
         clock=clock,
         assembler=assembler,
         profiles=profiles,
+        symptoms=symptoms,
         readings=built["readings_store"],  # type: ignore[arg-type]
         registry=built["sensor_registry_store"],  # type: ignore[arg-type]
         audit=audit,
