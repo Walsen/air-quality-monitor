@@ -162,6 +162,27 @@ def test_a_number_that_never_arrived_stays_ungrounded() -> None:
     assert ungrounded("the sub-index is 4242", permitted) == ("4242",)
 
 
+def test_a_restated_retrieved_timestamp_is_grounded() -> None:
+    # A retrieved instant (asOf "2026-07-01T12:00:00Z") is masked as ISO on the GENERATION side,
+    # so a model that restates it in prose ("1 July 2026") would otherwise emit 2026 as an
+    # ungrounded numeral — the exact failure seen live. The instant WAS retrieved, so its
+    # components are permitted: this grounds the restated date without loosening the check, in
+    # line with grounding.py's own rule (make the retrieval return the value).
+    tools, recorder = _build()
+    _by_name(tools)["air_quality"]()
+    permitted = permitted_values(recorder.values(), constants=())
+    assert ungrounded("as of 12:00 on 1 July 2026 the reading was taken", permitted) == ()
+
+
+def test_a_year_that_was_never_retrieved_stays_ungrounded() -> None:
+    # Non-vacuity: harvesting instant components must not permit ANY four-digit number. A date
+    # the retrieval never carried is still an invented numeral.
+    tools, recorder = _build()
+    _by_name(tools)["air_quality"]()
+    permitted = permitted_values(recorder.values(), constants=())
+    assert ungrounded("the reading is from 1999", permitted) == ("1999",)
+
+
 def test_retrieved_medications_are_recorded_for_the_closure_check() -> None:
     # Req 29.6 verifies a named medication against the RETRIEVED set, so the retrieval has to
     # capture

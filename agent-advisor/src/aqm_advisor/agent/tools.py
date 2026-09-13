@@ -32,7 +32,7 @@ from typing import Any
 from strands import tool
 from strands.tools.decorator import DecoratedFunctionTool
 
-from aqm_advisor.domain.grounding import numerals
+from aqm_advisor.domain.grounding import instant_components, numerals
 from aqm_advisor.domain.history import history_view
 from aqm_advisor.domain.idempotency import TurnIdentity, profile_idempotency_key
 from aqm_advisor.domain.records import RetrievedValues, ToolCall
@@ -119,6 +119,10 @@ class RetrievalRecorder:
         """
         rendered = json.dumps(body, default=str, sort_keys=True)
         self.numeral_values.update(numerals(rendered))
+        # ISO instants are masked out of `numerals`, so their parts would not be permitted — yet
+        # the model restates a retrieved timestamp in prose ("1 July 2026") and its parts then
+        # read as invented numerals. The instant WAS retrieved, so permit its own components.
+        self.numeral_values.update(instant_components(rendered))
 
         if not isinstance(body, dict):
             return
