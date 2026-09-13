@@ -28,6 +28,7 @@ from aqm_advisor.agent.stop_reasons import (
     classify_stop_reason,
 )
 from aqm_advisor.agent.verification import (
+    VerificationHook,
     VerificationLedger,
     VerificationVerdict,
 )
@@ -192,3 +193,40 @@ def test_a_verdict_with_no_checks_is_refused() -> None:
     # vacuous, so it is rejected at construction.
     with pytest.raises(ValueError, match="check"):
         VerificationVerdict(passed=True, checks=())
+
+
+# --- Req 31.5: the hook must not poison the ledger when it cannot verify ---
+
+
+class _Registry:
+    """Minimal HookRegistry double: captures the callback so a test can fire it."""
+
+    def __init__(self) -> None:
+        self.callback: typing.Callable[[object], None] | None = None
+
+    def add_callback(
+        self, event_type: object, callback: typing.Callable[[object], None]
+    ) -> None:
+        self.callback = callback
+
+
+def test_a_hook_with_no_verifier_does_not_poison_the_ledger() -> None:
+    # THE deployed bug. The Agent is built with VerificationHook(ledger, verify=None) because a
+    # probe showed the hook cannot see the generated text (AfterInvocationEvent.result is None),
+    # so the REAL checks run in the pipeline. But the hook fires on every AfterInvocationEvent
+    # in the live tool-use loop, and a version that recorded a FAILING "verifier_missing"
+    # verdict there made record() latch the ledger failed — so the pipeline's later PASSING
+    # verdict could not publish, and every deployed turn raised "refusing to release ... not
+    # verified". A None-verify hook must therefore be INERT: record nothing, leaving
+    # verification to the pipeline.
+    ledger = VerificationLedger()
+    hook = VerificationHook(ledger, None)
+    registry = _Registry()
+    hook.register_hooks(typing.cast("typing.Any", registry))
+    assert registry.callback is not None
+    registry.callback(object())  # fire as the SDK would, mid-loop
+
+    # The pipeline's own verification then passes, and it must be able to publish.
+    ledger.record(VerificationVerdict(passed=True, checks=("grounding",)))
+    assert ledger.is_publishable() is True
+    assert ledger.release("the sub-index is 68") == "the sub-index is 68"

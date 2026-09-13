@@ -130,6 +130,26 @@ def numerals(text: str) -> tuple[str, ...]:
     return tuple(normalise_numeral(match.group()) for match in _NUMERAL.finditer(_mask(text)))
 
 
+def instant_components(text: str) -> tuple[str, ...]:
+    """The numeric components of every ISO instant in `text`, normalised.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT A LOOSENING. `numerals()` masks ISO instants on the
+    generation side, because an instant is provenance rather than a quantitative claim. But the
+    instant WAS retrieved, and a model routinely restates it in prose — "1 July 2026", "12:00" —
+    at which point its parts (2026, 7, 1, 12, 0) are ordinary numerals the grounding check would
+    reject as invented. Harvesting the instant's own components from the RETRIEVED body makes
+    the restated date ground, which is exactly grounding.py's stated remedy: make the retrieval
+    return the value rather than loosen the comparison. It permits only the digits the
+    instant actually carried — a year the retrieval never returned is still ungrounded — so a
+    fabricated sub-index or a wrong date gains nothing.
+    """
+    parts: list[str] = []
+    for match in _ISO_INSTANT.finditer(text):
+        for piece in _NUMERAL.finditer(match.group()):
+            parts.append(normalise_numeral(piece.group()))
+    return tuple(parts)
+
+
 def permitted_values(
     retrieved: RetrievedValues, *, constants: Iterable[str]
 ) -> frozenset[str]:
@@ -175,6 +195,7 @@ __all__ = [
     "DEFAULT_STRUCTURAL_CONSTANTS",
     "SPECIES_TOKENS",
     "UNIT_TOKENS",
+    "instant_components",
     "normalise_numeral",
     "numerals",
     "permitted_values",

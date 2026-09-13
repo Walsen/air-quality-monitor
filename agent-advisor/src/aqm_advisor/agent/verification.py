@@ -141,12 +141,25 @@ class VerificationHook:
         withholds it.
         """
         verify = self._verify
+        if verify is None:
+            # INERT BY DESIGN, and this is load-bearing. A probe against the pinned SDK showed
+            # the hook CANNOT see the generated text (AfterInvocationEvent.result is None on
+            # structured_output, and agent.messages is empty), so the real checks run in the
+            # pipeline and the production Agent is wired VerificationHook(ledger, None). This
+            # hook still fires on every AfterInvocationEvent in the live tool-use loop.
+            # Recording a FAILING "verifier_missing" verdict here latched the fail-closed
+            # ledger, so the pipeline's later PASSING verdict could not publish and every
+            # deployed turn raised "refusing to release ... not verified". When no verifier is
+            # configured the hook must do nothing and leave verification to the pipeline — the
+            # fail-closed guarantee still holds, because an unverified ledger refuses to release
+            # on its own.
+            return
         if not callable(verify):
             self._ledger.record(
                 VerificationVerdict(
                     passed=False,
                     checks=("verifier_missing",),
-                    failures=("no verification callable was configured",),
+                    failures=("a non-callable verifier was configured",),
                 )
             )
             return
