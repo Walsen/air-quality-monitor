@@ -152,7 +152,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase F — real provisioning and cross-service wiring (needs the account)
 
-- [ ] 15. Deploy Cognito + create demo users
+- [x] 15. Deploy Cognito + create demo users
   - Deploy `CognitoStack`; create demo users A and B via a documented `just`
     recipe (`awscli2` admin-create-user + set-password); do NOT commit
     credentials. Capture pool id / client id / issuer for downstream config.
