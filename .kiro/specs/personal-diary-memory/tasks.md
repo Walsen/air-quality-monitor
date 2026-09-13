@@ -49,7 +49,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     `IngestionServingStack`) to pass.
   - _Requirements: 3.2, 4.2, 5.1, 7.1, 7.2, 8.1, 8.4_
 
-- [ ] 3. Readings + sensor-registry tables (Option 1: persisted exposure history)
+- [x] 3. Readings + sensor-registry tables (Option 1: persisted exposure history)
   - Failing template assertions: a `readings` table (PK `pk`
     `SITE#{SiteCode}#SP#{Species}`, SK `sk` interval-start ISO) and a
     `sensor-registry` table (PK `site_code`), both encrypted at rest,
@@ -70,7 +70,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     account.
   - _Requirements: 4.3, 7.1, 8.1, 8.4_
 
-- [ ] 5. Register the new stacks in `infra/app.py` behind context flags
+- [x] 5. Register the new stacks in `infra/app.py` behind context flags
   - Wire the three stacks so each deploys independently (`--exclusively`) and
     reads names/ids/keys from deploy-time context, never committed. A full-app
     synth with placeholder context succeeds offline.

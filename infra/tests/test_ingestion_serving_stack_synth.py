@@ -10,15 +10,17 @@ account/region lookup and succeeds without deploy-time material.
 The assertions pin the facts this feature depends on and that a plausible edit
 could silently break:
 
-* two DynamoDB tables — ``profiles`` (PK ``user_id``) and ``symptom-log``
-  (PK ``user_id``, SK ``entry_date``) — whose key attribute names match what
-  ``DynamoDbProfileStore`` and ``DynamoDbSymptomLogStore`` read;
-* both tables encrypted at rest, PAY_PER_REQUEST, and a POC ``DESTROY`` removal
+* four DynamoDB tables — ``profiles`` (PK ``user_id``), ``symptom-log``
+  (PK ``user_id``, SK ``entry_date``), ``readings`` (PK ``pk``, SK ``sk``) and
+  ``sensor-registry`` (PK ``site_code``) — whose key attribute names match what
+  ``DynamoDbProfileStore``, ``DynamoDbSymptomLogStore``, ``DynamoDbReadingsStore``
+  and ``DynamoDbSensorRegistryStore`` read;
+* every table encrypted at rest, PAY_PER_REQUEST, and a POC ``DESTROY`` removal
   policy (asserted as ``DeletionPolicy: Delete``);
-* the serving Lambda's environment selecting the ``dynamodb`` profile + symptom
-  stores and the ``cognito`` authenticator, carrying the two table names and the
-  three Cognito ids;
-* the execution role holding DynamoDB actions scoped to ONLY the two table ARNs
+* the serving Lambda's environment selecting the ``dynamodb`` profile, symptom,
+  readings and sensor-registry stores and the ``cognito`` authenticator, carrying
+  the four table names and the three Cognito ids;
+* the execution role holding DynamoDB actions scoped to ONLY the four table ARNs
   — never a ``Resource: "*"`` DynamoDB grant.
 """
 
@@ -70,8 +72,10 @@ def _template() -> assertions.Template:
     return assertions.Template.from_stack(stack)
 
 
-def test_it_provisions_exactly_two_dynamodb_tables() -> None:
-    _template().resource_count_is("AWS::DynamoDB::Table", 2)
+def test_it_provisions_exactly_four_dynamodb_tables() -> None:
+    # profiles, symptom-log, readings, sensor-registry (Requirement 10.1 adds the
+    # last two so the association has a persisted exposure history).
+    _template().resource_count_is("AWS::DynamoDB::Table", 4)
 
 
 def test_the_profiles_table_is_keyed_by_user_id() -> None:
@@ -112,29 +116,67 @@ def test_the_symptom_log_table_is_keyed_by_user_id_and_entry_date() -> None:
     )
 
 
-def test_both_tables_are_pay_per_request() -> None:
+def test_the_readings_table_is_keyed_by_pk_and_sk() -> None:
+    # DynamoDbReadingsStore reads Key={"pk", "sk"}: pk = SITE#{SiteCode}#SP#{Species}
+    # partition, sk = interval-start ISO sort. Both string attributes.
+    _template().has_resource_properties(
+        "AWS::DynamoDB::Table",
+        assertions.Match.object_like(
+            {
+                "KeySchema": [
+                    {"AttributeName": "pk", "KeyType": "HASH"},
+                    {"AttributeName": "sk", "KeyType": "RANGE"},
+                ],
+                "AttributeDefinitions": assertions.Match.array_with(
+                    [
+                        {"AttributeName": "pk", "AttributeType": "S"},
+                        {"AttributeName": "sk", "AttributeType": "S"},
+                    ]
+                ),
+            }
+        ),
+    )
+
+
+def test_the_sensor_registry_table_is_keyed_by_site_code() -> None:
+    # DynamoDbSensorRegistryStore reads Key={"site_code": ...} and scans for active
+    # sites: partition key site_code (S), no sort key.
+    _template().has_resource_properties(
+        "AWS::DynamoDB::Table",
+        assertions.Match.object_like(
+            {
+                "KeySchema": [{"AttributeName": "site_code", "KeyType": "HASH"}],
+                "AttributeDefinitions": assertions.Match.array_with(
+                    [{"AttributeName": "site_code", "AttributeType": "S"}]
+                ),
+            }
+        ),
+    )
+
+
+def test_all_tables_are_pay_per_request() -> None:
     template = _template()
     tables = template.find_resources("AWS::DynamoDB::Table")
-    assert len(tables) == 2
+    assert len(tables) == 4
     for table in tables.values():
         assert table["Properties"]["BillingMode"] == "PAY_PER_REQUEST"
 
 
-def test_both_tables_are_encrypted_at_rest() -> None:
+def test_all_tables_are_encrypted_at_rest() -> None:
     template = _template()
     tables = template.find_resources("AWS::DynamoDB::Table")
-    assert len(tables) == 2
+    assert len(tables) == 4
     for table in tables.values():
         sse = table["Properties"].get("SSESpecification")
         assert sse is not None, "every table must declare an SSESpecification"
         assert sse.get("SSEEnabled") is True, "encryption at rest must be enabled"
 
 
-def test_both_tables_carry_the_poc_destroy_removal_policy() -> None:
+def test_all_tables_carry_the_poc_destroy_removal_policy() -> None:
     # RemovalPolicy.DESTROY renders as DeletionPolicy: Delete on the resource.
     template = _template()
     tables = template.find_resources("AWS::DynamoDB::Table")
-    assert len(tables) == 2
+    assert len(tables) == 4
     for table in tables.values():
         assert table["DeletionPolicy"] == "Delete"
         assert table["UpdateReplacePolicy"] == "Delete"
@@ -142,6 +184,8 @@ def test_both_tables_carry_the_poc_destroy_removal_policy() -> None:
 
 def test_the_serving_lambda_selects_the_dynamodb_stores_and_cognito_auth() -> None:
     # The ingestion config loader selects adapters via AQM_ADAPTER_<NAME_UPPER>.
+    # Ports readings_store and sensor_registry_store back the air-quality view, so
+    # the serving path selects their dynamodb adapters too.
     _template().has_resource_properties(
         "AWS::Lambda::Function",
         assertions.Match.object_like(
@@ -151,6 +195,8 @@ def test_the_serving_lambda_selects_the_dynamodb_stores_and_cognito_auth() -> No
                         {
                             "AQM_ADAPTER_PROFILE_STORE": "dynamodb",
                             "AQM_ADAPTER_SYMPTOM_LOG_STORE": "dynamodb",
+                            "AQM_ADAPTER_READINGS_STORE": "dynamodb",
+                            "AQM_ADAPTER_SENSOR_REGISTRY_STORE": "dynamodb",
                             "AQM_ADAPTER_AUTHENTICATOR": "cognito",
                             "AQM_ENABLE_SERVING": "true",
                             "AQM_ENABLE_PULL": "false",
@@ -165,18 +211,22 @@ def test_the_serving_lambda_selects_the_dynamodb_stores_and_cognito_auth() -> No
 
 
 def test_the_serving_lambda_carries_the_table_names_in_env() -> None:
-    # The composition reads _table("profiles") -> AQM_TABLE_PROFILES and
-    # _required_setting("AQM_SYMPTOM_LOG_TABLE"); both must be present, and as
-    # CloudFormation references (the CDK-generated table names), not literals.
+    # The composition reads _table("profiles") -> AQM_TABLE_PROFILES,
+    # _required_setting("AQM_SYMPTOM_LOG_TABLE"), _table("readings") ->
+    # AQM_TABLE_READINGS, and _table("registry") -> AQM_TABLE_REGISTRY; all must be
+    # present, and as CloudFormation references (the CDK-generated table names).
     template = _template()
     variables = _serving_function(template)["Properties"]["Environment"]["Variables"]
-    assert "AQM_TABLE_PROFILES" in variables
-    assert "AQM_SYMPTOM_LOG_TABLE" in variables
-    # Table names are the generated names, passed via table.table_name -> a Ref.
-    assert isinstance(variables["AQM_TABLE_PROFILES"], dict)
-    assert "Ref" in variables["AQM_TABLE_PROFILES"]
-    assert isinstance(variables["AQM_SYMPTOM_LOG_TABLE"], dict)
-    assert "Ref" in variables["AQM_SYMPTOM_LOG_TABLE"]
+    for key in (
+        "AQM_TABLE_PROFILES",
+        "AQM_SYMPTOM_LOG_TABLE",
+        "AQM_TABLE_READINGS",
+        "AQM_TABLE_REGISTRY",
+    ):
+        assert key in variables, f"{key} must be present in the serving Lambda env"
+        # Table names are the generated names, passed via table.table_name -> a Ref.
+        assert isinstance(variables[key], dict), f"{key} must be a CloudFormation ref"
+        assert "Ref" in variables[key], f"{key} must reference the generated table name"
 
 
 def test_the_serving_lambda_carries_the_cognito_ids_in_env() -> None:
@@ -209,9 +259,9 @@ def test_the_serving_lambda_is_arm64() -> None:
 
 
 def test_the_execution_role_has_no_dynamodb_wildcard_grant() -> None:
-    # Least privilege: grant_read_write_data scopes to the table ARNs. No DynamoDB
-    # policy statement may name Resource "*". Scan the rendered IAM policies for a
-    # dynamodb action paired with a "*" resource.
+    # Least privilege: grant_read_write_data / grant_read_data scope to the table
+    # ARNs. No DynamoDB policy statement may name Resource "*". Scan the rendered
+    # IAM policies for a dynamodb action paired with a "*" resource.
     template = _template()
     policies = template.find_resources("AWS::IAM::Policy")
     assert policies, "the serving Lambda must have an execution-role policy"
@@ -231,11 +281,10 @@ def test_the_execution_role_has_no_dynamodb_wildcard_grant() -> None:
                     assert "*" not in resource, "no wildcard DynamoDB resource permitted"
 
 
-def test_the_execution_role_can_read_write_both_tables() -> None:
-    # The adapters use GetItem, PutItem, Query, DeleteItem, Scan (profiles: get/
-    # put/delete; symptom-log: get/put/query/delete/scan). grant_read_write_data
-    # covers all of these. Assert the core actions are present and the two table
-    # ARNs are referenced from the policy.
+def test_the_execution_role_references_all_four_tables() -> None:
+    # The serving adapters read/write profiles + symptom-log and read readings +
+    # sensor-registry. grant_read_write_data / grant_read_data reference each table
+    # ARN. Assert the core actions are present and all four table ARNs referenced.
     template = _template()
     policies = template.find_resources("AWS::IAM::Policy")
     granted: set[str] = set()
@@ -261,9 +310,10 @@ def test_the_execution_role_can_read_write_both_tables() -> None:
         assert required in granted, f"{required} must be granted to the serving role"
 
     table_logical_ids = set(_template().find_resources("AWS::DynamoDB::Table"))
-    # Both tables must be referenced by the role policy.
+    assert len(table_logical_ids) == 4
+    # All four tables must be referenced by the role policy.
     assert table_logical_ids <= referenced_logical_ids, (
-        "the role must reference BOTH table ARNs; "
+        "the role must reference ALL FOUR table ARNs; "
         f"referenced={sorted(referenced_logical_ids)} tables={sorted(table_logical_ids)}"
     )
 
@@ -287,6 +337,21 @@ def _get_att_targets(resource: object) -> list[str]:
         for item in resource:
             found.extend(_get_att_targets(item))
     return found
+
+
+def test_it_exports_all_four_table_names_as_outputs() -> None:
+    # Task 5 passes the readings + registry names into the AssociationStack; the
+    # stack exports them (and the existing profiles/symptom-log names) as outputs.
+    template = _template()
+    outputs = template.find_outputs("*")
+    output_ids = set(outputs)
+    for expected in (
+        "ProfilesTableName",
+        "SymptomLogTableName",
+        "ReadingsTableName",
+        "SensorRegistryTableName",
+    ):
+        assert expected in output_ids, f"{expected} must be a CfnOutput"
 
 
 def test_the_stack_synthesizes_offline_with_placeholder_cognito_ids() -> None:
