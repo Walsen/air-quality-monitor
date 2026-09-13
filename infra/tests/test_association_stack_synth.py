@@ -17,9 +17,9 @@ silently break:
 * an EventBridge schedule rule carrying a ``ScheduleExpression`` and targeting
   that Lambda;
 * the ``Lambda::Permission`` CDK adds so EventBridge may invoke the function;
-* the execution role holding DynamoDB actions scoped to ONLY the three tables the
+* the execution role holding DynamoDB actions scoped to ONLY the four tables the
   ``AssociationJob`` touches (symptom-log read+write, readings read, profiles
-  read) — never a ``Resource: "*"`` DynamoDB grant.
+  read, sensor-registry read) — never a ``Resource: "*"`` DynamoDB grant.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ _ASSOCIATION_HANDLER = "aqm_ingestion.jobs.lambda_handler.handler"
 _PROFILES_TABLE = "aqm-poc-profiles"
 _SYMPTOM_LOG_TABLE = "aqm-poc-symptom-log"
 _READINGS_TABLE = "aqm-poc-readings"
+_REGISTRY_TABLE = "aqm-poc-sensor-registry"
 
 
 def _association_function(template: assertions.Template) -> Mapping[str, Any]:
@@ -71,6 +72,7 @@ def _template() -> assertions.Template:
         profiles_table_name=_PROFILES_TABLE,
         symptom_log_table_name=_SYMPTOM_LOG_TABLE,
         readings_table_name=_READINGS_TABLE,
+        registry_table_name=_REGISTRY_TABLE,
     )
     return assertions.Template.from_stack(stack)
 
@@ -88,9 +90,10 @@ def test_the_association_lambda_is_arm64() -> None:
     assert fn["Properties"]["Architectures"] == ["arm64"]
 
 
-def test_the_association_lambda_selects_the_three_dynamodb_stores() -> None:
+def test_the_association_lambda_selects_the_four_dynamodb_stores() -> None:
     # The AssociationJob reads profiles (get), symptom-log (query + write learned
-    # thresholds), and readings (query_window). All three stores must be the
+    # thresholds), readings (query_window), and the sensor registry (the
+    # GeoSelector resolves the user's sites from it). All four stores must be the
     # dynamodb adapter, selected via AQM_ADAPTER_<NAME_UPPER>.
     _template().has_resource_properties(
         "AWS::Lambda::Function",
@@ -102,6 +105,7 @@ def test_the_association_lambda_selects_the_three_dynamodb_stores() -> None:
                             "AQM_ADAPTER_PROFILE_STORE": "dynamodb",
                             "AQM_ADAPTER_SYMPTOM_LOG_STORE": "dynamodb",
                             "AQM_ADAPTER_READINGS_STORE": "dynamodb",
+                            "AQM_ADAPTER_SENSOR_REGISTRY_STORE": "dynamodb",
                             "AQM_AWS_REGION": _REGION,
                         }
                     )
@@ -111,17 +115,37 @@ def test_the_association_lambda_selects_the_three_dynamodb_stores() -> None:
     )
 
 
-def test_the_association_lambda_carries_the_three_table_names_in_env() -> None:
+def test_the_association_lambda_carries_the_four_table_names_in_env() -> None:
     # The composition reads _table("profiles") -> AQM_TABLE_PROFILES,
-    # _table("readings") -> AQM_TABLE_READINGS, and
-    # _required_setting("AQM_SYMPTOM_LOG_TABLE"). All three must be present and
-    # carry the names the serving stack generated (passed in as strings here).
+    # _table("readings") -> AQM_TABLE_READINGS, _table("registry") ->
+    # AQM_TABLE_REGISTRY, and _required_setting("AQM_SYMPTOM_LOG_TABLE"). All four
+    # must be present and carry the names the serving stack generated (passed in as
+    # strings here).
     variables = _association_function(_template())["Properties"]["Environment"][
         "Variables"
     ]
     assert variables["AQM_TABLE_PROFILES"] == _PROFILES_TABLE
     assert variables["AQM_SYMPTOM_LOG_TABLE"] == _SYMPTOM_LOG_TABLE
     assert variables["AQM_TABLE_READINGS"] == _READINGS_TABLE
+    assert variables["AQM_TABLE_REGISTRY"] == _REGISTRY_TABLE
+
+
+def test_the_association_lambda_enables_exactly_one_batch_interface() -> None:
+    # Regression guard for the ConfigError-at-cold-start bug. The config loader's
+    # _validate_interfaces (Req 26.10) REJECTS all-interfaces-off: at least one of
+    # enable_push/enable_pull/enable_serving must be enabled. A batch derivation has
+    # no natural interface, but the loader still requires one.
+    #
+    # PUSH is the correct flag: it is the ingestion-side/batch interface and needs
+    # no Cognito (serving) and no feed credential (pull). Enabling serving would
+    # falsely imply an HTTP API + Cognito authenticator; enabling pull would demand
+    # a feed credential the batch job does not have. So push on, the other two off.
+    variables = _association_function(_template())["Properties"]["Environment"][
+        "Variables"
+    ]
+    assert variables["AQM_ENABLE_PUSH"] == "true"
+    assert variables["AQM_ENABLE_SERVING"] == "false"
+    assert variables["AQM_ENABLE_PULL"] == "false"
 
 
 def test_it_provisions_an_eventbridge_schedule_rule() -> None:
@@ -199,9 +223,10 @@ def test_the_execution_role_has_no_dynamodb_wildcard_grant() -> None:
 
 def test_the_role_can_read_write_symptom_log_and_read_profiles_and_readings() -> None:
     # The job reads the symptom log and writes learned thresholds to it
-    # (read+write), reads profiles, and reads readings. Assert write actions are
-    # granted (they only come from the symptom-log read/write grant) and that all
-    # three table ARNs are referenced by the role.
+    # (read+write), reads profiles, reads readings, and reads the sensor registry
+    # (GeoSelector resolves the user's sites). Assert write actions are granted
+    # (they only come from the symptom-log read/write grant) and that all four
+    # table ARNs are referenced by the role.
     template = _template()
     policies = template.find_resources("AWS::IAM::Policy")
     granted: set[str] = set()
@@ -224,7 +249,12 @@ def test_the_role_can_read_write_symptom_log_and_read_profiles_and_readings() ->
         assert required in granted, f"{required} must be granted for learned thresholds"
 
     joined = " ".join(referenced_arns)
-    for table_name in (_PROFILES_TABLE, _SYMPTOM_LOG_TABLE, _READINGS_TABLE):
+    for table_name in (
+        _PROFILES_TABLE,
+        _SYMPTOM_LOG_TABLE,
+        _READINGS_TABLE,
+        _REGISTRY_TABLE,
+    ):
         assert f"table/{table_name}" in joined, (
             f"the role must reference the {table_name} ARN; refs={referenced_arns}"
         )

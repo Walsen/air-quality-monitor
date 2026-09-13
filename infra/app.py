@@ -143,6 +143,7 @@ if app.node.try_get_context("deploy_diary_memory"):
         profiles_table_name=serving_stack.profiles_table_name,
         symptom_log_table_name=serving_stack.symptom_log_table_name,
         readings_table_name=serving_stack.readings_table_name,
+        registry_table_name=serving_stack.sensor_registry_table_name,
         description="POC: scheduled association-derivation Lambda (personal-diary-memory)",
     )
 
