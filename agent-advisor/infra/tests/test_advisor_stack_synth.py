@@ -125,6 +125,42 @@ def _custom_jwt_authorizer() -> dict[str, object]:
     return authorizer
 
 
+def _request_header_allowlist() -> list[object]:
+    """The synthesized request-header allowlist of the single runtime resource.
+
+    The CFN property renders as ``RequestHeaderConfiguration: {"RequestHeaderAllowlist":
+    [...]}`` (confirmed from the synthesized JSON).
+    """
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    config = runtimes[0]["RequestHeaderConfiguration"]
+    assert isinstance(config, dict)
+    allowlist = config["RequestHeaderAllowlist"]
+    assert isinstance(allowlist, list)
+    return allowlist
+
+
+def test_the_runtime_allowlists_the_authorization_header() -> None:
+    # AgentCore STRIPS every inbound header not on this allowlist before the container, even
+    # when the JWT authorizer accepts the token. The advisor entrypoint reads the caller's
+    # bearer from context.request_headers["Authorization"]
+    # (src/aqm_advisor/agentcore/app.py::_credential_from); if Authorization is not allowlisted
+    # here it never reaches the container, _credential_from sees nothing, and every turn fails
+    # fast with IdentityUnavailableError (before any model/serving call). So the allowlist MUST
+    # carry Authorization. (Authorization is explicitly permitted for JWT auth per the AWS
+    # header-allowlist docs — it is not one of the restricted headers when a custom JWT
+    # authorizer is configured.)
+    assert "Authorization" in _request_header_allowlist(), (
+        "the runtime does not allowlist Authorization; AgentCore strips it before the "
+        "container and the advisor fails every turn with IdentityUnavailableError"
+    )
+
+
 def test_the_authorizer_validates_the_id_tokens_aud_not_client_id() -> None:
     # The runtime forwards the Cognito ID token (Service 2 requires token_use=id). An ID token
     # carries `aud` (= the app client id) but has NO `client_id` claim — that claim is only on

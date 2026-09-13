@@ -133,6 +133,26 @@ class AdvisorRuntimeStack(cdk.Stack):
                     allowed_audience=[cognito_client_id],
                 ),
             ),
+            # ALLOWLIST THE INBOUND `Authorization` HEADER OR THE ADVISOR NEVER SEES THE JWT.
+            # AgentCore STRIPS every inbound request header that is NOT on this allowlist before
+            # the container receives it — and it does so EVEN WHEN the JWT authorizer above has
+            # already accepted the token. The two are separate gates: the authorizer decides
+            # whether to admit the request, the allowlist decides which headers survive into the
+            # container. With no allowlist configured, `Authorization` is stripped, and the
+            # advisor entrypoint (`_credential_from` in
+            # agent-advisor/src/aqm_advisor/agentcore/app.py, which reads
+            # `context.request_headers["Authorization"]`) sees no credential — so every turn
+            # fails fast with `IdentityUnavailableError`, before any model or serving call. The
+            # entrypoint's own docstring predicts exactly this: "arriving here without a usable
+            # credential means the request-header allowlist is misconfigured."
+            #
+            # `Authorization` is explicitly PERMITTED for JWT auth per the AWS "Pass custom
+            # headers to Amazon Bedrock AgentCore Runtime" docs — it is NOT one of the
+            # restricted headers when a custom JWT authorizer is configured. Only
+            # `Authorization` is listed; nothing else is forwarded.
+            request_header_configuration=bac.CfnRuntime.RequestHeaderConfigurationProperty(
+                request_header_allowlist=["Authorization"],
+            ),
             # THE LOADER READS PER-PORT VARS, NOT A COMBINED STRING. The advisor's config
             # loader (agent-advisor/src/aqm_advisor/config/loader.py) resolves each adapter from
             # its own `AQM_ADVISOR_<PORT>` variable, falling back to the first registered
