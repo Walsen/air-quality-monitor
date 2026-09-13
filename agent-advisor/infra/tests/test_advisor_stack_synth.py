@@ -23,6 +23,7 @@ from aqm_advisor_infra.advisor_stack import AdvisorRuntimeStack
 _MODEL = "us.anthropic.claude-sonnet-4-6"
 _CLIENT = "cognito-client-xyz"
 _DISCOVERY = "https://cognito-idp.us-east-1.amazonaws.com/pool/.well-known/openid-configuration"
+_SERVING = "https://serving.example.com"
 
 
 def _template() -> assertions.Template:
@@ -34,6 +35,7 @@ def _template() -> assertions.Template:
         model_inference_profile=_MODEL,
         cognito_discovery_url=_DISCOVERY,
         cognito_client_id=_CLIENT,
+        serving_base_url=_SERVING,
     )
     return assertions.Template.from_stack(stack)
 
@@ -106,6 +108,26 @@ def test_the_jwt_authorizer_carries_the_cognito_client() -> None:
                 )
             }
         ),
+    )
+
+
+def test_the_runtime_carries_the_serving_base_url() -> None:
+    # serving_client=http needs a target: the env var carries the Service 2 serving base URL the
+    # advisor's HTTP ServingClient calls. The PAIR is what makes the client usable — a base URL
+    # with a scripted client, or http with no URL, is the bug this pins against.
+    body = _template().to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1, "expected exactly one runtime resource"
+    env = runtimes[0]["EnvironmentVariables"]
+    assert env["AQM_ADVISOR_SERVING_BASE_URL"] == _SERVING, (
+        "the runtime does not carry the serving base URL the http client targets"
+    )
+    assert "serving_client=http" in env["AQM_ADVISOR_ADAPTERS"], (
+        "the http serving adapter is not selected; the base URL would have no client"
     )
 
 

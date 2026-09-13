@@ -69,6 +69,7 @@ class AdvisorRuntimeStack(cdk.Stack):
         model_inference_profile: str,
         cognito_discovery_url: str,
         cognito_client_id: str,
+        serving_base_url: str,
         env: cdk.Environment,
     ) -> None:
         """Build the stack from values a deployment supplies, never from literals in code.
@@ -82,6 +83,8 @@ class AdvisorRuntimeStack(cdk.Stack):
             cognito_discovery_url: the OIDC discovery URL of the Cognito user pool.
             cognito_client_id: the Cognito app client id — the SAME one Service 2 validates
             against.
+            serving_base_url: the Service 2 serving base URL the advisor's HTTP ServingClient
+                calls; supplied at deploy, never a literal in code.
             env: the target account and region, set EXPLICITLY so synth performs no account
             lookup.
         """
@@ -122,6 +125,11 @@ class AdvisorRuntimeStack(cdk.Stack):
             environment_variables={
                 "AQM_ADVISOR_MODEL_ID": model_inference_profile,
                 "AQM_COGNITO_CLIENT_ID": cognito_client_id,
+                # serving_client=http (below) has no target without this: it is the Service 2
+                # serving base URL the advisor's HTTP ServingClient calls. Forwarding the same
+                # Cognito JWT to that URL keeps one identity end to end — the token AgentCore
+                # validated inbound is the token Service 2 validates on receipt.
+                "AQM_ADVISOR_SERVING_BASE_URL": serving_base_url,
                 "AQM_ADVISOR_ADAPTERS": (
                     "serving_client=http,guardrail_checker=bedrock,"
                     "advice_audit_store=memory,model=bedrock,clock=system,"
