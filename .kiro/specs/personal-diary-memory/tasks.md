@@ -141,7 +141,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase E — command surface and offline guarantee
 
-- [ ] 14. Wire the new/changed checks into the Justfile and confirm offline
+- [x] 14. Wire the new/changed checks into the Justfile and confirm offline
   - Add chatbot login/pass-through tests, the association handler tests, and the
     CDK template assertions to `just test`/`lint`/`typecheck`; add fenced recipes
     for the LocalStack round-trips; add deploy/create-user/invoke-association/
