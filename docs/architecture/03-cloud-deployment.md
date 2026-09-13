@@ -9,7 +9,9 @@ so this diagram is the source code's shape, not an aspiration.
 > exposure history. It deliberately does **not** stand up the IoT Core / Timestream
 > ingestion path from the original investigation
 > ([`00-overview.md`](00-overview.md)); the sensor simulator's push pipeline runs
-> against a local MQTT broker in Docker Compose, not a cloud ingress. See the
+> against a local MQTT broker in Docker Compose, not a cloud ingress. The full intended system (IoT Core ingestion, Timestream, per-device
+> identity, and the rest) is designed in
+> [`04-target-architecture.md`](04-target-architecture.md). See the
 > deploy/teardown guide in
 > [`../../.kiro/specs/personal-diary-memory/DEPLOY.md`](../../.kiro/specs/personal-diary-memory/DEPLOY.md).
 
