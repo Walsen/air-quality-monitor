@@ -7,6 +7,7 @@ the runtime ARN arrive as deploy-time context, never committed; a synth with no
 key still succeeds so `cdk synth` stays credential-free for CI, and the deploy is
 refused without one.
 """
+
 from __future__ import annotations
 
 import aws_cdk as cdk
@@ -34,9 +35,10 @@ class WebChatbotStack(Stack):
         runtime_arn: str | None,
         region: str,
         access_key: str | None,
-        **kwargs: object,
+        env: cdk.Environment | None = None,
+        description: str | None = None,
     ) -> None:
-        super().__init__(scope, construct_id, **kwargs)
+        super().__init__(scope, construct_id, env=env, description=description)
 
         # Both the runtime ARN and the access key are required at DEPLOY, not synth.
         if not runtime_arn:
@@ -50,7 +52,7 @@ class WebChatbotStack(Stack):
                 "the chatbot must not run as an open proxy to the advisor."
             )
 
-        env = {
+        fn_env = {
             "AQM_CHATBOT_RUNTIME_ARN": runtime_arn or "",
             "AQM_CHATBOT_REGION": region,
             "AQM_CHATBOT_ACCESS_KEY": access_key or "",
@@ -77,7 +79,8 @@ class WebChatbotStack(Stack):
                             "PIP_CACHE_DIR=/tmp/pip-cache",
                             "pip install uv -q",
                             "uv export --frozen --no-dev --no-emit-project "
-                            "-o /tmp/req.txt 2>/dev/null || uv pip compile pyproject.toml -o /tmp/req.txt",
+                            "-o /tmp/req.txt 2>/dev/null || "
+                            "uv pip compile pyproject.toml -o /tmp/req.txt",
                             "pip install -r /tmp/req.txt -t /asset-output -q",
                             "cp -r src/* /asset-output/",
                         ]
@@ -95,7 +98,7 @@ class WebChatbotStack(Stack):
             code=code,
             timeout=Duration.seconds(29),  # HTTP API integration ceiling
             memory_size=512,
-            environment=env,
+            environment=fn_env,
             log_retention=logs.RetentionDays.ONE_WEEK,
         )
 

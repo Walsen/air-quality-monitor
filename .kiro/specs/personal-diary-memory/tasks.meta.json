@@ -1,0 +1,163 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Cognito stack with a template assertion": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269223236
+      },
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269282893
+      },
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789270174790
+      }
+    ],
+    "2. DynamoDB tables + serving stack configuration, with assertions": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269226387
+      },
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789270187894
+      },
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789271197809
+      }
+    ],
+    "3. Association Lambda + schedule stack, with assertions": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269229049
+      },
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789271204799
+      }
+    ],
+    "4. Register the new stacks in `infra/app.py` behind context flags": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269231727
+      }
+    ],
+    "5. Chatbot `POST /login` against a fake Cognito client (TDD)": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269234402
+      }
+    ],
+    "6. Chatbot `/chat` forwards the JWT to the advisor (TDD)": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269237078
+      }
+    ],
+    "7. Chatbot sign-in UI": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269239725
+      }
+    ],
+    "8. Association Lambda handler against fakes (TDD)": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269242395
+      }
+    ],
+    "9. Profile + diary round-trip through the DynamoDB adapters (LocalStack)": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269245056
+      }
+    ],
+    "10. Association end-to-end over LocalStack": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269247701
+      }
+    ],
+    "11. Erasure over LocalStack": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269250384
+      }
+    ],
+    "12. Wire the new/changed checks into the Justfile and confirm offline": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269253042
+      }
+    ],
+    "13. Deploy Cognito + create demo users": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269255714
+      }
+    ],
+    "14. Deploy the ingestion serving stack with tables + dynamodb + cognito": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269258358
+      }
+    ],
+    "15. Deploy the association Lambda + schedule; on-demand invoke": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269261049
+      }
+    ],
+    "16. Redeploy the advisor at real serving": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269263681
+      }
+    ],
+    "17. Redeploy the chatbot with Cognito ids": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269266359
+      }
+    ],
+    "18. Demonstrate persistence, isolation, and influence": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269269190
+      }
+    ],
+    "19. Document teardown": [
+      {
+        "executionId": "b0a4a06c-b87c-4727-9d92-ccbcb7bebe06",
+        "chatSessionId": "sess_ed959ba2-5120-4792-b616-ff9b8a09fe45",
+        "timestamp": 1789269271823
+      }
+    ]
+  }
+}

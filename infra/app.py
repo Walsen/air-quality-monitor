@@ -16,7 +16,6 @@ never committed.
 import os
 
 import aws_cdk as cdk
-
 from aqm_infra.lambda_rest_stack import LambdaRestStack
 from aqm_infra.web_chatbot_stack import WebChatbotStack
 

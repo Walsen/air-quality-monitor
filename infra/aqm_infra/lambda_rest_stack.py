@@ -5,16 +5,16 @@ source with its dependencies bundled by CDK inside a Python build image, so no
 local Docker image or ECR repository is needed. The service's own `build_app` /
 `build_runtime` startup runs at cold start and enforces its own auth and config.
 """
+
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
 import aws_cdk as cdk
 from aws_cdk import (
     BundlingOptions,
     CfnOutput,
     Duration,
-    RemovalPolicy,
     Stack,
 )
 from aws_cdk import aws_apigatewayv2 as apigw
@@ -35,16 +35,17 @@ class LambdaRestStack(Stack):
         environment: Mapping[str, str],
         api_key_env: str,
         api_key_value: str | None,
-        **kwargs: object,
+        env: cdk.Environment | None = None,
+        description: str | None = None,
     ) -> None:
-        super().__init__(scope, construct_id, **kwargs)
+        super().__init__(scope, construct_id, env=env, description=description)
 
-        env = dict(environment)
+        fn_env = dict(environment)
         # The API key is required at DEPLOY, not at synth: a synth with no key
         # still succeeds (keeps `cdk synth` credential-free), but deploying
         # without one is refused rather than shipping an unauthenticated service.
         if api_key_value:
-            env[api_key_env] = api_key_value
+            fn_env[api_key_env] = api_key_value
         else:
             cdk.Annotations.of(self).add_error(
                 f"{construct_id}: no API key supplied. Deploy with "
@@ -67,7 +68,8 @@ class LambdaRestStack(Stack):
                             "pip install uv -q",
                             # export production deps to a requirements file from the lock
                             "uv export --frozen --no-dev --no-emit-project "
-                            "-o /tmp/req.txt 2>/dev/null || uv pip compile pyproject.toml -o /tmp/req.txt",
+                            "-o /tmp/req.txt 2>/dev/null || "
+                            "uv pip compile pyproject.toml -o /tmp/req.txt",
                             "pip install -r /tmp/req.txt -t /asset-output -q",
                             "cp -r src/* /asset-output/",
                         ]
@@ -84,7 +86,7 @@ class LambdaRestStack(Stack):
             code=code,
             timeout=Duration.seconds(29),  # HTTP API integration ceiling
             memory_size=1024,
-            environment=env,
+            environment=fn_env,
             log_retention=logs.RetentionDays.ONE_WEEK,
         )
 

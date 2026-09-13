@@ -155,6 +155,12 @@ the advisor learns what affects me rather than giving generic guidance.
    user's accumulated diary history is turned into Learned_Thresholds.
 4. WHEN Learned_Thresholds exist for a user THE serving response SHALL apply them
    so that prior diary history measurably influences the advice for that user.
+4a. THE association derivation SHALL have a persisted exposure history to correlate
+   against — a readings store and the sensor registry it resolves sites from — so
+   the derivation can produce a threshold rather than finding nothing (see
+   Requirement 10). WHERE no persisted exposure history exists for a user's sites
+   THE derivation SHALL write no threshold and the response SHALL fall back to the
+   remaining tiers (Requirement 4.5).
 5. WHEN no diary history or association exists for a user THE SYSTEM SHALL serve
    advice exactly as it does today, with the remaining escalation tiers
    unchanged — the association is additive, never a regression.
@@ -169,7 +175,7 @@ party.
 
 #### Acceptance Criteria
 
-1. THE SYSTEM SHALL encrypt the profile and symptom-log tables at rest.
+1. THE SYSTEM SHALL encrypt the profile, symptom-log, readings, and sensor-registry tables at rest.
 2. THE SYSTEM SHALL carry all diary and profile data in transit over TLS only.
 3. THE SYSTEM SHALL key stored data by the pseudonymous verified identity and
    SHALL NOT store a user's plaintext credential or JWT.
@@ -256,3 +262,32 @@ shows memory rather than claims it.
    a user receives, relative to a user with no history.
 4. THE demonstration SHALL be reproducible from documented commands and SHALL NOT
    require reading data that belongs to another user.
+
+
+### Requirement 10: Persisted exposure history for the association
+
+**User Story:** As a user, I want the advisor to learn what air quality affects
+me, so that its advice reflects my real exposures and not a blank history.
+
+#### Acceptance Criteria
+
+1. THE SYSTEM SHALL provision a readings table and a sensor-registry table in
+   DynamoDB, keyed as the ingestion service's `DynamoDbReadingsStore`
+   (`SITE#{SiteCode}#SP#{Species}` partition, interval-start sort) and
+   `DynamoDbSensorRegistryStore` (`site_code` partition) expect, both encrypted at
+   rest and with the POC removal policy.
+2. THE SYSTEM SHALL deploy the association Lambda with the `dynamodb` readings and
+   sensor-registry adapters selected and their table names in its environment, so
+   the derivation reads a persisted exposure history rather than an empty store.
+3. THE SYSTEM SHALL provide a documented seeding path that populates the readings
+   and sensor-registry tables with a bounded, representative exposure history for
+   the demo sites, so the association has data to correlate against.
+4. THE seeding path SHALL be idempotent and SHALL NOT require the ingest/push
+   pipeline; it MAY write directly through the readings and registry store
+   adapters (or a small loader), consistent with the serving-only POC scope.
+5. THE association Lambda's execution role SHALL be scoped to read the readings
+   and sensor-registry tables and read/write the symptom-log table, and read the
+   profiles table, and SHALL hold no wildcard DynamoDB grant.
+6. THE serving air-quality view MAY continue to use a seeded or in-memory source
+   for the current-conditions numbers; only the association's exposure HISTORY
+   requires the persisted readings store.

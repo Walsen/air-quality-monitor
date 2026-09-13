@@ -46,11 +46,12 @@ stored for that user, so history influences advice.
 | Component | Change |
 |-----------|--------|
 | **Cognito** (new) | User pool + app client with `USER_PASSWORD_AUTH`; one or more demo users. Issuer + JWKS drive JWT verification. |
-| **DynamoDB** (new) | `profiles` and `symptom-log` tables, encrypted at rest, PITR off (POC), removal policy DESTROY (POC). |
+| **DynamoDB** (new) | Four tables — `profiles`, `symptom-log`, `readings`, `sensor-registry` — encrypted at rest, PAY_PER_REQUEST, removal policy DESTROY (POC). The readings + registry back the association's exposure history (Requirement 10). |
 | **Ingestion serving Lambda** (reconfig) | Deploy with `profile_store=dynamodb`, `symptom_log_store=dynamodb`, `authenticator=cognito`; env carries table names + Cognito ids; IAM scoped to the two tables. |
-| **Association Lambda** (new) | Runs `AssociationJob` on an EventBridge schedule; reads diary + readings, writes Learned_Thresholds; IAM scoped to the symptom-log (and readings) table. |
+| **Association Lambda** (new) | Runs `AssociationJob` on an EventBridge schedule; reads the profile + diary + readings (resolving sites via the registry) and writes Learned_Thresholds; IAM scoped to those four tables, no wildcard. |
 | **Advisor** (redeploy) | `serving_client=http`, `AQM_ADVISOR_SERVING_BASE_URL` = ingestion serving URL. Its AgentCore role is unchanged; it reaches serving over the public HTTPS API. |
 | **Chatbot** (extend) | Adds a Cognito sign-in step; obtains a JWT (USER_PASSWORD_AUTH); sends it to the advisor as the bearer credential on `/chat`. Keeps the shared access-key as an optional coarse outer gate. |
+| **Readings seeding** (new) | An idempotent loader that populates the `readings` + `sensor-registry` tables with a bounded, representative exposure history for the demo sites, so the association has data to correlate. Writes through the store adapters; no ingest pipeline. |
 
 ### Identity is the spine
 
@@ -80,11 +81,21 @@ its claims.
   admin-create-user + set-password), NOT committed. The stack provisions the pool
   only.
 
-### 2. DynamoDB tables (in the ingestion stack)
+### 2. DynamoDB tables
+
+The serving stack provisions `profiles` and `symptom-log`; the readings + registry
+tables (Requirement 10) are provisioned alongside them so both the serving stack
+and the association stack can reference them by name.
 
 - `profiles`: partition key `user_id` (string). Matches `DynamoDbProfileStore`.
 - `symptom-log`: partition key `user_id`, sort key the ISO date. Matches
   `DynamoDbSymptomLogStore`'s composite key and its learned-threshold items.
+- `readings`: partition key `pk` = `SITE#{SiteCode}#SP#{Species}`, sort key `sk`
+  = interval-start ISO. Matches `DynamoDbReadingsStore` (which also uses a
+  conditional write on `pk`/`sk`). Backs the association's exposure history.
+- `sensor-registry`: partition key `site_code`. Matches
+  `DynamoDbSensorRegistryStore`; the association's `sites_for` resolver reads it
+  to map a user's location to nearby site codes.
 - Both: `encryption=AWS_MANAGED` (or a CMK if required later), `billingMode`
   PAY_PER_REQUEST, `removalPolicy=DESTROY` for the POC.
 - Table names are passed to the Lambda as env (`AQM_TABLE_PROFILES`,
@@ -111,12 +122,17 @@ its claims.
 
 - A Lambda whose handler constructs the `AssociationJob` from the same config
   path and runs it for the enrolled users (POC: iterate the demo users, or the
-  profiles table). Reads the symptom-log + readings, writes Learned_Thresholds
-  through `put_learned_thresholds`.
-- An EventBridge (scheduler) rule invokes it on a schedule (e.g. hourly for the
-  demo, so a freshly recorded diary influences advice within the demo window).
-- IAM scoped to the symptom-log table (read diary + write learned thresholds) and
-  the readings table if the association reads real readings; nothing else.
+  profiles table). `AssociationJob` reads the PROFILE (to resolve the user's
+  sites, via a `sites_for` resolver backed by the sensor registry), the
+  SYMPTOM-LOG (the diary), and the READINGS store (the exposure history), then
+  writes Learned_Thresholds back to the symptom-log via `put_learned_thresholds`.
+- An EventBridge (scheduler) rule invokes it on a schedule (hourly for the demo,
+  so a freshly recorded diary influences advice within the demo window).
+- IAM scoped to exactly four tables: read the profiles, readings, and
+  sensor-registry tables; read+write the symptom-log table. No wildcard.
+- The readings + registry must be SEEDED (Requirement 10) before the derivation
+  can produce anything; without an exposure history the job writes no threshold
+  and the serving path falls back to the remaining tiers (additive, Req 4.5).
 - A `just` recipe can invoke it on demand for the demo so we don't wait for the
   schedule.
 
@@ -277,12 +293,15 @@ localhost, and CDK synthesis of the new stacks resolves nothing from an account.
 
 ## Open Questions / Decisions
 
-1. **Air-quality readings source.** The advisor's air-quality view comes from the
-   readings/registry stores. This feature is about the diary + profile + memory;
-   for the demo those can remain the scripted/seeded values so the numbers are
-   grounded, OR be backed by real DynamoDB readings. Decision: keep readings as a
-   seeded/in-memory source for the POC unless real sensor data is also wanted, to
-   keep this feature's blast radius to the diary + profile + association.
+1. **Air-quality readings source — DECIDED (Option 1, full persistence).** The
+   association job needs a PERSISTED exposure history to correlate symptoms
+   against, so this feature provisions real `readings` + `sensor-registry`
+   DynamoDB tables and seeds them with a bounded demo history (Requirement 10).
+   The serving path's CURRENT-conditions numbers may still come from a
+   seeded/in-memory source; only the association's exposure HISTORY requires the
+   persisted readings store. This widens the blast radius from two tables to four
+   plus a seeding loader, accepted deliberately so "it learns what affects me"
+   works end to end.
 2. **Which token** the ingestion `CognitoAuthenticator` validates (id vs access
    token) and the exact claim used as `user_id` — pin against the authenticator's
    implementation during design-to-tasks so the chatbot forwards the right one.
