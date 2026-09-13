@@ -182,7 +182,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
     reaches the real store (a diary write persists; a profile read returns it).
   - _Requirements: 3.1, 4.1, 8.2_
 
-- [ ] 20. Redeploy the chatbot with Cognito ids
+- [x] 20. Redeploy the chatbot with Cognito ids
   - Redeploy the chatbot stack with the pool/client ids in env; confirm sign-in
     works against the live pool and a chat turn carries the JWT through to serving.
   - _Requirements: 1.2, 2.1_
