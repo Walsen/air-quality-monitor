@@ -109,7 +109,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
   - Implement the handler using injected stores/clock so the test needs no AWS.
   - _Requirements: 4.3, 4.5, 5.4_
 
-- [ ] 10. Readings + registry seeding loader (TDD)
+- [x] 10. Readings + registry seeding loader (TDD)
   - Failing tests: an idempotent loader writes a bounded, representative exposure
     history (demo sites in the registry + a readings history per site) through the
     readings + registry store adapters (or their in-memory equivalents in the unit
