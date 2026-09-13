@@ -81,6 +81,7 @@ Design principles carried through every service:
 For the deployed AWS footprint — the services, their relationships, the JWT
 identity path, and least-privilege IAM — see the cloud deployment diagram in
 [`docs/architecture/03-cloud-deployment.md`](docs/architecture/03-cloud-deployment.md).
+The full intended system — the live IoT Core ingestion path, Timestream, per-device identity, and everything the POC deferred — is designed in [`docs/architecture/04-target-architecture.md`](docs/architecture/04-target-architecture.md).
 Deeper background lives in [`docs/architecture/`](docs/architecture/) (the
 original investigation and per-service design) and [`docs/research/`](docs/research/).
 Each service README documents its own commands, configuration, and contracts.
