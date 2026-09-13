@@ -1590,8 +1590,8 @@ directory.
       and banning the import would undo it. A further test proves the premise by building an expression
     - _Requirements: 26.5, 26.6_
 
-- [ ] 21. Final wiring and checkpoint
-  - [ ] 21.1 Wire the composition root
+- [x] 21. Final wiring and checkpoint
+  - [x] 21.1 Wire the composition root
     - Build the pipeline, the tools, the hooks and the entrypoint from configuration, selecting every
       adapter by name, with the Clock and all ports injected at one place; a test asserting the adapter
       factory table agrees exactly with the loader's registry, so a name the configuration permits but
@@ -1664,12 +1664,12 @@ directory.
     - _Requirements: 23.6, 25.1, 31.1, 31.2, 31.3, 31.6, 31.8, 32.2 (31.5 met by the Template Method
       rather than a hook — see above)_
 
-  - [ ] 21.2 Write the README from values read in code
+  - [x] 21.2 Write the README from values read in code
     - Commands, every configuration default, the routes, the tool set, and the guardrail posture, with a
       drift guard pinning each stated default to the constant that owns it
     - _Requirements: 26.4_
 
-  - [ ] 21.3 Final checkpoint — full suite green
+  - [x] 21.3 Final checkpoint — full suite green
     - Run the offline suite, the fenced suite and the nightly property profile; confirm every property test
       is present, unique per module and running at least 100 examples; confirm the negative suite and the
       trajectory assertions pass; ask the user if questions arise
