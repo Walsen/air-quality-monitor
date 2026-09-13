@@ -22,6 +22,7 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+from aqm_chatbot.auth import AuthError, CognitoAuthClient
 from aqm_chatbot.client import AdvisorClient, AdvisorError, new_session_id
 
 _STATIC = Path(__file__).parent / "static"
@@ -32,6 +33,17 @@ class ChatRequest(BaseModel):
 
     utterance: str = Field(min_length=1, max_length=4000)
     session_id: str | None = None
+
+
+class LoginRequest(BaseModel):
+    """Sign-in credentials from the browser. Both fields must be non-empty.
+
+    The values are used only to call Cognito and are never logged or echoed back;
+    `min_length=1` rejects a blank field at the edge (422) before that call.
+    """
+
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=256)
 
 
 def _render(response: dict[str, Any]) -> dict[str, Any]:
@@ -52,11 +64,22 @@ def _render(response: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_app(*, advisor: AdvisorClient, access_key: str) -> FastAPI:
-    """Assemble the app from an advisor client and the shared access key.
+def build_app(
+    *,
+    advisor: AdvisorClient,
+    access_key: str,
+    cognito: CognitoAuthClient | None = None,
+    cognito_client_id: str | None = None,
+) -> FastAPI:
+    """Assemble the app from its collaborators and the shared access key.
 
     A blank access key is refused: an open proxy to the advisor is exactly what
     the gate exists to prevent, and starting without one would defeat it silently.
+
+    `cognito` and `cognito_client_id` are injected for the sign-in step. They are
+    optional so an advisor-only deployment (and the existing `/chat` tests) build
+    unchanged; `/login` is only served when a Cognito client is supplied, and
+    returns 503 otherwise rather than pretending to authenticate.
     """
     if not access_key or not access_key.strip():
         raise ValueError(
@@ -101,6 +124,34 @@ def build_app(*, advisor: AdvisorClient, access_key: str) -> FastAPI:
         payload["session_id"] = session_id
         return JSONResponse(content=payload)
 
+    @app.post("/login")
+    def login(
+        body: LoginRequest,
+        x_access_key: str | None = Header(default=None),
+    ) -> JSONResponse:
+        """Gate, authenticate against Cognito, and hand the JWT to the browser.
+
+        The token is returned, never stored server-side (the browser holds it for
+        the session). On failure a GENERIC 401 is returned that discloses neither
+        which field was wrong nor the supplied values (Requirement 1.4). Neither
+        the password nor the token is ever logged.
+        """
+        if not _authorized(x_access_key):
+            raise HTTPException(status_code=401, detail="invalid or missing access key")
+        if cognito is None or not cognito_client_id:
+            # Sign-in is not configured for this deployment; refuse rather than
+            # pretend. Never a 500, and no detail about the missing configuration.
+            raise HTTPException(status_code=503, detail="sign-in is not available")
+        try:
+            token = cognito.authenticate(body.username, body.password)
+        except AuthError:
+            # One generic message: never name the offending field or echo the input,
+            # so an attacker cannot tell a bad username from a bad password.
+            raise HTTPException(
+                status_code=401, detail="sign-in failed; check your credentials"
+            ) from None
+        return JSONResponse(content={"token": token})
+
     return app
 
 
@@ -108,13 +159,26 @@ def main() -> None:  # pragma: no cover - the container / dev entrypoint
     """Resolve config from the environment, build the app, and serve."""
     import uvicorn
 
+    from aqm_chatbot.auth import AgentCoreCognitoClient
     from aqm_chatbot.client import AgentCoreAdvisorClient
 
     runtime_arn = os.environ["AQM_CHATBOT_RUNTIME_ARN"]
     region = os.environ.get("AQM_CHATBOT_REGION", "us-east-1")
     access_key = os.environ.get("AQM_CHATBOT_ACCESS_KEY", "")
     advisor = AgentCoreAdvisorClient(runtime_arn=runtime_arn, region=region)
-    app = build_app(advisor=advisor, access_key=access_key)
+    # Deploy-time wiring of the client id is Task 20; here we just read it from env.
+    cognito_client_id = os.environ.get("AQM_CHATBOT_COGNITO_CLIENT_ID", "")
+    cognito = (
+        AgentCoreCognitoClient(client_id=cognito_client_id, region=region)
+        if cognito_client_id
+        else None
+    )
+    app = build_app(
+        advisor=advisor,
+        access_key=access_key,
+        cognito=cognito,
+        cognito_client_id=cognito_client_id or None,
+    )
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
 
 
@@ -122,4 +186,4 @@ if __name__ == "__main__":  # pragma: no cover
     main()
 
 
-__all__ = ["ChatRequest", "build_app", "main"]
+__all__ = ["ChatRequest", "LoginRequest", "build_app", "main"]

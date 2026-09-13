@@ -78,7 +78,7 @@ Each design Correctness Property gets a test tagged `Feature: personal-diary-mem
 
 ### Phase B — chatbot sign-in and token pass-through (repo-only)
 
-- [ ] 6. Chatbot `POST /login` against a fake Cognito client (TDD)
+- [x] 6. Chatbot `POST /login` against a fake Cognito client (TDD)
   - Failing tests: `/login` with valid creds returns a JWT and never stores it
     server-side; with invalid creds returns a generic failure that does not say
     which field was wrong; the shared access-key still gates the endpoint.
