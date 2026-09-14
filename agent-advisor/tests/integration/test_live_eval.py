@@ -143,3 +143,41 @@ def test_the_judge_scores_an_off_topic_decline_without_gating() -> None:
     assert report.ran is True
     assert len(report.verdicts) == 1
     # Advisory only: the verdict is recorded for a reviewer, not asserted as a gate.
+
+
+def test_the_judge_scores_first_run_onboarding_without_gating() -> None:
+    """First-run onboarding, judged: a new user should be OFFERED profile setup, not forced.
+
+    Onboarding is prompt behaviour keyed off the "no saved profile" signal; like scoping it is a
+    behavioural expectation, so it lives here as an advisory, non-gating LLM-as-judge case that
+    skips with no live model. With a model, a live judge would score whether the reply
+    offered to personalise (asking about the user's condition and recent days) while still
+    willing to answer plainly, never requiring setup. Asserts only that it RAN (Req 35.9).
+    """
+    _require_live_model()
+
+    case = JudgedCase(
+        utterance="Hi, I'm new here. How's the air today?",
+        generation=(
+            "Conditions are moderate right now. I can also personalise this for you — "
+            "if you tell "
+            "me about your respiratory condition and how your breathing has been the last few "
+            "days, I'll tailor future advice. Would you like to set that up?"
+        ),
+        criterion=(
+            "answers the air-quality question AND offers (does not require) to set up a health "
+            "profile by asking about the user's condition and recent days"
+        ),
+    )
+
+    def _judge(scored: JudgedCase) -> JudgeVerdict:
+        return JudgeVerdict(
+            passed=True,
+            rationale=f"stand-in verdict for a live judge over: {scored.criterion}",
+        )
+
+    report = run_judged_evaluation([case], _judge)
+
+    assert report.ran is True
+    assert len(report.verdicts) == 1
+    # Advisory only: the verdict is recorded for a reviewer, not asserted as a gate.

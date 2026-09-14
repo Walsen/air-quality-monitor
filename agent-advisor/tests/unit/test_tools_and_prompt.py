@@ -339,6 +339,47 @@ def test_the_scope_section_trips_no_forbidden_claim_pattern() -> None:
     assert forbidden_matches(load_system_prompt()) == ()
 
 
+# --- First-run onboarding: offer to set up a new user's profile (Req 37) -----
+
+def test_the_prompt_has_an_onboarding_section() -> None:
+    # First-run onboarding is prompt behaviour keyed off the existing "no saved profile" signal
+    # the snapshot already surfaces; it uses the existing profile_put and symptom_entry_put
+    # tools. Pin the instruction as data so a later edit that removes it fails here.
+    lowered = load_system_prompt().casefold()
+    assert "onboarding a new user" in lowered
+    assert "no saved health profile" in lowered
+
+
+def test_onboarding_offers_rather_than_requires() -> None:
+    # A+A decision: a new user must be able to get a plain air-quality answer without setting
+    # anything up. If the wording is hardened into a gate, this should fail.
+    lowered = load_system_prompt().casefold()
+    assert "offer, never require" in lowered
+
+
+def test_onboarding_confirms_before_writing() -> None:
+    # Onboarding writes go through the same restate-and-confirm rule as any profile/diary change
+    # (Req 27.2 / 28); it must not become a backdoor that writes unconfirmed health data.
+    lowered = load_system_prompt().casefold()
+    assert "confirm before you write" in lowered
+
+
+def test_onboarding_does_not_suspend_the_other_rules() -> None:
+    # The emergency, no-diagnosis, preparedness-only and data-minimisation rules still hold
+    # during onboarding; the prompt says so explicitly so the model does not treat setup as an
+    # exception.
+    lowered = load_system_prompt().casefold()
+    assert "onboarding does not suspend any other rule" in lowered
+
+
+def test_the_onboarding_section_trips_no_forbidden_claim_pattern() -> None:
+    # The onboarding prose talks about conditions, medications and how the user felt — adjacent
+    # to the diagnosis/attribution patterns. Guard that it introduces no match of its own.
+    from aqm_advisor.domain.forbidden import forbidden_matches
+
+    assert forbidden_matches(load_system_prompt()) == ()
+
+
 # --- the history span duplicates a fact Service 2 owns -------------------
 
 _SERVICE_2_HISTORY = (

@@ -1269,3 +1269,41 @@ exposure-timing questions the service is required to answer.
 6. THE Service SHALL check the off-topic *behaviour* with an LLM-as-judge case governed by Requirement
    35.9: the verdict is advisory and SHALL NOT gate the offline build, because scoping is not a
    deterministic safety control and a non-deterministic judge cannot gate a deterministic suite.
+
+
+### Requirement 37: First-Run Onboarding
+
+**User Story:** As a new user, I want the advisor to help me set up my health profile the first
+time I use it — asking about my condition and how I have felt recently — so that its advice is
+personal from early on, without my having to know that a "profile" exists.
+
+This requirement ORCHESTRATES existing capabilities rather than adding new ones. Profile
+elicitation (Req 27) and symptom-diary capture (Req 28) already exist, the serving layer already
+signals an absent profile via `usedDefaultProfile`, and that signal is already surfaced into the
+turn. Onboarding is the first-run behaviour that ties them together, expressed in the system
+prompt; it introduces no new tool, endpoint or stored field.
+
+#### Acceptance Criteria
+
+1. WHEN the turn's air-quality data indicates no saved profile was found (`usedDefaultProfile`),
+   THE Service SHALL, on that turn, OFFER to set up the user's profile — stating in one sentence
+   that it can personalise its guidance — in addition to answering what the user asked.
+2. THE Service SHALL treat onboarding as an OFFER, not a requirement: IF the user declines or only
+   wants the air-quality answer, THE Service SHALL provide it and SHALL NOT insist on setup, so a
+   new user can always get a plain answer without configuring anything.
+3. WHEN the user accepts, THE Service SHALL ask, plainly and one idea at a time, for their
+   respiratory condition and any reliever/preventer they carry, and then for how their breathing
+   has been over recent days.
+4. THE Service SHALL take the recent-days answer in the user's own words and record it as DATED
+   symptom-diary entries via the existing capture path, inventing no day, severity or marker the
+   user did not state; a vague answer yields fewer entries, never guessed ones.
+5. THE Service SHALL restate the condition, medications and recent-day entries it understood and
+   obtain confirmation BEFORE writing anything, exactly as Requirements 27.2 and 28 require, and
+   SHALL confirm in one line once the profile is set.
+6. THE Service SHALL NOT suspend any other constraint during onboarding: Requirement 10 emergency
+   escalation still takes precedence over setup, Requirement 8's non-diagnostic and
+   preparedness-only rules still hold, and Requirement 19 data-minimisation still limits what is
+   stored to the condition, medications and how the user felt.
+7. THE Service SHALL express onboarding through the system prompt, pinned by a deterministic test
+   over the prompt as data, and SHALL check the offer-not-require behaviour with an LLM-as-judge
+   case governed by Requirement 35.9 (advisory, non-gating).

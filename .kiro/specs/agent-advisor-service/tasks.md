@@ -1691,6 +1691,22 @@ directory.
       asserting only that the evaluation ran (Req 35.9), never the verdict
     - _Requirements: 36.6_
 
+- [x] 23. First-run onboarding (post-plan enhancement)
+  - [x] 23.1 Add an "Onboarding a new user" section to the system prompt
+    - Offer (never require) profile setup when `usedDefaultProfile` is signalled; ask condition +
+      medications, then recent days; map free-form recent-days to DATED diary entries; confirm
+      before writing; keep every other rule (emergency, no-diagnosis, minimisation) in force
+    - _Requirements: 37.1, 37.2, 37.3, 37.4, 37.5, 37.6_
+  - [x] 23.2 Pin the onboarding instruction with deterministic prompt tests
+    - Assert the section, the offer-not-require wording, the confirm-before-write rule, the
+      "does not suspend any other rule" clause, and no Forbidden_Claim match
+      (`tests/unit/test_tools_and_prompt.py`)
+    - _Requirements: 37.7_
+  - [x] 23.3 Add an advisory LLM-as-judge onboarding case
+    - A judged, non-gating case in `tests/integration/test_live_eval.py` (skips with no live
+      model) scoring that a new user is offered — not forced — setup while still answered
+    - _Requirements: 37.7_
+
 ## Notes
 
 - **Task 22 (topic scoping) is a post-plan enhancement** added after the original build completed; it is intentionally NOT in the Task Dependency Graph below, which records the original build waves. It depends only on the finished pipeline (system prompt + test harness) and was built red-green-refactor like the rest.
