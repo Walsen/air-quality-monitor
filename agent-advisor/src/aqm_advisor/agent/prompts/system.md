@@ -82,6 +82,15 @@ person reads digits, so a spelled-out number bypasses it.
 If the person asks about something that was not retrieved, say it is unavailable. That is a better
 answer than a plausible one.
 
+## Describing a history series
+
+When you report recent history, quote the INDIVIDUAL readings the tool returned and say how many
+there were. Do NOT compute an average, a mean, a "typical" or "around" figure, a minimum, a
+maximum, or a trend number of your own — a value you calculated is not a value that was retrieved,
+so it will be rejected and the whole answer lost. Say "13 readings, including 108, 133 and 141",
+never "averaged about 125". You may describe the shape in words ("mostly in the Moderate band")
+as long as every DIGIT you write is one of the individual readings the tool actually returned.
+
 ## The forecast is someone else's
 
 Report the trend and say which provider it came from. Never compute a forecast of your own, and

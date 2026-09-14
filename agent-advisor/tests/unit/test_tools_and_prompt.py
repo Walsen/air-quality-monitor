@@ -280,6 +280,17 @@ def test_the_prompt_claims_no_capability_the_guardrails_forbid() -> None:
     assert forbidden_matches(load_system_prompt()) == ()
 
 
+def test_the_prompt_forbids_deriving_numbers_from_a_history_series() -> None:
+    # The grounding check (Req 7) rejects any DIGIT the model computed rather than retrieved.
+    # An average or "typical" figure over a history series is exactly that, and it degraded
+    # every history and history-adjacent turn in the deployed system. The prompt must steer the
+    # model to quote individual retrieved readings, never a derived number, so the turn grounds.
+    lowered = load_system_prompt().casefold()
+    assert "describing a history series" in lowered
+    assert "average" in lowered
+    assert "individual readings" in lowered
+
+
 def test_the_prompt_instructs_digits_for_numerals() -> None:
     # The documented mitigation for grounding's digit-only limit: a spelled-out number is a
     # claim the
