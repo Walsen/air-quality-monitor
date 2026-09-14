@@ -25,7 +25,10 @@ remembers the user's symptom diary so its advice improves over time.
 - **Advises** through a language model (Amazon Bedrock) that retrieves the user's
   conditions before it answers, escalates anything that reads as an emergency
   *before* the model is consulted, and verifies every answer — quantitative claims
-  must be values it actually retrieved, and diagnoses/dosing are rejected.
+  must be values it actually retrieved, and diagnoses/dosing are rejected. It
+  **stays in scope**: questions outside air quality and its bearing on breathing
+  (write me code, tell me a joke, politics) are declined in one line that redirects
+  to what it is for.
 - **Remembers a personal diary.** A user records daily symptoms; a scheduled job
   correlates that diary against their exposure history to derive personal
   thresholds that shape future advice. Each user's data is strictly isolated.
@@ -93,8 +96,8 @@ Each service README documents its own commands, configuration, and contracts.
 - **Per-user personalization** — geo-filtering to the user's locations,
   condition-weighted interpretation, and personal thresholds.
 - **AI advisor with enforced safety** — retrieval-grounded answers, deterministic
-  emergency escalation, and a negative/adversarial test suite that pins what the
-  agent must *not* say.
+  emergency escalation, topic scoping (off-topic requests are declined), and a
+  negative/adversarial test suite that pins what the agent must *not* say.
 - **Personal diary memory** — a per-user symptom diary that a scheduled
   association job turns into learned thresholds influencing future advice, with
   strict per-user isolation and total erasure. See the feature's deployment guide:
@@ -102,6 +105,12 @@ Each service README documents its own commands, configuration, and contracts.
 - **Web chatbot** — Cognito sign-in and a chat UI in front of the advisor; the
   user's JWT is forwarded through the advisor to the serving API so one identity
   is validated end to end.
+- **Cost/latency optimizations, config-gated** — Bedrock prompt caching over the
+  stable prompt-and-tools prefix (`AQM_ADVISOR_MODEL_PROMPT_CACHING`), and an
+  explicit sequential tool executor (`AQM_ADVISOR_TOOLS_CONCURRENT`) chosen because
+  the retrieval tools have an ordering dependency and share per-turn state. Both are
+  off by default so the offline test suite never depends on them. See
+  [`agent-advisor/README.md`](agent-advisor/README.md) for the full settings.
 
 ## Tech stack
 
@@ -159,6 +168,71 @@ just synth
 
 Run `just --list` for the full command surface (per-service test/lint/typecheck
 recipes, the LocalStack round-trips, and the deploy/seed/teardown recipes).
+
+## Testing (for hackathon judges)
+
+The project is **live and free to use** for judging. It is a browser chat app in
+front of the AI advisor; you sign in, then ask about air quality and your
+exposure in natural language.
+
+**Live demo — Web Chatbot:** https://5g0wmcmn7k.execute-api.us-east-1.amazonaws.com
+
+**Demo credentials** (throwaway accounts provisioned for judging; rotated after
+the Judging Period):
+
+| Username | Password |
+|----------|----------|
+| `demo-user-a` | `AgentsForHumans!2026` |
+| `demo-user-b` | `AgentsForHumans!2026` |
+
+> These are sandbox demo logins for a public, non-sensitive demo — not real user
+> accounts. `demo-user-b` is a second identity you can use to confirm that one
+> user never sees another's data.
+
+### Walkthrough — sign in and try it
+
+1. **Open** the live demo URL above. You'll see the *Air Quality Advisor* chat
+   page with its "Not medical advice" disclaimer.
+2. **Sign in** with `demo-user-a` and the password above. The browser exchanges
+   the credentials for a Cognito token and holds it for the session; every chat
+   turn is authenticated with it.
+3. **Ask about current air quality** — e.g. *"What's the air quality where I am
+   right now?"* The advisor calls its `air_quality` tool and answers with the
+   current AQI and the driving pollutant for your saved location, grounded in
+   values it actually retrieved.
+4. **Ask for a trend** — e.g. *"How has PM2.5 been over the last 3 days?"* This
+   exercises the `history` tool over a day-window.
+5. **Ask for advice** — e.g. *"Is it safe for me to go for a run this
+   afternoon?"* The advisor weighs the reading against your profile and answers
+   with non-diagnostic guidance. Anything that reads as a medical emergency is
+   escalated to seek-help *before* the model is consulted.
+6. **Set up your profile** — e.g. *"I have asthma and I use a salbutamol
+   inhaler."* The advisor restates what it understood and asks you to confirm
+   before it writes anything (`profile_put`); confirmed conditions and
+   medications then shape later advice.
+7. **Record a symptom** — e.g. *"I was wheezing this morning and it felt worse
+   than yesterday."* The advisor restates the inferred diary entry and, on your
+   confirmation, records it (`symptom_entry_put`). A scheduled job correlates the
+   diary against exposure history to derive personal thresholds over time.
+8. **Confirm data isolation (optional)** — sign out, sign in as `demo-user-b`,
+   and note that none of `demo-user-a`'s profile or diary is visible. Each user's
+   data is strictly isolated.
+
+What the advisor will **not** do, by design: give a diagnosis, prescribe or dose
+medication, or state a quantitative figure it did not actually retrieve. Every
+response carries a non-diagnostic disclaimer.
+
+### Running the automated tests
+
+Judges who clone the repo can run the full offline suite with no AWS credentials
+and no network beyond localhost:
+
+```bash
+just test        # every service's offline suite
+just lint
+just typecheck
+just synth        # CDK synthesis, resolves nothing from an account
+```
 
 ## Testing philosophy
 

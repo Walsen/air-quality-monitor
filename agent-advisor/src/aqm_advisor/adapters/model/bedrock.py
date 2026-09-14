@@ -31,6 +31,7 @@ import boto3
 import botocore.session
 from botocore.config import Config as BotocoreConfig
 from strands.models import BedrockModel
+from strands.models.model import CacheConfig
 
 _FRAMEWORK_DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 """What `strands-agents==1.55.1` substitutes when no identifier is given.
@@ -87,6 +88,7 @@ def build_bedrock_model(
     model_max_output_tokens: int | None = None,
     request_timeout_seconds: int = 30,
     model_credential_path: str | None = None,
+    model_prompt_caching: bool = False,
 ) -> BedrockModel:
     """Build the production model from configuration (Reqs 6.1b, 6.4, 6.5, 6.6, 25.4).
 
@@ -123,6 +125,21 @@ def build_bedrock_model(
         connect_timeout=request_timeout_seconds,
     )
 
+    # Prompt caching is CONFIG-GATED AND OFF BY DEFAULT (Req 6.1b's spirit: behaviour comes from
+    # configuration, never a literal default nobody chose — and the offline suite must not
+    # depend on a paid-tier feature). When enabled, a `CacheConfig` with the "auto" strategy
+    # lets Strands detect model support and inject cache points to maximise coverage — which for
+    # this service is the two per-turn-invariant parts of the request: the system prompt and the
+    # tool schemas. `CacheConfig` is the current API; the older `cache_prompt`/`cache_tools`
+    # string fields are deprecated in strands 1.55.1. When disabled the kwarg is omitted
+    # entirely, so the request is byte-for-byte the one sent before caching existed.
+    #
+    # Per-turn data (readings, profile, the user utterance) is NOT part of this prefix and must
+    # never be — it would break the cache and risk leaking one turn's context into another's.
+    cache_kwargs: dict[str, CacheConfig] = (
+        {"cache_config": CacheConfig(strategy="auto")} if model_prompt_caching else {}
+    )
+
     # `max_tokens` is passed even when None. An earlier comment here claimed omitted and
     # None were different requests; the SDK shows otherwise — `format_request` builds
     # `inferenceConfig` with an `if value is not None` filter, so a None never reaches the wire.
@@ -154,6 +171,7 @@ def build_bedrock_model(
             temperature=model_temperature,
             boto_client_config=client_config,
             max_tokens=model_max_output_tokens,
+            **cache_kwargs,
         )
     # No path configured: boto3's own chain resolves from the environment, which Req 6.6 equally
     # permits. The region is passed directly, there being no session to carry it.
@@ -163,6 +181,7 @@ def build_bedrock_model(
         temperature=model_temperature,
         boto_client_config=client_config,
         max_tokens=model_max_output_tokens,
+        **cache_kwargs,
     )
 
 

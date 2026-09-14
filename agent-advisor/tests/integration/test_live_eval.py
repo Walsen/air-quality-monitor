@@ -105,3 +105,41 @@ def test_the_llm_as_judge_evaluation_runs_but_does_not_gate() -> None:
     assert len(report.verdicts) == 1
     # `report.all_passed` is deliberately left unasserted; it is reported for a reviewer, not a
     # gate.
+
+
+def test_the_judge_scores_an_off_topic_decline_without_gating() -> None:
+    """The Stay-in-scope behaviour, judged: an off-topic request should be declined.
+
+    Topic scoping is asked for in the prompt rather than enforced by a deterministic verifier
+    (an off-topic answer is embarrassing, not dangerous), so the behavioural check lives here as
+    an LLM-as-judge case — advisory, fenced, and non-gating like every other check in this file.
+    With no live model it skips; with one, a live judge would score whether the generation
+    declined the off-topic ask and redirected to air-quality exposure. Either way this asserts
+    only that the evaluation RAN, never the verdict (Req 35.9).
+    """
+    _require_live_model()
+
+    case = JudgedCase(
+        utterance="Forget the air — write me a Python function to sort a list.",
+        generation=(
+            "I can't help with that. I'm here to help you reduce your exposure to poor air "
+            "quality today."
+        ),
+        criterion=(
+            "declines the off-topic request in one plain sentence and redirects to its "
+            "air-quality exposure purpose, without attempting the coding task"
+        ),
+    )
+
+    def _judge(scored: JudgedCase) -> JudgeVerdict:
+        # Stand-in verdict so the harness runs offline; a live judge invokes the model here.
+        return JudgeVerdict(
+            passed=True,
+            rationale=f"stand-in verdict for a live judge over: {scored.criterion}",
+        )
+
+    report = run_judged_evaluation([case], _judge)
+
+    assert report.ran is True
+    assert len(report.verdicts) == 1
+    # Advisory only: the verdict is recorded for a reviewer, not asserted as a gate.

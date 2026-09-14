@@ -41,8 +41,20 @@ To develop and demo it without owning physical hardware, we need two independent
                  ┌─────────────────────────┐
                  │  AI Air Quality Monitor  │   (the agent — separate)
                  │  agent (Amazon Bedrock)  │
+                 └───────────┬─────────────┘
+                   natural-language advice │
+                                             ▼
+                 ┌─────────────────────────┐
+                 │      Web chatbot         │   (user-facing client)
+                 │  (the person chatting)   │
                  └─────────────────────────┘
 ```
+
+> The **Web chatbot** is how a person actually interacts with the system: they ask
+> about air quality and their exposure, and it relays the agent's advice. It is a
+> thin client over the agent — the same agent could later be fronted by a **mobile
+> app** (push alerts when local AQI crosses a personal threshold) with no change to
+> Services 1 and 2.
 
 The two services share **one contract**: the sensor data schema (the reference network contract —
 see Service 1). This lets us swap the simulator for a live public air-quality feed later with no

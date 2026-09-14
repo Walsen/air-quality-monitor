@@ -1,6 +1,6 @@
 # Cloud deployment — AWS services and relationships
 
-The deployed proof-of-concept in AWS account `862307432587`, region `us-east-1`.
+The deployed proof-of-concept in AWS account `<AWS_ACCOUNT_ID>`, region `us-east-1`.
 Every service and edge below is provisioned by the CDK stacks in
 [`../../infra/`](../../infra/) and [`../../agent-advisor/infra/`](../../agent-advisor/infra/),
 so this diagram is the source code's shape, not an aspiration.

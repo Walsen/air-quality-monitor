@@ -65,6 +65,7 @@ required (`serving_base_url`) or unset until configured.
 | `AQM_ADVISOR_MODEL_TEMPERATURE` | `0.0` | Sampling temperature, between `0.0` and `2.0`. |
 | `AQM_ADVISOR_MODEL_MAX_OUTPUT_TOKENS` | | The provider's per-call output cap, when set. |
 | `AQM_ADVISOR_MODEL_CREDENTIAL_PATH` | | Optional credential path for the model adapter. When absent, the SDK's own credential chain is used (on AgentCore, the execution role). |
+| `AQM_ADVISOR_MODEL_PROMPT_CACHING` | `false` | Enables Bedrock prompt caching over the per-turn-invariant prefix (the system prompt and tool schemas), cutting input-token cost and latency across the agentic loop and multi-turn conversations. Off by default: it is a paid-tier behaviour and the offline suite must not depend on it. |
 | `AQM_ADVISOR_MAX_MODEL_INVOCATIONS` | `2` | The per-turn model-invocation ceiling: one generation plus one repair attempt after a guardrail rejection. |
 | `AQM_ADVISOR_MAX_OUTPUT_TOKENS` | | Soft per-turn output-token ceiling, when set. |
 | `AQM_ADVISOR_MAX_TOTAL_TOKENS` | | Soft per-turn total-token ceiling, when set. |
@@ -77,6 +78,7 @@ required (`serving_base_url`) or unset until configured.
 | `AQM_ADVISOR_SYSTEM_PROMPT_PATH` | | Path to the system prompt file. |
 | `AQM_ADVISOR_LOG_LEVEL` | `info` | The log level; one of `debug`, `info`, `warning`, `error`, `critical`. |
 | `AQM_ADVISOR_STREAMING_ENABLED` | `false` | SSE streaming. Not implemented; enabling it is refused at startup. |
+| `AQM_ADVISOR_TOOLS_CONCURRENT` | `false` | Whether the agent runs tool calls concurrently. Off by default: the retrieval tools have an ordering dependency (`history` needs the site `air_quality` retrieves) and share per-turn state that is not thread-safe, so a sequential executor is the correct default. |
 | `AQM_ADVISOR_TURN_BUDGET_SECONDS` | `60` | The wall-clock budget for one turn; must be at least `request_timeout_seconds`. |
 | `AQM_ADVISOR_JWT_DISCOVERY_URL` | | The OIDC discovery URL for the inbound authorizer. |
 | `AQM_COGNITO_CLIENT_ID` | | The JWT audience the inbound authorizer accepts. Shares Service 2's variable on purpose, so the two authorizers cannot drift apart. |

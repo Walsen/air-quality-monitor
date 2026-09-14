@@ -102,6 +102,45 @@ publishing**, cutting message and write counts ~60×. Order-of-magnitude: a 20�
 sensor demo stays under ~$10–30/mo; a 5,000-sensor city-scale deployment at
 1-minute cadence is ~$300–700/mo (see [`00-overview.md`](00-overview.md#approximate-cost-summary-us-east-1-usdmonth--order-of-magnitude)).
 
+## Advisor behaviour and optimizations
+
+The advisor (Service 3) is unchanged between POC and target in shape; what follows
+documents behaviour and tuning that already exist today. Full settings are in
+[`../../agent-advisor/README.md`](../../agent-advisor/README.md); the reasoning is
+in the `agent-engineering` and `agent-topic-scoping` steering files.
+
+**Topic scoping.** The advisor answers only on air quality and its bearing on
+breathing (including weather and pollen as they affect exposure). Off-topic
+requests — code, jokes, politics, general trivia, medical advice unrelated to
+air-quality exposure — are declined in one line that redirects to its purpose.
+This is asked for in the system prompt rather than a hard classifier, because an
+off-topic answer is embarrassing rather than dangerous and a classifier would
+misfire on the in-scope weather/pollen/exposure cases. A deterministic test pins
+the prompt instruction; the behaviour itself is checked by an advisory,
+non-gating LLM-as-judge case. This sits *alongside* the load-bearing safety chain
+(emergency escalation before the model, retrieval-grounding, and the
+forbidden-claim/medication-closure guardrail that withholds output), which is the
+control for what the advisor must never say.
+
+**Prompt caching (config-gated, off by default).** `AQM_ADVISOR_MODEL_PROMPT_CACHING`
+enables Bedrock prompt caching over the per-turn-invariant prefix — the system
+prompt plus the tool schemas (~1,700 tokens). The win is chiefly *within* a turn:
+the agentic loop re-sends that prefix on every tool round-trip, so caching pays
+even for a single user turn, and the cache TTL can also span rapid successive
+turns. Off by default because it is a paid-tier behaviour and the offline test
+suite must not depend on it.
+
+**Sequential tool execution (config-gated, off by default for concurrency).**
+`AQM_ADVISOR_TOOLS_CONCURRENT` is off, so the advisor pins a *sequential* tool
+executor. This is a correctness decision, not a performance one: Strands defaults
+to concurrent execution, but the retrieval tools are not safe to run in parallel —
+`history` depends on the site `air_quality` retrieves earlier in the same turn,
+and the tools share per-turn state that is not thread-safe. Enabling true
+parallelism is a future step gated on making that state thread-safe and removing
+the `air_quality → history` dependency; the broader optimization roadmap (parallel
+tools, context offloading, service tiers, streaming, conversation management) lives
+in the `agent-engineering` steering file.
+
 ## Sequencing to get from the POC to the target
 
 1. **Containerize the simulator on Fargate**, publishing to a local/dev IoT Core

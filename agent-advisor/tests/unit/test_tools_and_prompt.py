@@ -300,6 +300,45 @@ def test_a_blank_supplied_prompt_is_refused() -> None:
         load_system_prompt("   ")
 
 
+# --- Topic scoping: the agent declines off-topic requests (Stay in scope) ----
+
+def test_the_prompt_has_a_stay_in_scope_section() -> None:
+    # Topic scoping is asked for in the prompt (not enforced by a verifier): an off-topic
+    # answer is embarrassing, not dangerous, so a prompt instruction plus a judged behavioural
+    # case is the proportionate control. This pins the instruction as data so a later edit that
+    # deletes it fails here rather than silently in production.
+    lowered = load_system_prompt().casefold()
+    assert "stay in scope" in lowered
+    assert "decline" in lowered
+
+
+def test_the_prompt_names_off_topic_requests_it_must_decline() -> None:
+    # Naming concrete off-topic categories is what turns a vague "stay on topic" into an
+    # instruction a model reliably follows. If the wording is softened to the point these
+    # disappear, the scoping has been weakened and this should fail.
+    lowered = load_system_prompt().casefold()
+    for off_topic in ("code", "poem", "politics"):
+        assert off_topic in lowered, off_topic
+
+
+def test_the_prompt_keeps_weather_and_pollen_in_scope() -> None:
+    # Scoping must not throw out the baby with the bathwater: weather and pollen ARE in remit
+    # insofar as they bear on the air and exposure. A scope section that forgot to say so would
+    # make the agent refuse questions it is meant to answer.
+    lowered = load_system_prompt().casefold()
+    assert "weather" in lowered
+    assert "pollen" in lowered
+
+
+def test_the_scope_section_trips_no_forbidden_claim_pattern() -> None:
+    # The whole prompt is already checked, but the scope wording is new prose that mentions
+    # "medical advice" and "symptoms"-adjacent language; guard specifically that it introduced
+    # no diagnosis/dosing/attribution match of its own.
+    from aqm_advisor.domain.forbidden import forbidden_matches
+
+    assert forbidden_matches(load_system_prompt()) == ()
+
+
 # --- the history span duplicates a fact Service 2 owns -------------------
 
 _SERVICE_2_HISTORY = (

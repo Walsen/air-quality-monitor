@@ -263,5 +263,5 @@ Phase G (demo)                  (15..20) ──▶ 21 ──▶ 22
   exact subject claim used as `user_id`. The readings decision is DECIDED —
   Option 1, full persistence: real `readings` + `sensor-registry` DynamoDB tables,
   seeded with a bounded demo history (Requirement 10, Tasks 3, 10, 17).
-- **Deploy target:** account 862307432587, us-east-1; advisor runtime
+- **Deploy target:** account <AWS_ACCOUNT_ID>, us-east-1; advisor runtime
   `aqmadvisor_aqm_advisor-ws73wzAfQJ`.

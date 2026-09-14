@@ -148,6 +148,7 @@ _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
             "model_temperature",
             "model_max_output_tokens",
             "model_credential_path",
+            "model_prompt_caching",
         }
     ),
     "bounds": frozenset(
@@ -175,6 +176,7 @@ _RECOGNIZED_KEYS: Mapping[str, frozenset[str]] = {
     "agentcore": frozenset(
         {
             "streaming_enabled",
+            "tools_concurrent",
             "turn_budget_seconds",
             "jwt_discovery_url",
             "jwt_allowed_clients",
@@ -211,6 +213,7 @@ _SCALARS: Mapping[str, tuple[str, object]] = {
     "model_temperature": (f"{_ENV_PREFIX}MODEL_TEMPERATURE", 0.0),
     "model_max_output_tokens": (f"{_ENV_PREFIX}MODEL_MAX_OUTPUT_TOKENS", None),
     "model_credential_path": (f"{_ENV_PREFIX}MODEL_CREDENTIAL_PATH", None),
+    "model_prompt_caching": (f"{_ENV_PREFIX}MODEL_PROMPT_CACHING", False),
     # bounds
     "max_model_invocations": (
         f"{_ENV_PREFIX}MAX_MODEL_INVOCATIONS",
@@ -232,6 +235,7 @@ _SCALARS: Mapping[str, tuple[str, object]] = {
     "log_level": (f"{_ENV_PREFIX}LOG_LEVEL", DEFAULT_LOG_LEVEL),
     # agentcore
     "streaming_enabled": (f"{_ENV_PREFIX}STREAMING_ENABLED", False),
+    "tools_concurrent": (f"{_ENV_PREFIX}TOOLS_CONCURRENT", False),
     "turn_budget_seconds": (f"{_ENV_PREFIX}TURN_BUDGET_SECONDS", DEFAULT_TURN_BUDGET_SECONDS),
     "jwt_discovery_url": (f"{_ENV_PREFIX}JWT_DISCOVERY_URL", None),
     # NOT an AQM_ADVISOR_ name, deliberately. Req 32.14 requires this service's inbound
@@ -649,6 +653,7 @@ class AdvisorConfig:
     model_temperature: float
     model_max_output_tokens: int | None
     model_credential_path: str | None
+    model_prompt_caching: bool
     bounds: InvocationBounds
     guardrail_enabled: bool
     guardrail_identifier: str | None
@@ -660,6 +665,7 @@ class AdvisorConfig:
     adapters: Mapping[str, str]
     log_level: str
     streaming_enabled: bool
+    tools_concurrent: bool
     turn_budget_seconds: int
     jwt_discovery_url: str | None
     jwt_allowed_clients: tuple[str, ...]
@@ -686,6 +692,7 @@ class AdvisorConfig:
             "modelTemperature": self.model_temperature,
             "modelMaxOutputTokens": self.model_max_output_tokens,
             "modelCredentialConfigured": self.model_credential_path is not None,
+            "modelCachingEnabled": self.model_prompt_caching,
             "maxModelInvocations": self.bounds.model_invocations,
             "maxOutputTokens": self.bounds.output_tokens,
             "maxTotalTokens": self.bounds.total_tokens,
@@ -702,6 +709,7 @@ class AdvisorConfig:
             "adapters": dict(sorted(self.adapters.items())),
             "logLevel": self.log_level,
             "streamingEnabled": self.streaming_enabled,
+            "toolsConcurrent": self.tools_concurrent,
             "turnBudgetSeconds": self.turn_budget_seconds,
             "jwtDiscoveryUrl": self.jwt_discovery_url,
             "jwtAllowedClients": list(self.jwt_allowed_clients),
@@ -759,6 +767,7 @@ def resolve_and_validate(
         model_temperature=float(resolved["model_temperature"]),
         model_max_output_tokens=_optional_int(resolved["model_max_output_tokens"]),
         model_credential_path=resolved["model_credential_path"],
+        model_prompt_caching=bool(resolved["model_prompt_caching"]),
         bounds=bounds,
         guardrail_enabled=bool(resolved["guardrail_enabled"]),
         guardrail_identifier=resolved["guardrail_identifier"],
@@ -770,6 +779,7 @@ def resolve_and_validate(
         adapters=dict(resolved["adapters"]),
         log_level=str(resolved["log_level"]).strip().lower(),
         streaming_enabled=bool(resolved["streaming_enabled"]),
+        tools_concurrent=bool(resolved["tools_concurrent"]),
         turn_budget_seconds=int(resolved["turn_budget_seconds"]),
         jwt_discovery_url=resolved["jwt_discovery_url"],
         jwt_allowed_clients=tuple(resolved["jwt_allowed_clients"]),
