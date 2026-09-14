@@ -45,6 +45,23 @@ from aqm_advisor.ports.protocols import (
 )
 
 _MAX_HISTORY_DAYS = 30
+
+# Service 2's history endpoint accepts ONLY the wire species codes PM25 and NO2
+# (its PERMITTED_HISTORY_SPECIES). A model naturally asks for the human spelling "PM2.5", which
+# Service 2 rejects with a 400 — so the tool maps common spellings to the wire code before the
+# call. Unknown values pass through unchanged so Service 2's own validation still reports them.
+_SPECIES_WIRE_CODE = {
+    "pm25": "PM25",
+    "pm2.5": "PM25",
+    "pm 2.5": "PM25",
+    "no2": "NO2",
+    "no₂": "NO2",
+}
+
+
+def _normalise_species(species: str) -> str:
+    """Map a human species spelling to Service 2's wire code, else return it unchanged."""
+    return _SPECIES_WIRE_CODE.get(species.strip().casefold(), species)
 """Service 2's default maximum history span. A drift guard pins it against that
 service's own constant, because it is configurable there."""
 
@@ -245,8 +262,8 @@ def build_retrieval_tools(
         Use this to describe how conditions have changed, never to compute a forecast.
 
         Args:
-            days: How many days back to read, from 1 to 30. species: An optional single species
-            to restrict the window to.
+            days: How many days back to read, from 1 to 30. species: An optional single
+            species to restrict the window to — "PM25" or "NO2".
 
         Returns:
             The readings window as JSON, or a note naming why it was unavailable.
@@ -260,7 +277,7 @@ def build_retrieval_tools(
             )
         end = clock.now()
         start = end - dt.timedelta(days=days)
-        selected = frozenset({species}) if species else None
+        selected = frozenset({_normalise_species(species)}) if species else None
         if retrieved_site_code is None:
             # Req 3.1a: the site must come from a snapshot retrieved this turn. Reported as
             # unavailable rather than guessed, because Service 2 answers 404 for a site absent

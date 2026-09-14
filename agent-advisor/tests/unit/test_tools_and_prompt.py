@@ -478,6 +478,29 @@ def test_history_uses_the_site_the_snapshot_named() -> None:
     assert args[0] == "AQM1", args
 
 
+def test_history_normalises_the_species_to_service_2s_wire_code() -> None:
+    # Service 2's history accepts only PM25 / NO2 (its PERMITTED_HISTORY_SPECIES). A model that
+    # asks for the human spelling "PM2.5" would send a species Service 2 rejects with a 400 —
+    # the exact bug that made history "unavailable" in the deployed system. The tool normalises
+    # the spelling to the wire code before the call.
+    client = ScriptedServingClient()
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    _by_name(tools)["history"](days=7, species="PM2.5")
+    _name, args = client.calls[1]
+    selected = args[3]
+    assert selected == frozenset({"PM25"}), selected
+
+
+def test_history_species_normalisation_is_case_insensitive_and_covers_no2() -> None:
+    client = ScriptedServingClient()
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    _by_name(tools)["history"](days=7, species="no2")
+    _name, args = client.calls[1]
+    assert args[3] == frozenset({"NO2"}), args[3]
+
+
 def test_the_history_tool_exposes_no_site_parameter_to_the_model() -> None:
     # Structural, so the guarantee cannot be undone by a later signature change: Req 3.1a
     # says the site comes from the snapshot, and a tool parameter would be exactly the
