@@ -87,6 +87,13 @@ _logger = get_logger(__name__)
 # window — which would make the association write nothing — cannot happen from the seed alone.
 READINGS_PER_SITE_PER_SPECIES = 60
 
+# A short tail of HOURLY readings ending at the current hour, on top of the daily history.
+# Req 20.8's "current" reading is one whose interval start is within the serving freshness
+# window (default 3h). A history stamped only at a fixed daily hour reads as "unavailable" for
+# most of the day; this tail guarantees a current reading whenever the demo is run or recorded.
+# Six hours covers the default window with margin, and stays a demo tail, not a backfill.
+RECENT_HOURLY_READINGS = 6
+
 # The species the association / AQI path expects. PM25 is the primary Mass_Concentration species
 # (DEFAULT_SPECIES_PRECEDENCE leads with it) and is the one the association tests correlate on;
 # NO2 is included so the seed is representative of both indexable species.
@@ -199,14 +206,16 @@ def build_reading_series(
     generator: random.Random,
     clock: Clock,
     count: int = READINGS_PER_SITE_PER_SPECIES,
+    count_hourly: int = RECENT_HOURLY_READINGS,
 ) -> tuple[CalibratedReading, ...]:
     """Build one site+species readings history, deterministically (§2).
 
     A PURE function of its arguments: it draws every value from the injected ``generator`` and
     every instant from the injected ``clock``, never from a module-level RNG or a wall-clock
-    read. One reading per day, stamped at a fixed hour, walking back ``count`` days from the
-    clock's ``now``. The days are emitted in ASCENDING interval order so the result is defined
-    regardless of anything downstream (§2).
+    read. Emits ``count`` daily readings at a fixed hour ending YESTERDAY, then a tail of
+    ``count_hourly`` HOURLY readings ending at the clock's current hour, so the newest reading
+    is within the serving freshness window at any run time. All readings are emitted in
+    ASCENDING interval order so the result is defined regardless of anything downstream (§2).
 
     Args:
         site: the catalogue entry the readings belong to.
@@ -215,6 +224,7 @@ def build_reading_series(
         clock: the instant the lookback window reaches back from (§2 — never read directly here
             beyond this one call).
         count: how many daily readings to emit — the bound, defaulting to the module constant.
+        count_hourly: how many recent hourly readings to append, ending at the current hour.
 
     Returns:
         ``count`` readings, ascending by interval start, each carrying a non-None integer
@@ -225,8 +235,11 @@ def build_reading_series(
     calibration = _CALIBRATION_BY_SPECIES[species]
 
     readings: list[CalibratedReading] = []
-    # Walk oldest-to-newest so the emitted order is ascending; draw one value per day.
-    for day_offset in range(count - 1, -1, -1):
+    # Walk oldest-to-newest so the emitted order is ascending; draw one value per day. The daily
+    # series ends YESTERDAY, not today: the hourly tail below owns today, so the two never
+    # write the same interval_start (a collision would silently drop a reading via the Dedup_Key
+    # and make the count depend on the current hour). So the range is count..1, not count-1..0.
+    for day_offset in range(count, 0, -1):
         on = today - dt.timedelta(days=day_offset)
         interval_start = dt.datetime.combine(on, dt.time(_READING_HOUR), tzinfo=dt.UTC)
         sub_index = generator.randint(_SUB_INDEX_MIN, _SUB_INDEX_MAX)
@@ -249,6 +262,43 @@ def build_reading_series(
                 ratification_status=_RATIFIED,
                 ingested_at=interval_start,
                 archive_id=f"seed-{site.site_code}-{species}-{on.isoformat()}",
+                sub_index=sub_index,
+                band="Moderate",
+            )
+        )
+
+    # Recent hourly tail: readings for the last RECENT_HOURLY_READINGS hours ending at the
+    # current hour, so the newest reading is inside the serving freshness window at any run
+    # time (§2 — the instant comes from the injected clock, the values from the injected
+    # generator, so the whole series stays reproducible). Values are drawn from the SAME
+    # distribution as the daily series, so a "current" figure is coherent with the trend the
+    # history shows rather than a spike.
+    now = clock.now()
+    current_hour = now.replace(minute=0, second=0, microsecond=0)
+    for hour_offset in range(count_hourly - 1, -1, -1):
+        interval_start = current_hour - dt.timedelta(hours=hour_offset)
+        sub_index = generator.randint(_SUB_INDEX_MIN, _SUB_INDEX_MAX)
+        value = float(sub_index)
+        readings.append(
+            CalibratedReading(
+                key=DedupKey(
+                    site_code=site.site_code,
+                    species=species,
+                    interval_start=interval_start,
+                    duration=_INTERVAL_DURATION,
+                ),
+                reported_value=value,
+                corrected_value=value,
+                units=units,
+                quality_flag=QualityFlag.CALIBRATED,
+                confidence=Confidence.HIGH,
+                calibration_strategy=calibration,
+                breakpoint_table=_BREAKPOINT_TABLE,
+                ratification_status=_RATIFIED,
+                ingested_at=interval_start,
+                archive_id=(
+                    f"seed-{site.site_code}-{species}-{interval_start.isoformat()}"
+                ),
                 sub_index=sub_index,
                 band="Moderate",
             )
@@ -426,6 +476,7 @@ def _port(runtime: Runtime, name: str) -> object:
 __all__ = [
     "DEMO_SITES",
     "READINGS_PER_SITE_PER_SPECIES",
+    "RECENT_HOURLY_READINGS",
     "DemoSite",
     "SeedSummary",
     "build_reading_series",
