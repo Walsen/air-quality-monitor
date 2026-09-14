@@ -1230,3 +1230,42 @@ is not the whole of the safety argument.
    gate a deterministic build.
 10. THE Service SHALL record, for every guardrail rejection observed in testing, the utterance class that
     produced it, so the negative suite grows from real rejections rather than from imagination alone.
+### Requirement 36: Topic Scoping
+
+**User Story:** As a user, I want the advisor to stick to air quality and my breathing, so that it is a
+focused tool rather than a general chatbot, and off-topic answers do not dilute or misrepresent what it
+is for.
+
+This requirement is the counterpart to Requirement 18, and the two must not be conflated. Requirement 18
+resists a request that tries to *change* the agent's scope or disable a control; this requirement governs
+an ordinary, well-intentioned request that is simply *outside* the agent's remit — "write me some code",
+"tell me a joke", "who won the match". Requirement 18 is a security control; this is a product-behaviour
+control.
+
+It is deliberately a SOFTER control than the Requirement 8 / Requirement 34 safety chain, and the
+acceptance criteria say so. An off-topic answer is an embarrassment, not a harm, so scoping is asked for
+in the system prompt and checked behaviourally, rather than enforced by withholding output. A hard
+classifier is explicitly rejected because it would misfire on the in-scope weather, pollen and
+exposure-timing questions the service is required to answer.
+
+#### Acceptance Criteria
+
+1. THE Service SHALL treat as IN scope any request about air quality and its bearing on the person's
+   breathing, including the weather, season and pollen insofar as they affect the air or the person's
+   exposure, and the timing of exposure.
+2. WHEN an utterance is outside that remit — including requests to write code, do unrelated maths or
+   homework, draft correspondence, produce jokes, poems or stories, or give tax, legal, financial or
+   general-medical advice unrelated to air-quality exposure — THE Service SHALL decline in one plain
+   sentence that names what it is for, and SHALL NOT attempt the off-topic task even in part.
+3. WHERE a single utterance mixes an off-topic request with an in-scope one, THE Service SHALL answer the
+   in-scope part and leave the rest, so a legitimate air-quality question is never refused for the company
+   it keeps.
+4. THE Service SHALL express this scoping through the system prompt rather than a separate topic
+   classifier, so that the in-scope weather, pollen and exposure cases of Requirements 13, 14 and 17 are
+   not caught by it.
+5. THE Service SHALL pin the scoping instruction with a deterministic test over the system prompt as
+   data — asserting the instruction and its named off-topic categories are present, and that the wording
+   introduces no Forbidden_Claim — so that softening it fails the offline suite.
+6. THE Service SHALL check the off-topic *behaviour* with an LLM-as-judge case governed by Requirement
+   35.9: the verdict is advisory and SHALL NOT gate the offline build, because scoping is not a
+   deterministic safety control and a non-deterministic judge cannot gate a deterministic suite.
