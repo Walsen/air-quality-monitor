@@ -47,6 +47,19 @@ _AIR_QUALITY_PATH = "/v1/air-quality/me"
 _HISTORY_PATH = "/v1/air-quality/history"
 _PROFILE_PATH = "/v1/profile/me"
 _SYMPTOMS_PATH = "/v1/symptoms/me"
+
+
+def _z_instant(when: dt.datetime) -> str:
+    """Format a UTC instant as Service 2 demands it: whole-second precision, `Z` suffix.
+
+    Service 2's `parse_instant` accepts ONLY the `Z` form (its Req 19.13) and rejects a
+    `+00:00` offset with a 400. Python's `datetime.isoformat()` emits `+00:00` for a UTC-aware
+    instant, so sending it straight made every history call fail with a rejected parameter —
+    the advisor then reported history "unavailable" though the data was there. Normalise to UTC,
+    drop microseconds, and render the `Z` form the contract wants.
+    """
+    utc = when.astimezone(dt.UTC).replace(microsecond=0)
+    return utc.isoformat().replace("+00:00", "Z")
 """Service 2's routes. `symptoms` is PLURAL — the singular spelling 404s."""
 
 _IDEMPOTENCY_HEADER = "Idempotency-Key"
@@ -99,8 +112,8 @@ class HttpServingClient:
         """
         params: dict[str, str] = {
             "siteCode": site_code,
-            "startTime": start.isoformat(),
-            "endTime": end.isoformat(),
+            "startTime": _z_instant(start),
+            "endTime": _z_instant(end),
         }
         if species:
             if len(species) > 1:

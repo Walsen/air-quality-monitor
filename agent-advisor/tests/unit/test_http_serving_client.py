@@ -138,8 +138,13 @@ def test_history_sends_the_site_and_the_window_in_camel_case() -> None:
     _client(recorder).history(_CREDENTIAL, "AQM1", _START, _END)
     params = recorder.requests[0].url.params
     assert params["siteCode"] == "AQM1"
-    assert params["startTime"] == _START.isoformat()
-    assert params["endTime"] == _END.isoformat()
+    # Service 2's parse_instant accepts ONLY the `Z` suffix (its Req 19.13), and rejects a
+    # `+00:00` offset with 400 — which is exactly the contract mismatch that made every history
+    # call fail in the deployed system. So the client must emit whole-second, Z-suffixed UTC.
+    assert params["startTime"] == "2026-06-24T12:00:00Z"
+    assert params["endTime"] == "2026-07-01T12:00:00Z"
+    assert params["startTime"].endswith("Z")
+    assert "+00:00" not in params["startTime"]
 
 
 def test_history_omits_species_when_none_is_asked_for() -> None:
