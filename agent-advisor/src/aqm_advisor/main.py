@@ -105,6 +105,7 @@ def _build_model(config: AdvisorConfig) -> Model:
             model_max_output_tokens=config.model_max_output_tokens,
             request_timeout_seconds=config.request_timeout_seconds,
             model_credential_path=config.model_credential_path,
+            model_prompt_caching=config.model_prompt_caching,
         )
     return cast("Model", _adapter("model", name)())  # type: ignore[operator]  # scripted
 
@@ -144,6 +145,7 @@ def build_from_config(config: AdvisorConfig) -> object:
         forbidden_patterns=forbidden,
         emergency_guidance=emergency,
         system_prompt=system_prompt,
+        tools_concurrent=config.tools_concurrent,
     )
     run_turn = build_turn_runner(make_pipeline=make_pipeline)
 

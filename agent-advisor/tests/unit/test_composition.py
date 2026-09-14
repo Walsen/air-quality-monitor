@@ -23,10 +23,31 @@ separately rather than folded in, because a set comparison passes over exactly t
 from __future__ import annotations
 
 import ast
+import datetime as dt
 import pathlib
+from typing import cast
 
-from aqm_advisor.composition import ADAPTER_FACTORIES
+from pydantic import SecretStr
+from strands.models import Model
+from strands.tools.executors.concurrent import ConcurrentToolExecutor
+from strands.tools.executors.sequential import SequentialToolExecutor
+
+import aqm_advisor.composition as composition
+from aqm_advisor.adapters.local import (
+    InMemoryAdviceAuditStore,
+    LocalGuardrailChecker,
+    ScriptedServingClient,
+    canned_air_quality,
+)
+from aqm_advisor.composition import (
+    ADAPTER_FACTORIES,
+    build_pipeline_factory,
+    identity_from_snapshot,
+)
 from aqm_advisor.config.loader import REGISTERED_ADAPTERS
+from aqm_advisor.domain.models import AdvisoryRequest
+from aqm_advisor.observability.logging import get_logger
+from aqm_advisor.ports.clock import FixedClock
 
 
 def test_every_registered_port_has_a_factory_group() -> None:
@@ -135,3 +156,63 @@ def test_the_production_invoke_runs_the_tool_loop_then_takes_structured_output()
         "the production invoke must not call the deprecated `agent.structured_output(...)`, "
         "which skips the tool loop and leaves the model unable to ground its answer"
     )
+
+
+# --- tool executor: sequential by default, because our tools are ordered ------
+
+
+def _capture_tool_executor(
+    monkeypatch: object, *, tools_concurrent: bool
+) -> object:
+    """Build one pipeline through the real factory and return the executor the Agent got.
+
+    The Agent is constructed inside the factory closure and not otherwise reachable, so a
+    recording stand-in for `composition.Agent` captures the `tool_executor` kwarg. Everything
+    else is a local fake, so no model, network or credential is involved.
+    """
+    captured: dict[str, object] = {}
+
+    class _RecordingAgent:
+        def __init__(self, **kwargs: object) -> None:
+            captured["tool_executor"] = kwargs.get("tool_executor")
+
+        def __call__(self, *_a: object, **_k: object) -> object:  # pragma: no cover - unused
+            raise AssertionError("the recording agent is not meant to be invoked")
+
+    monkeypatch.setattr(composition, "Agent", _RecordingAgent)  # type: ignore[attr-defined]
+
+    served = canned_air_quality()
+    factory = build_pipeline_factory(
+        identity_for=identity_from_snapshot,
+        serving_client=ScriptedServingClient(air_quality_body=served),
+        guardrail=LocalGuardrailChecker(),
+        audit_store=InMemoryAdviceAuditStore(),
+        model=cast(Model, object()),  # never invoked; the recording agent captures and stops
+        clock=FixedClock(dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)),
+        logger=get_logger("test.composition"),
+        red_flag_rules=(),
+        forbidden_patterns=(),
+        emergency_guidance="call your local emergency number now.",
+        system_prompt="a system prompt long enough to be non-trivial for the loader.",
+        tools_concurrent=tools_concurrent,
+    )
+    factory(
+        AdvisoryRequest(utterance="How is the air?", credential=SecretStr("cred"))
+    )
+    return captured["tool_executor"]
+
+
+def test_tools_run_sequentially_by_default(monkeypatch: object) -> None:
+    # Strands defaults to a ConcurrentToolExecutor, but our per-turn tools are NOT safe to run
+    # concurrently: `history` depends on the `retrieved_site_code` that `air_quality` sets, and
+    # the tools share a mutable recorder and `nonlocal` counters that are not thread-safe. So
+    # the correct executor is sequential, and it is pinned rather than left to the default.
+    executor = _capture_tool_executor(monkeypatch, tools_concurrent=False)
+    assert isinstance(executor, SequentialToolExecutor)
+
+
+def test_concurrency_can_be_enabled_by_configuration(monkeypatch: object) -> None:
+    # The flag exists so the choice can be revisited once the tools are made thread-safe and the
+    # air_quality -> history dependency is broken. Until then it stays off by default.
+    executor = _capture_tool_executor(monkeypatch, tools_concurrent=True)
+    assert isinstance(executor, ConcurrentToolExecutor)

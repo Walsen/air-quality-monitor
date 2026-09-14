@@ -36,7 +36,7 @@ authentication across three deployed services, the acceptance criteria emphasise
 identity, data protection, retention, erasure, and least privilege as much as the
 happy path.
 
-Target: AWS account 862307432587, region us-east-1. The advisor runtime is
+Target: AWS account <AWS_ACCOUNT_ID>, region us-east-1. The advisor runtime is
 `aqmadvisor_aqm_advisor-ws73wzAfQJ`. The offline test guarantee (suites pass with
 no cloud credentials and no network beyond localhost; CDK synthesis resolves
 nothing from an account) must be preserved throughout.

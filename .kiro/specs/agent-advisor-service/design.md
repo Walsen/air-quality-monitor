@@ -34,6 +34,7 @@ text, applied after generation, at a point no return path can bypass — and it 
 | DD9 | The credential travels in a narrow carrier that is never interpolated into a prompt, and is treated as **opaque** | AgentCore validates it inbound and Service 2 validates it on receipt; a third parse adds a place for three things to disagree and a component that can log a claim (A4a) |
 | DD10 | Background work uses the AgentCore SDK's `add_async_task` / `complete_async_task`; the entrypoint never blocks | A blocking handler also blocks `/ping`, and a blocked ping is read as an unhealthy session — termination, or the entrypoint re-invoked mid-turn (A11a) |
 | DD11 | No AgentCore Memory and no session store; prior turns arrive as a parameter | Its long-term strategies extract health facts asynchronously into storage this spec does not govern (A12) |
+| DD12 | **Topic scoping is asked for in the system prompt and checked behaviourally, not enforced by a hard classifier or an output withholding** | Req 36: an off-topic answer is an embarrassment, not a harm, so the proportionate control is a prompt instruction pinned by a data-level test plus an advisory (non-gating, Req 35.9) LLM-as-judge case. A classifier would misfire on the in-scope weather/pollen/exposure questions of Req 13/14/17; withholding is reserved for the Req 8/34 safety chain, which is a different severity |
 | DD12 | Degradation composes a response from retrieved data **without prose** rather than failing the turn | Req 21.2: the envelope, the basis and any escalation are still owed to the user when the model cannot answer |
 | DD13 | The exposure–symptom association is **Service 2's** computation, triggered asynchronously and never awaited in a turn | Deterministic numeric inference over two time series that service already holds; behind a language model it would be unreproducible and untestable (Req 33.1, A5) |
 
@@ -858,6 +859,9 @@ state a single delivery would have produced.
 **Validates: Requirement 32.4c**
 
 ### Property 18: Injection does not move the guardrails
+
+> Distinct from Req 36 topic scoping (DD12): this property is about input that tries to *change* the scope or disable a control (Req 18); Req 36 is about declining an ordinary request that is merely *outside* the remit. This property gates the build; the Req 36 behavioural check is advisory.
+
 
 *For all* utterances containing instruction-shaped text — attempts to change framing, disable a check,
 reveal instructions, or widen scope — the guardrail verdict, the advisory scope, and the tool set are the

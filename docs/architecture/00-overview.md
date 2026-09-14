@@ -5,6 +5,9 @@
 > lives in [`../research/FINDINGS.md`](../research/FINDINGS.md). This document is the
 > **build-facing** design derived from it.
 
+>
+> **Update since this investigation.** This document is the original design study. The time-series store it names, *Amazon Timestream (LiveAnalytics)*, is now closed to new customers; the current target for the readings store is **Amazon Timestream for InfluxDB** (managed InfluxDB). DynamoDB remains the store for profiles, the symptom-log diary, and the sensor registry. See [`04-target-architecture.md`](04-target-architecture.md) for the up-to-date target.
+
 ## Problem framing
 
 We are building an **AI Air Quality Monitor agent** that advises people with respiratory illness.
@@ -30,7 +33,7 @@ To develop and demo it without owning physical hardware, we need two independent
    ┌───────────────────────────────────────────────────────────┐
    │              Ingestion & Serving Service (Service 2)        │
    │  IoT Core ─▶ Rule ─▶ Lambda(validate/calibrate/AQI) ─▶      │
-   │  Timestream (readings) + DynamoDB (meta + user profiles) +  │
+   │  InfluxDB (readings) + DynamoDB (meta + user profiles) +    │
    │  S3 (raw archive).  Serving API (HTTP API + Cognito).       │
    └───────────────────────────┬───────────────────────────────┘
                     per-user customized JSON │  (tool call)
@@ -38,8 +41,20 @@ To develop and demo it without owning physical hardware, we need two independent
                  ┌─────────────────────────┐
                  │  AI Air Quality Monitor  │   (the agent — separate)
                  │  agent (Amazon Bedrock)  │
+                 └───────────┬─────────────┘
+                   natural-language advice │
+                                             ▼
+                 ┌─────────────────────────┐
+                 │      Web chatbot         │   (user-facing client)
+                 │  (the person chatting)   │
                  └─────────────────────────┘
 ```
+
+> The **Web chatbot** is how a person actually interacts with the system: they ask
+> about air quality and their exposure, and it relays the agent's advice. It is a
+> thin client over the agent — the same agent could later be fronted by a **mobile
+> app** (push alerts when local AQI crosses a personal threshold) with no change to
+> Services 1 and 2.
 
 The two services share **one contract**: the sensor data schema (the reference network contract —
 see Service 1). This lets us swap the simulator for a live public air-quality feed later with no
@@ -64,7 +79,7 @@ a documented JSON contract we can reproduce exactly.
 | D3 | **Calibration/correction happens in Service 2**, before AQI/agent inference | uncalibrated low-cost PM2.5 MAE ~17 µg/m³ > WHO limit (research SQ5) |
 | D4 | **Per-user customization** = geo-filter + condition-weighting + personal thresholds | research SQ4/SQ7 + condition personalization |
 | D5 | Serving API is **authenticated (Cognito) and non-diagnostic** | health data + FDA general-wellness guardrails (research cycle 6) |
-| D6 | **Serverless-first** (IoT Core, Lambda, Timestream, DynamoDB, HTTP API) | scales to zero for demo; pay-per-use; low ops |
+| D6 | **Serverless-first** (IoT Core, Lambda, InfluxDB, DynamoDB, HTTP API) | scales to zero for demo; pay-per-use; low ops |
 
 ## Approximate cost summary (us-east-1, USD/month — ORDER OF MAGNITUDE)
 
@@ -78,7 +93,7 @@ a documented JSON contract we can reproduce exactly.
 | **Pilot** | 500 | 1 min | ~22M | **~$40–120** |
 | **City scale** | 5,000 | 1 min | ~216M | **~$300–700** |
 
-Main cost drivers: IoT Core messaging (~$1/million msgs), Timestream writes+storage, API Gateway
+Main cost drivers: IoT Core messaging (~$1/million msgs), the InfluxDB instance + storage, API Gateway
 requests, Lambda duration. **Cost lever:** publish 1‑min data but batch or pre-average to hourly to
 cut message/write counts ~60×. Detailed per-service breakdowns are in the two service docs.
 
@@ -91,11 +106,11 @@ a prerequisite for the agent that consumes Service 2.
 ## Recommended build order
 
 1. Service 1 simulator emitting the reference contract schema over MQTT (local first, then Fargate).
-2. Service 2 ingestion path (IoT Core → Lambda → Timestream) validated against the simulator.
+2. Service 2 ingestion path (IoT Core → Lambda → InfluxDB readings store) validated against the simulator.
 3. Service 2 serving API + Cognito + per-user customization.
 4. Point the Bedrock agent at the serving API as a tool.
 5. (Optional) swap in a live public air-quality feed alongside the simulator.
 
 ## Provenance
 
-Sensor facts: publicly documented municipal air-quality network APIs and commercial low-cost sensor datasheets, openly licensed for reuse (contract shape captured in Service 1). AWS patterns: [Serverless IoT backend ref-arch](https://github.com/freethinkingit/lambda-refarch-iotbackend), [AWS IoT event-driven architectures](https://aws.amazon.com/fr/blogs/architecture/building-event-driven-architectures-with-iot-sensor-data/). Pricing: [IoT Core](https://aws.amazon.com/iot-core/pricing/), [Timestream](https://aws.amazon.com/timestream/pricing/).
+Sensor facts: publicly documented municipal air-quality network APIs and commercial low-cost sensor datasheets, openly licensed for reuse (contract shape captured in Service 1). AWS patterns: [Serverless IoT backend ref-arch](https://github.com/freethinkingit/lambda-refarch-iotbackend), [AWS IoT event-driven architectures](https://aws.amazon.com/fr/blogs/architecture/building-event-driven-architectures-with-iot-sensor-data/). Pricing: [IoT Core](https://aws.amazon.com/iot-core/pricing/), [Timestream for InfluxDB](https://aws.amazon.com/timestream/pricing/influxdb/).

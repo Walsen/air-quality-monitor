@@ -75,11 +75,17 @@ if app.node.try_get_context("deploy_ingestion"):
     )
 
 # Web Chatbot: a browser chat UI in front of the advisor runtime on AgentCore.
-# The runtime ARN defaults to the deployed advisor but can be overridden by
-# context; the shared access key is required at deploy (never committed).
+# The runtime ARN defaults to the deployed advisor in the *current* account
+# (derived from CDK_DEFAULT_ACCOUNT/REGION, so no account id is hardcoded here)
+# but can be overridden by context; the shared access key is required at deploy
+# (never committed). With no resolved account (offline synth without
+# credentials) the default is None, and the stack requires
+# `-c chatbot_runtime_arn=<arn>` at deploy — synth still succeeds.
+_ADVISOR_RUNTIME_NAME = "aqmadvisor_aqm_advisor-ws73wzAfQJ"
 _DEFAULT_ADVISOR_RUNTIME_ARN = (
-    "arn:aws:bedrock-agentcore:us-east-1:862307432587:runtime/"
-    "aqmadvisor_aqm_advisor-ws73wzAfQJ"
+    f"arn:aws:bedrock-agentcore:{REGION}:{ACCOUNT}:runtime/{_ADVISOR_RUNTIME_NAME}"
+    if ACCOUNT
+    else None
 )
 WebChatbotStack(
     app,

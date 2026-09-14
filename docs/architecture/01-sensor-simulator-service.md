@@ -112,7 +112,7 @@ Toggleable scenarios so we can drive the agent's advice logic:
 
 ### 3.4 Control & config
 - Config file / env: sensor count, geo box, cadence (1‑min native, hourly publish), scenario schedule, random seed (**deterministic replay** for reproducible demos).
-- Time modes: **real-time** (1 msg/sensor/min) and **fast-forward / backfill** (generate a historical range quickly to seed Timestream).
+- Time modes: **real-time** (1 msg/sensor/min) and **fast-forward / backfill** (generate a historical range quickly to seed the readings store).
 
 ## 4. Interfaces (two modes)
 | Mode | Transport | Use |

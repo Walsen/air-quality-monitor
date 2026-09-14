@@ -18,7 +18,7 @@ with `devbox run --`). There is one documented way to run each thing.
 
 ## What is deployed
 
-Target: **AWS account 862307432587, region us-east-1.**
+Target: **AWS account <AWS_ACCOUNT_ID>, region us-east-1.**
 
 CloudFormation stacks:
 
@@ -45,13 +45,13 @@ Also live:
 Do these once before deploying; none can be done by the deploying agent inside
 the CDK.
 
-1. **An SSO / admin identity for account 862307432587 in us-east-1.** The
+1. **An SSO / admin identity for account <AWS_ACCOUNT_ID> in us-east-1.** The
    workspace resolves AWS through `AWS_PROFILE`; export the profile that assumes
    the deploy role before running any deploy recipe.
-2. **CDK bootstrap present** in `aws://862307432587/us-east-1` (the `CDKToolkit`
+2. **CDK bootstrap present** in `aws://<AWS_ACCOUNT_ID>/us-east-1` (the `CDKToolkit`
    stack). Without it a deploy fails with
    `SSM parameter /cdk-bootstrap/.../version not found`. Bootstrap from an admin
-   identity: `cdk bootstrap aws://862307432587/us-east-1`.
+   identity: `cdk bootstrap aws://<AWS_ACCOUNT_ID>/us-east-1`.
 3. **Anthropic model access enabled**, once per account, in the Bedrock console
    (Model access → Claude Sonnet 4.6 → submit the use-case form). There is no API
    the CDK can call for this.
@@ -125,7 +125,7 @@ env even to synth. Deploy it with the same Cognito client id Service 2 validates
 ```bash
 cd agent-advisor/infra
 export TMPDIR=<roomy-path>            # host /tmp is a small tmpfs
-export CDK_DEPLOY_ACCOUNT=862307432587
+export CDK_DEPLOY_ACCOUNT=<AWS_ACCOUNT_ID>
 export CDK_DEPLOY_REGION=us-east-1
 export AQM_ADVISOR_MODEL_ID=us.anthropic.claude-sonnet-4-6
 export AQM_COGNITO_CLIENT_ID=<AppClientId>

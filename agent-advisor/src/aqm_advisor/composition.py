@@ -30,6 +30,8 @@ from typing import Final
 
 from strands import Agent
 from strands.models.model import Model
+from strands.tools.executors.concurrent import ConcurrentToolExecutor
+from strands.tools.executors.sequential import SequentialToolExecutor
 from strands.types.exceptions import StructuredOutputException
 
 from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
@@ -136,6 +138,7 @@ def build_pipeline_factory(
     forbidden_patterns: Sequence[str],
     emergency_guidance: str,
     system_prompt: str,
+    tools_concurrent: bool = False,
 ) -> Callable[[AdvisoryRequest], AdvisoryTurnPipeline]:
     """Return a factory that builds ONE pipeline, and one agent, per turn.
 
@@ -185,12 +188,27 @@ def build_pipeline_factory(
 
         # The agent is per turn because its TOOLS are. A process-wide agent would need the
         # credential as a call parameter, which is exactly what Req 5.2 forbids.
+        #
+        # THE TOOL EXECUTOR IS SEQUENTIAL BY DEFAULT, AND THAT IS A CORRECTNESS DECISION, NOT A
+        # PERFORMANCE ONE. Strands defaults to a ConcurrentToolExecutor, but these tools are not
+        # safe to run concurrently: `history` reads the `retrieved_site_code` that `air_quality`
+        # sets earlier in the same turn and refuses to run without it, and the tools share a
+        # single mutable `RetrievalRecorder` plus `nonlocal` counters
+        # (`air_quality_calls`) whose read-modify-write is not atomic. Running them on
+        # separate threads would race the
+        # recorder and could execute `history` before its site is known. `tools_concurrent`
+        # exists so the choice can be revisited once the recorder is made thread-safe and the
+        # air_quality -> history dependency is removed; until then it stays off.
+        tool_executor = (
+            ConcurrentToolExecutor() if tools_concurrent else SequentialToolExecutor()
+        )
         agent = Agent(
             model=model,
             tools=list(tools),
             system_prompt=system_prompt,
             hooks=[VerificationHook(ledger, None)],
             callback_handler=None,
+            tool_executor=tool_executor,
         )
 
         def invoke() -> ModelGeneration:

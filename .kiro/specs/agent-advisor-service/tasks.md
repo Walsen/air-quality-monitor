@@ -1675,8 +1675,25 @@ directory.
       trajectory assertions pass; ask the user if questions arise
     - _Requirements: 26.4, 26.9, 35.7_
 
+- [x] 22. Topic scoping (post-plan enhancement)
+  - [x] 22.1 Add a "Stay in scope" section to the system prompt
+    - Name the in-scope subject (air quality and its bearing on breathing, incl. weather and pollen as
+      they affect exposure) and the off-topic categories to decline in one sentence; keep the mixed
+      "starts off-topic, lands on the air" case in scope; ensure the wording trips no Forbidden_Claim
+      pattern
+    - _Requirements: 36.1, 36.2, 36.3, 36.4_
+  - [x] 22.2 Pin the scoping instruction with deterministic prompt tests
+    - Assert the section and its named off-topic categories are present, weather and pollen stay in scope,
+      and `forbidden_matches` over the prompt is empty (`tests/unit/test_tools_and_prompt.py`)
+    - _Requirements: 36.5_
+  - [x] 22.3 Add an advisory LLM-as-judge off-topic decline case
+    - A judged, non-gating case in `tests/integration/test_live_eval.py` that skips with no live model,
+      asserting only that the evaluation ran (Req 35.9), never the verdict
+    - _Requirements: 36.6_
+
 ## Notes
 
+- **Task 22 (topic scoping) is a post-plan enhancement** added after the original build completed; it is intentionally NOT in the Task Dependency Graph below, which records the original build waves. It depends only on the finished pipeline (system prompt + test harness) and was built red-green-refactor like the rest.
 - Tasks marked with `*` are optional and can be skipped for a faster MVP. Skipping them means skipping the
   property tests that make grounding, escalation, guardrail totality, minimisation and determinism
   verifiable, so treat them as deferred rather than unnecessary.

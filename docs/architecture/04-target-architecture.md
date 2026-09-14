@@ -21,10 +21,15 @@ explicit delta between the two.
 
 ## Full deployment diagram
 
-![Target AWS architecture — the full system including the IoT Core ingestion path, Timestream, and the services the POC deferred (planned components marked)](images/04-target-architecture.jpeg)
+![Target AWS architecture — the full system including the IoT Core ingestion path, an InfluxDB readings store, and the services the POC deferred (planned components marked)](images/04-target-architecture.jpeg)
+
+> **Note.** The diagram image predates the store change and may still label the
+> readings store "Timestream"; the current target is **Amazon Timestream for
+> InfluxDB** (managed InfluxDB), described below. The text here is authoritative.
 
 `readings*`: in the POC the readings live in a DynamoDB table seeded with a bounded
-history; in the target they are written live to Timestream by the ingest Lambda.
+history; in the target they are written live to **Amazon Timestream for InfluxDB**
+(managed InfluxDB) by the ingest Lambda.
 
 ## The full ingestion path (the heart of what's deferred)
 
@@ -40,7 +45,8 @@ history; in the target they are written live to Timestream by the ingest Lambda.
    applies **humidity-aware calibration** (low-cost PM2.5 is unusable raw),
    converts units, computes per-species **sub-indices**, a **NowCast**, and the
    **overall AQI + driving pollutant**, attaches a quality/confidence flag, and
-   writes **Timestream** (readings) + upserts **DynamoDB** (sensor registry).
+   writes the readings to **Amazon Timestream for InfluxDB** (managed InfluxDB) +
+   upserts **DynamoDB** (profiles, symptom-log, sensor-registry).
 4. **The serving Lambda** (unchanged from the POC in shape) joins those readings
    with the user's profile and, in the target, **enriches** with forecast/pollen
    data pulled via Lambda using keys from **Secrets Manager**.
@@ -57,7 +63,7 @@ replaces the *seeded* readings with a *live* pipeline feeding them.
 | **Per-device identity** | Per-device **X.509** certs, revocable | none deployed (dev cert generation exists locally) | Provision certs + IoT policies per `SiteCode`; the simulator already models per-sensor identity. |
 | **Message routing** | IoT Rules Engine (+ Kinesis at scale) | none | An IoT Rule → ingest Lambda; add Kinesis only when volume warrants. |
 | **Live ingest pipeline** | Ingest Lambda: validate → calibrate → AQI → store | **not deployed** (the calibration/AQI code exists and is tested; it just isn't wired to a cloud trigger) | Deploy the ingest handler behind the IoT Rule; the domain logic is done. |
-| **Readings store** | Amazon Timestream (purpose-built time-series) | DynamoDB table **seeded** with a bounded history (`just seed-readings`) | Swap the readings store adapter to a Timestream adapter behind the same port. |
+| **Readings store** | **Amazon Timestream for InfluxDB** (managed InfluxDB, purpose-built time-series) | DynamoDB table **seeded** with a bounded history (`just seed-readings`) | Swap the readings-store adapter to an InfluxDB adapter behind the same port; profiles, symptom-log and sensor-registry stay on DynamoDB. |
 | **Raw archive** | S3, immutable, lifecycle to Glacier | none deployed (the archive port + adapter exist) | Enable the IoT Rule's S3 action + the archive adapter. |
 | **Live feed pull** | EventBridge Scheduler → feed-poller Lambda | none (the pull interface exists in code, `AQM_ENABLE_PULL`) | Deploy the poller; supply the feed API key via Secrets Manager. |
 | **Enrichment** | Forecast + pollen APIs via Lambda | none (the enricher port exists; POC returns no forecast) | Wire the enricher adapter to real APIs; keys in Secrets Manager. |
@@ -77,7 +83,7 @@ incremental build-out, not a rewrite.
 | Service | Role | Why it was deferred |
 |---------|------|---------------------|
 | **AWS IoT Core** | Managed MQTT ingress + per-device X.509 auth + Rules Engine | The POC demonstrates the *advice* loop; a local broker was enough to exercise ingestion in tests. |
-| **Amazon Timestream** | Purpose-built readings time-series (memory + magnetic tiers) | A seeded DynamoDB table demonstrates the association loop without a second store to operate. |
+| **Amazon Timestream for InfluxDB** (managed InfluxDB) | Purpose-built readings time-series with time-window queries. (Timestream for LiveAnalytics is closed to new customers; the managed-InfluxDB engine is AWS's current time-series offering.) | A seeded DynamoDB table demonstrates the association loop without a second store to operate. |
 | **Kinesis Data Streams** | Ingest buffer/replay at high sensor volume | Only justified at pilot/city scale; skipped for a demo swarm. |
 | **EventBridge Scheduler (feed poller)** | Hourly pull of a live public feed | No live feed is connected in the POC. (EventBridge *is* used — for the association schedule.) |
 | **Amazon S3 (raw archive)** | Immutable raw payload store for replay/audit/ML | No live ingestion means no raw payloads to archive yet. |
@@ -90,11 +96,50 @@ incremental build-out, not a rewrite.
 
 The POC is nearly free (Lambda + DynamoDB + a gated Bedrock spend). The target's
 new cost drivers are **IoT Core messaging** (~$1/million messages) and
-**Timestream** writes + storage. The single biggest lever, per the investigation,
+**InfluxDB** (Timestream for InfluxDB) instance + storage. The single biggest lever, per the investigation,
 is to **publish at 1-minute resolution but batch/pre-average to hourly before
 publishing**, cutting message and write counts ~60×. Order-of-magnitude: a 20–50
 sensor demo stays under ~$10–30/mo; a 5,000-sensor city-scale deployment at
 1-minute cadence is ~$300–700/mo (see [`00-overview.md`](00-overview.md#approximate-cost-summary-us-east-1-usdmonth--order-of-magnitude)).
+
+## Advisor behaviour and optimizations
+
+The advisor (Service 3) is unchanged between POC and target in shape; what follows
+documents behaviour and tuning that already exist today. Full settings are in
+[`../../agent-advisor/README.md`](../../agent-advisor/README.md); the reasoning is
+in the `agent-engineering` and `agent-topic-scoping` steering files.
+
+**Topic scoping.** The advisor answers only on air quality and its bearing on
+breathing (including weather and pollen as they affect exposure). Off-topic
+requests — code, jokes, politics, general trivia, medical advice unrelated to
+air-quality exposure — are declined in one line that redirects to its purpose.
+This is asked for in the system prompt rather than a hard classifier, because an
+off-topic answer is embarrassing rather than dangerous and a classifier would
+misfire on the in-scope weather/pollen/exposure cases. A deterministic test pins
+the prompt instruction; the behaviour itself is checked by an advisory,
+non-gating LLM-as-judge case. This sits *alongside* the load-bearing safety chain
+(emergency escalation before the model, retrieval-grounding, and the
+forbidden-claim/medication-closure guardrail that withholds output), which is the
+control for what the advisor must never say.
+
+**Prompt caching (config-gated, off by default).** `AQM_ADVISOR_MODEL_PROMPT_CACHING`
+enables Bedrock prompt caching over the per-turn-invariant prefix — the system
+prompt plus the tool schemas (~1,700 tokens). The win is chiefly *within* a turn:
+the agentic loop re-sends that prefix on every tool round-trip, so caching pays
+even for a single user turn, and the cache TTL can also span rapid successive
+turns. Off by default because it is a paid-tier behaviour and the offline test
+suite must not depend on it.
+
+**Sequential tool execution (config-gated, off by default for concurrency).**
+`AQM_ADVISOR_TOOLS_CONCURRENT` is off, so the advisor pins a *sequential* tool
+executor. This is a correctness decision, not a performance one: Strands defaults
+to concurrent execution, but the retrieval tools are not safe to run in parallel —
+`history` depends on the site `air_quality` retrieves earlier in the same turn,
+and the tools share per-turn state that is not thread-safe. Enabling true
+parallelism is a future step gated on making that state thread-safe and removing
+the `air_quality → history` dependency; the broader optimization roadmap (parallel
+tools, context offloading, service tiers, streaming, conversation management) lives
+in the `agent-engineering` steering file.
 
 ## Sequencing to get from the POC to the target
 
@@ -102,8 +147,9 @@ sensor demo stays under ~$10–30/mo; a 5,000-sensor city-scale deployment at
    endpoint with per-device X.509 certs.
 2. **Stand up IoT Core + an IoT Rule** → the ingest Lambda (the calibration/AQI
    domain code already exists and is tested), writing to the readings store.
-3. **Introduce Timestream** behind the readings-store port and migrate reads off
-   the seeded DynamoDB table.
+3. **Introduce Amazon Timestream for InfluxDB** behind the readings-store port and
+   migrate reads off the seeded DynamoDB table (profiles/diary/registry stay on
+   DynamoDB).
 4. **Enable the raw-archive S3 action** and the enrichment + secrets path.
 5. **Harden the edge** (WAF, usage plans) and add the managed **Bedrock
    guardrail** as the second enforcement point.

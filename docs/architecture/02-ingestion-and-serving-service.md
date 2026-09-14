@@ -18,12 +18,12 @@ agent over an authenticated API.
 | Concern | Service | Why |
 |---------|---------|-----|
 | Device connectivity / ingestion | **AWS IoT Core** | Managed MQTT, per-device X.509 auth, Rules Engine to route messages; scales to zero |
-| Message routing | **IoT Rules** | SQL-like routing → Lambda / Kinesis / Timestream; no glue servers |
+| Message routing | **IoT Rules** | SQL-like routing → Lambda / Kinesis; no glue servers |
 | Stream buffer (high volume) | **Kinesis Data Streams** *(optional, at scale)* | smooths spikes, enables replay; skip for demo |
 | Processing / business logic | **AWS Lambda** | validate, calibrate, AQI compute, per-user shaping; pay-per-invoke |
 | Scheduled pull (live public feed) | **EventBridge Scheduler → Lambda** | hourly poll of `/SensorData`; matches the feed's hourly cadence |
-| Time-series store | **Amazon Timestream (LiveAnalytics)** | purpose-built for sensor time-series; memory tier for recent + magnetic for history; cheap writes, time-window queries |
-| Metadata + user profiles | **DynamoDB** | sensor registry, user condition/prefs/thresholds; single-digit-ms lookups for per-request personalization |
+| Time-series store (readings) | **Amazon Timestream for InfluxDB** (managed InfluxDB) | purpose-built for sensor time-series; time-window queries. Timestream for LiveAnalytics is closed to new customers, so the managed-InfluxDB engine is the current choice. |
+| Metadata + user profiles + diary | **DynamoDB** | sensor registry, user profiles (condition/prefs/thresholds), and the symptom-log diary; single-digit-ms key lookups for per-request personalization |
 | Raw archive / data lake | **Amazon S3** | immutable raw JSON (replay, audit, ML later); lifecycle to Glacier |
 | Serving API | **API Gateway (HTTP API)** | cheap, low-latency REST for the agent tool call |
 | AuthN/Z | **Amazon Cognito** (+ IAM, optional WAF) | user identity → JWT; scopes per-user data; health data must be protected |
@@ -42,11 +42,11 @@ agent over an authenticated API.
   │  IoT Core    ├─────────────▶│  Ingest      │◀─────────────────────────────────┘
   │ (MQTT broker)│              │  Lambda      │
   └──────────────┘              │  validate/   │
-        │ (raw copy)            │  calibrate/  │──▶ Timestream (readings: conc + AQI + quality_flag)
+        │ (raw copy)            │  calibrate/  │──▶ InfluxDB   (readings: conc + AQI + quality_flag)
         ▼                       │  AQI compute │──▶ DynamoDB   (sensor registry)
      S3 (raw archive)           └──────────────┘──▶ S3         (processed archive)
 
-  Agent (Bedrock)  ──JWT──▶  API Gateway (HTTP API) ──▶  Serving Lambda ──▶ Timestream + DynamoDB
+  Agent (Bedrock)  ──JWT──▶  API Gateway (HTTP API) ──▶  Serving Lambda ──▶ InfluxDB + DynamoDB
                                           │                     │  join readings × user profile
                                        Cognito              (+ forecast/pollen enrich)
                                                                  ▼
@@ -56,7 +56,7 @@ agent over an authenticated API.
 ### Data flow
 1. Sensor publishes `/SensorData` object to `aqm/sensors/{SiteCode}/data` (MQTT) **or** poller pulls it hourly.
 2. IoT Rule copies raw → S3 and invokes the **Ingest Lambda**.
-3. Ingest Lambda: schema-validate → dedup → **RH-aware calibration/correction** → compute **AQI sub-index + driving pollutant** → attach `quality_flag`/confidence → write Timestream + upsert DynamoDB registry.
+3. Ingest Lambda: schema-validate → dedup → **RH-aware calibration/correction** → compute **AQI sub-index + driving pollutant** → attach `quality_flag`/confidence → write the readings to InfluxDB + upsert the DynamoDB registry.
 4. **Serving Lambda** (behind API Gateway + Cognito) answers agent queries with **per-user customized** payloads.
 
 ## 4. Per-user customization (the differentiator)
@@ -89,7 +89,7 @@ the user's profile** (DynamoDB) to tailor the response:
 ## 5. Security & compliance (non-negotiable)
 - **The serving API is network-exposed and returns personal health-adjacent data → it MUST be authenticated.** Cognito user pools (JWT authorizer on API Gateway); no anonymous access.
 - Least-privilege IAM per Lambda; per-device X.509 certs on IoT Core (revocable).
-- Encrypt at rest (Timestream/DynamoDB/S3 KMS) and in transit (TLS/mTLS).
+- Encrypt at rest (InfluxDB/DynamoDB/S3 KMS) and in transit (TLS/mTLS).
 - **Health-data handling:** consent, data minimization, region residency; HIPAA/GDPR posture if profiles hold condition data (research cycle 6 guardrails).
 - **Non-diagnostic framing enforced at the API** (disclaimer field + no treatment/dosing output) to stay in the FDA *general-wellness* lane.
 - Optional **WAF** + API throttling/usage plans; secrets in Secrets Manager.
@@ -104,14 +104,14 @@ the user's profile** (DynamoDB) to tailor the response:
 |------|-----------|-------|
 | IoT Core messaging | hourly publish → ~36K msgs/mo (or ~2.1M at 1‑min) | <$1 (hourly) / ~$2 (1‑min) |
 | Lambda | ~ingest + serve invocations, low | ~$0 (free tier) |
-| Timestream | ~small writes + memory store + light queries | ~$5–20 |
+| Timestream for InfluxDB | ~smallest managed instance + light queries | ~$15–40 |
 | DynamoDB (on-demand) | tiny | ~$1–3 |
 | API Gateway (HTTP API) | agent queries, low volume | ~$1 |
 | S3 | raw archive, GBs | ~$1 |
 | Cognito | < 50 MAU | free tier |
 | **Total** | | **~$10–30** |
 
-**City scale — 5,000 sensors, 1‑min:** IoT messaging ~216M msgs ≈ ~$216; Timestream writes/storage
+**City scale — 5,000 sensors, 1‑min:** IoT messaging ~216M msgs ≈ ~$216; the InfluxDB instance + storage
 dominate next; realistic **~$300–700/mo**. **Lever:** batch/pre-average to hourly before publish to
 cut messages+writes ~60× (biggest single cost reduction).
 
@@ -119,7 +119,7 @@ cut messages+writes ~60× (biggest single cost reduction).
 - [ ] Ingest via MQTT (IoT Core → Rule → Lambda) **and** via scheduled reference-contract API poll.
 - [ ] Calibration/correction (RH-aware) applied before AQI + storage; quality/confidence flag persisted.
 - [ ] AQI sub-index + driving-pollutant computed per reading.
-- [ ] Timestream (readings) + DynamoDB (registry + user profiles) + S3 (raw) wired.
+- [ ] InfluxDB (readings) + DynamoDB (registry + user profiles + diary) + S3 (raw) wired.
 - [ ] Serving API behind Cognito; per-user geo + condition + threshold customization.
 - [ ] Forecast/pollen enrichment integrated.
 - [ ] Non-diagnostic disclaimer + health-data protections enforced.
@@ -129,5 +129,5 @@ cut messages+writes ~60× (biggest single cost reduction).
 AWS patterns: [Serverless IoT backend reference architecture](https://github.com/freethinkingit/lambda-refarch-iotbackend) ·
 [Building event-driven architectures with IoT sensor data](https://aws.amazon.com/fr/blogs/architecture/building-event-driven-architectures-with-iot-sensor-data/) ·
 [Remote asset health monitoring (IoT Core + SiteWise + Grafana)](https://aws.amazon.com/blogs/iot/empowering-operations-a-scalable-remote-asset-health-monitoring-solution-the-internet-of-things-aws-official-blog).
-Pricing: [AWS IoT Core pricing](https://aws.amazon.com/iot-core/pricing/) · [Amazon Timestream pricing](https://aws.amazon.com/timestream/pricing/).
+Pricing: [AWS IoT Core pricing](https://aws.amazon.com/iot-core/pricing/) · [Amazon Timestream for InfluxDB pricing](https://aws.amazon.com/timestream/pricing/influxdb/).
 Customization/guardrail logic cross-referenced with [`../research/FINDINGS.md`](../research/FINDINGS.md) (SQ1–SQ7 + cycle 6).

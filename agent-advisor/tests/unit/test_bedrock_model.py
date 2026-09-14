@@ -43,6 +43,7 @@ def _built(**overrides: object) -> BedrockModel:
         "model_max_output_tokens": 1024,
         "request_timeout_seconds": 30,
         "model_credential_path": None,
+        "model_prompt_caching": False,
     }
     settings.update(overrides)
     return build_bedrock_model(**settings)  # type: ignore[arg-type]
@@ -232,3 +233,47 @@ def test_the_credential_path_is_not_read_by_the_builder() -> None:
     # would put secret material in its own frame.
     model = _built(model_credential_path="/nonexistent/path/to/creds")
     assert model.client.meta.region_name == "eu-west-2"
+
+
+# --- Prompt caching: config-gated, off by default ----------------------
+
+
+def test_prompt_caching_is_off_by_default() -> None:
+    # A paid-tier behaviour toggle and one the offline suite must never depend on: with no
+    # configuration the built model carries no cache configuration, so a deployment that did not
+    # ask for caching gets exactly the request it got before.
+    config = _built().get_config()
+    assert config.get("cache_config") is None
+
+
+def test_prompt_caching_when_enabled_sets_an_auto_cache_config() -> None:
+    # The stable prefix is the system prompt plus the tool schemas. The "auto" strategy lets
+    # Strands detect model support and inject cache points across that invariant material.
+    # `CacheConfig` is the current API; `cache_prompt`/`cache_tools` are deprecated in 1.55.1.
+    from strands.models.model import CacheConfig
+
+    config = _built(model_prompt_caching=True).get_config()
+    cache = config["cache_config"]
+    assert isinstance(cache, CacheConfig)
+    assert cache.strategy == "auto"
+
+
+def test_prompt_caching_does_not_disturb_the_other_configured_values() -> None:
+    # Turning caching on is additive: it must not change the identifier, region, temperature or
+    # maximum the rest of the requirements pin.
+    config = _built(model_prompt_caching=True).get_config()
+    assert config["model_id"] == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    assert config["temperature"] == 0.0
+    assert config["max_tokens"] == 1024
+
+
+def test_prompt_caching_flag_is_accepted_with_a_credential_path() -> None:
+    # The two independent branches of the builder (region-direct and session-based) must both
+    # honour the flag, so a deployment using a credential path still gets caching when it asks.
+    from strands.models.model import CacheConfig
+
+    config = _built(
+        model_prompt_caching=True, model_credential_path="/run/secrets/aws"
+    ).get_config()
+    assert isinstance(config["cache_config"], CacheConfig)
+    assert config["cache_config"].strategy == "auto"

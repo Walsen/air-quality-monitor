@@ -29,7 +29,7 @@ Air Quality Monitor is a monorepo of three services:
 - **Logging:** standard-library `logging` emitting single-line JSON to stdout.
 - **Dependencies:** pinned to exact versions in each service's own manifest.
 - **Local dev:** Docker Compose (simulator plus a local MQTT broker).
-- **Cloud (Service 2):** AWS IoT Core, Lambda, Timestream, DynamoDB, S3,
+- **Cloud (Service 2):** AWS IoT Core, Lambda, Timestream for InfluxDB, DynamoDB, S3,
   API Gateway HTTP API, Cognito, Secrets Manager, CloudWatch and X-Ray.
 - **IaC:** AWS CDK in Python.
 - **Agent (Service 3):** Amazon Bedrock.

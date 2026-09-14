@@ -1,15 +1,15 @@
 # Cloud deployment — AWS services and relationships
 
-The deployed proof-of-concept in AWS account `862307432587`, region `us-east-1`.
+The deployed proof-of-concept in AWS account `<AWS_ACCOUNT_ID>`, region `us-east-1`.
 Every service and edge below is provisioned by the CDK stacks in
 [`../../infra/`](../../infra/) and [`../../agent-advisor/infra/`](../../agent-advisor/infra/),
 so this diagram is the source code's shape, not an aspiration.
 
 > **Scope.** This is the POC footprint: Lambda + DynamoDB with a **seeded**
-> exposure history. It deliberately does **not** stand up the IoT Core / Timestream
+> exposure history. It deliberately does **not** stand up the IoT Core / InfluxDB
 > ingestion path from the original investigation
 > ([`00-overview.md`](00-overview.md)); the sensor simulator's push pipeline runs
-> against a local MQTT broker in Docker Compose, not a cloud ingress. The full intended system (IoT Core ingestion, Timestream, per-device
+> against a local MQTT broker in Docker Compose, not a cloud ingress. The full intended system (IoT Core ingestion, an InfluxDB readings store, per-device
 > identity, and the rest) is designed in
 > [`04-target-architecture.md`](04-target-architecture.md). See the
 > deploy/teardown guide in
