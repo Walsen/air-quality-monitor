@@ -377,6 +377,30 @@ invoke-association function_name:
     aws lambda invoke --function-name {{function_name}} \
         --cli-binary-format raw-in-base64-out /dev/stdout
 
+# Deploy (or redeploy) the CDK advisor runtime to Bedrock AgentCore. The advisor
+# is a SEPARATE cdk app under agent-advisor/infra (not the infra/ app), and its
+# app.py refuses to synth without the deploy env, so this recipe supplies it.
+#
+# IDENTIFIERS ARE RESOLVED FROM CLOUDFORMATION OUTPUTS, NOT LITERALS (§7): the
+# account from STS, the Cognito app-client id and user-pool id from the
+# `aqm-poc-cognito` stack, and the serving base URL from `aqm-poc-serving`. Each
+# is a recipe ARGUMENT that OVERRIDES the resolved value when passed non-empty,
+# so a caller targeting a different account/stack set can supply its own without
+# editing this file. The discovery URL is derived from the pool id; the model id
+# defaults to the `us.` inference profile (the bare id has no in-region on-demand
+# support and errors at invoke). Nothing here is a secret.
+#
+# Prompt caching and concurrent tools are OFF by default (a paid-tier behaviour
+# and an unsafe-today behaviour respectively); pass caching=true to enable
+# `AQM_ADVISOR_MODEL_PROMPT_CACHING` for a cost/latency experiment.
+#
+# Carries the node/TMPDIR preamble and cleans its staging like the other cdk
+# recipes; runs in the advisor's own infra dir. Needs a container engine (the
+# runtime image builds at deploy) and the target account's credentials.
+deploy-advisor client_id="" pool_id="" serving_base_url="" model_id="us.anthropic.claude-sonnet-4-6" caching="false":
+    {{cdk_env}} cd {{adv_dir}}/infra &&         ACCOUNT="$(aws sts get-caller-identity --query Account --output text)" &&         CLIENT_ID="{{client_id}}" &&         POOL_ID="{{pool_id}}" &&         SERVING="{{serving_base_url}}" &&         if [ -z "$CLIENT_ID" ]; then CLIENT_ID="$(aws cloudformation describe-stacks --stack-name aqm-poc-cognito --query "Stacks[0].Outputs[?OutputKey=='AppClientId'].OutputValue|[0]" --output text)"; fi &&         if [ -z "$POOL_ID" ]; then POOL_ID="$(aws cloudformation describe-stacks --stack-name aqm-poc-cognito --query "Stacks[0].Outputs[?OutputKey=='UserPoolId'].OutputValue|[0]" --output text)"; fi &&         if [ -z "$SERVING" ]; then SERVING="$(aws cloudformation describe-stacks --stack-name aqm-poc-serving --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue|[0]" --output text)"; fi &&         REGION="${CDK_DEPLOY_REGION:-us-east-1}" &&         for v in ACCOUNT CLIENT_ID POOL_ID SERVING; do             eval "val=\$$v"; [ -n "$val" ] && [ "$val" != "None" ] || { echo "deploy-advisor: could not resolve $v (stack output missing?)" >&2; exit 1; };         done &&         echo "deploy-advisor: account=$ACCOUNT region=$REGION client=$CLIENT_ID pool=$POOL_ID serving=$SERVING caching={{caching}}" &&         CDK_DEPLOY_ACCOUNT="$ACCOUNT"         CDK_DEPLOY_REGION="$REGION"         AQM_ADVISOR_MODEL_ID="{{model_id}}"         AQM_COGNITO_CLIENT_ID="$CLIENT_ID"         AQM_COGNITO_DISCOVERY_URL="https://cognito-idp.$REGION.amazonaws.com/$POOL_ID/.well-known/openid-configuration"         AQM_ADVISOR_SERVING_BASE_URL="$SERVING"         AQM_ADVISOR_MODEL_PROMPT_CACHING="{{caching}}"         uv run cdk deploy AqmAdvisorRuntime --require-approval never
+    @{{cdk_clean}}
+
 # Tear down the diary stacks in REVERSE dependency order (Task 22): association
 # (imports serving's exports) -> serving -> cognito. This recipe removes ONLY
 # those three stacks. The rest of the feature's live footprint is torn down by

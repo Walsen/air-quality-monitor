@@ -120,7 +120,29 @@ This imports the serving stack's table-name exports cross-stack, so serving
 
 The advisor lives in `agent-advisor/infra/` and its `app.py` requires the deploy
 env even to synth. Deploy it with the same Cognito client id Service 2 validates
-(one identity, not two that drift):
+(one identity, not two that drift).
+
+**Preferred — one command that resolves identifiers from CloudFormation:**
+
+```bash
+just deploy-advisor
+```
+
+`deploy-advisor` reads the account from STS, the Cognito app-client id and user
+pool id from the `aqm-poc-cognito` stack outputs, and the serving base URL from
+`aqm-poc-serving` — so nothing is hardcoded and the values cannot drift from the
+stacks that own them. It derives the discovery URL from the pool id and defaults
+the model to the `us.` inference profile. To enable prompt caching for a
+cost/latency experiment, pass `caching=true`. To target a different account or
+stack set, override any of the resolved values:
+
+```bash
+just deploy-advisor client_id=<AppClientId> pool_id=<UserPoolId> \
+    serving_base_url=<serving ApiUrl>
+```
+
+**Manual equivalent** (for a context where `just` or the stacks are not
+available), exporting the env the advisor `app.py` reads:
 
 ```bash
 cd agent-advisor/infra
