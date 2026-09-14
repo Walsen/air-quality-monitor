@@ -6,10 +6,10 @@ Every service and edge below is provisioned by the CDK stacks in
 so this diagram is the source code's shape, not an aspiration.
 
 > **Scope.** This is the POC footprint: Lambda + DynamoDB with a **seeded**
-> exposure history. It deliberately does **not** stand up the IoT Core / Timestream
+> exposure history. It deliberately does **not** stand up the IoT Core / InfluxDB
 > ingestion path from the original investigation
 > ([`00-overview.md`](00-overview.md)); the sensor simulator's push pipeline runs
-> against a local MQTT broker in Docker Compose, not a cloud ingress. The full intended system (IoT Core ingestion, Timestream, per-device
+> against a local MQTT broker in Docker Compose, not a cloud ingress. The full intended system (IoT Core ingestion, an InfluxDB readings store, per-device
 > identity, and the rest) is designed in
 > [`04-target-architecture.md`](04-target-architecture.md). See the
 > deploy/teardown guide in
