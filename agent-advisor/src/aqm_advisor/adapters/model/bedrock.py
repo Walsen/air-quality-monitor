@@ -136,8 +136,8 @@ def build_bedrock_model(
     #
     # Per-turn data (readings, profile, the user utterance) is NOT part of this prefix and must
     # never be — it would break the cache and risk leaking one turn's context into another's.
-    cache_kwargs: dict[str, CacheConfig] = (
-        {"cache_config": CacheConfig(strategy="auto")} if model_prompt_caching else {}
+    cache_config: CacheConfig | None = (
+        CacheConfig(strategy="auto") if model_prompt_caching else None
     )
 
     # `max_tokens` is passed even when None. An earlier comment here claimed omitted and
@@ -171,7 +171,7 @@ def build_bedrock_model(
             temperature=model_temperature,
             boto_client_config=client_config,
             max_tokens=model_max_output_tokens,
-            **cache_kwargs,
+            cache_config=cache_config,
         )
     # No path configured: boto3's own chain resolves from the environment, which Req 6.6 equally
     # permits. The region is passed directly, there being no session to carry it.
@@ -181,7 +181,7 @@ def build_bedrock_model(
         temperature=model_temperature,
         boto_client_config=client_config,
         max_tokens=model_max_output_tokens,
-        **cache_kwargs,
+        cache_config=cache_config,
     )
 
 

@@ -23,12 +23,14 @@ separately rather than folded in, because a set comparison passes over exactly t
 from __future__ import annotations
 
 import ast
-import pathlib
-
-from aqm_advisor.composition import ADAPTER_FACTORIES
-from aqm_advisor.config.loader import REGISTERED_ADAPTERS
-
 import datetime as dt
+import pathlib
+from typing import cast
+
+from pydantic import SecretStr
+from strands.models import Model
+from strands.tools.executors.concurrent import ConcurrentToolExecutor
+from strands.tools.executors.sequential import SequentialToolExecutor
 
 import aqm_advisor.composition as composition
 from aqm_advisor.adapters.local import (
@@ -37,13 +39,15 @@ from aqm_advisor.adapters.local import (
     ScriptedServingClient,
     canned_air_quality,
 )
-from aqm_advisor.composition import build_pipeline_factory, identity_from_snapshot
+from aqm_advisor.composition import (
+    ADAPTER_FACTORIES,
+    build_pipeline_factory,
+    identity_from_snapshot,
+)
+from aqm_advisor.config.loader import REGISTERED_ADAPTERS
 from aqm_advisor.domain.models import AdvisoryRequest
 from aqm_advisor.observability.logging import get_logger
 from aqm_advisor.ports.clock import FixedClock
-from pydantic import SecretStr
-from strands.tools.executors.concurrent import ConcurrentToolExecutor
-from strands.tools.executors.sequential import SequentialToolExecutor
 
 
 def test_every_registered_port_has_a_factory_group() -> None:
@@ -183,7 +187,7 @@ def _capture_tool_executor(
         serving_client=ScriptedServingClient(air_quality_body=served),
         guardrail=LocalGuardrailChecker(),
         audit_store=InMemoryAdviceAuditStore(),
-        model=object(),  # never invoked; the recording agent captures and stops
+        model=cast(Model, object()),  # never invoked; the recording agent captures and stops
         clock=FixedClock(dt.datetime(2026, 7, 1, 12, tzinfo=dt.UTC)),
         logger=get_logger("test.composition"),
         red_flag_rules=(),

@@ -29,9 +29,9 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Final
 
 from strands import Agent
+from strands.models.model import Model
 from strands.tools.executors.concurrent import ConcurrentToolExecutor
 from strands.tools.executors.sequential import SequentialToolExecutor
-from strands.models.model import Model
 from strands.types.exceptions import StructuredOutputException
 
 from aqm_advisor.adapters.audit.dynamodb import DynamoDbAdviceAuditStore
@@ -193,8 +193,9 @@ def build_pipeline_factory(
         # PERFORMANCE ONE. Strands defaults to a ConcurrentToolExecutor, but these tools are not
         # safe to run concurrently: `history` reads the `retrieved_site_code` that `air_quality`
         # sets earlier in the same turn and refuses to run without it, and the tools share a
-        # single mutable `RetrievalRecorder` plus `nonlocal` counters (`air_quality_calls`) whose
-        # read-modify-write is not atomic. Running them on separate threads would race the
+        # single mutable `RetrievalRecorder` plus `nonlocal` counters
+        # (`air_quality_calls`) whose read-modify-write is not atomic. Running them on
+        # separate threads would race the
         # recorder and could execute `history` before its site is known. `tools_concurrent`
         # exists so the choice can be revisited once the recorder is made thread-safe and the
         # air_quality -> history dependency is removed; until then it stays off.
