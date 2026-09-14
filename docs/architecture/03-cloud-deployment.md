@@ -17,72 +17,7 @@ so this diagram is the source code's shape, not an aspiration.
 
 ## Deployment diagram
 
-```mermaid
-flowchart TB
-    user([User's browser])
-
-    subgraph AWS["AWS · account 862307432587 · us-east-1"]
-        cognito["Amazon Cognito<br/>User Pool + public app client<br/>(USER_PASSWORD_AUTH, no secret)<br/><i>stack: aqm-poc-cognito</i>"]
-
-        subgraph chatbotStack["stack: aqm-poc-chatbot"]
-            chatApi["API Gateway<br/>HTTP API"]
-            chatFn["AWS Lambda<br/>web chatbot<br/>(sign-in + /chat proxy)"]
-        end
-
-        subgraph advisorStack["stack: AqmAdvisorRuntime"]
-            advisor["Amazon Bedrock AgentCore<br/>Runtime — AI advisor<br/>JWT authorizer (aud) +<br/>Authorization header allowlist"]
-            bedrock["Amazon Bedrock<br/>Claude (us. inference profile)<br/>InvokeModel"]
-            ecr[("Amazon ECR<br/>advisor container image")]
-        end
-
-        subgraph servingStack["stack: aqm-poc-serving"]
-            serveApi["API Gateway<br/>HTTP API"]
-            serveFn["AWS Lambda<br/>ingestion & serving<br/>(validates Cognito JWT)"]
-            ddbProfiles[("DynamoDB<br/>profiles")]
-            ddbSymptom[("DynamoDB<br/>symptom-log<br/>(diary + #learned thresholds)")]
-            ddbReadings[("DynamoDB<br/>readings")]
-            ddbRegistry[("DynamoDB<br/>sensor-registry")]
-        end
-
-        subgraph assocStack["stack: aqm-poc-association"]
-            schedule["Amazon EventBridge<br/>schedule (hourly)"]
-            assocFn["AWS Lambda<br/>association job<br/>(diary → learned thresholds)"]
-        end
-
-        logs["Amazon CloudWatch Logs<br/>+ AWS X-Ray"]
-    end
-
-    %% identity / request flow (the JWT travels unchanged along the blue path)
-    user -->|"1. sign in (username/password)"| chatApi
-    chatApi --> chatFn
-    chatFn -->|"InitiateAuth"| cognito
-    user -->|"2. chat turn + Bearer JWT"| chatApi
-    chatFn -->|"InvokeAgentRuntime<br/>Authorization: Bearer JWT"| advisor
-    advisor -->|"retrieve /v1/... + Bearer JWT"| serveApi
-    serveApi --> serveFn
-    serveFn -.->|"verify JWT (JWKS)"| cognito
-    advisor -->|"InvokeModel"| bedrock
-    advisor -.->|"pull image"| ecr
-
-    %% serving data plane
-    serveFn --> ddbProfiles
-    serveFn --> ddbSymptom
-    serveFn -->|"read"| ddbReadings
-    serveFn -->|"read"| ddbRegistry
-
-    %% scheduled association (off the request path)
-    schedule --> assocFn
-    assocFn -->|"read diary + write #learned"| ddbSymptom
-    assocFn -->|"read"| ddbReadings
-    assocFn -->|"read"| ddbRegistry
-    assocFn -->|"read"| ddbProfiles
-
-    %% observability (every Lambda + the runtime)
-    chatFn -.-> logs
-    serveFn -.-> logs
-    assocFn -.-> logs
-    advisor -.-> logs
-```
+![Deployed AWS architecture — the five CloudFormation stacks, their resources, the JWT identity path, and least-privilege IAM](images/03-cloud-deployment.jpeg)
 
 ## The identity path (one JWT, validated once at each hop)
 
