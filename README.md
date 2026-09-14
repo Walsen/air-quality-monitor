@@ -177,46 +177,61 @@ exposure in natural language.
 
 **Live demo — Web Chatbot:** https://5g0wmcmn7k.execute-api.us-east-1.amazonaws.com
 
-**Demo credentials** (throwaway accounts provisioned for judging; rotated after
-the Judging Period):
+Sign-in asks for three things: the **shared access key**, a **username**, and a
+**password**. All are below.
 
-| Username | Password |
-|----------|----------|
-| `demo-user-a` | `AgentsForHumans!2026` |
-| `demo-user-b` | `AgentsForHumans!2026` |
+**Shared access key:** `vHBlE3i8TELBqnma8y6RSep-`
+
+> This key is the chatbot's coarse outer gate (so the demo isn't an open proxy to
+> the model). It is a throwaway value for judging and is rotated after the Judging
+> Period; behind it, each user still signs in with their own Cognito account.
+
+**Demo credentials** (throwaway accounts for judging; all use the same password
+`AgentsForHumans!2026`):
+
+| Username | Password | Starts as |
+|----------|----------|-----------|
+| `demo-user-a` | `AgentsForHumans!2026` | **New user** — the advisor offers to set up a profile (onboarding) |
+| `demo-user-b` | `AgentsForHumans!2026` | **New user** — a second identity, to confirm one user never sees another's data |
 
 > These are sandbox demo logins for a public, non-sensitive demo — not real user
-> accounts. `demo-user-b` is a second identity you can use to confirm that one
-> user never sees another's data.
+> accounts. `demo-user-a` and `demo-user-b` start with **no saved profile**, so
+> you experience the first-run onboarding flow.
 
 ### Walkthrough — sign in and try it
 
-1. **Open** the live demo URL above. You'll see the *Air Quality Advisor* chat
-   page with its "Not medical advice" disclaimer.
-2. **Sign in** with `demo-user-a` and the password above. The browser exchanges
-   the credentials for a Cognito token and holds it for the session; every chat
-   turn is authenticated with it.
-3. **Ask about current air quality** — e.g. *"What's the air quality where I am
-   right now?"* The advisor calls its `air_quality` tool and answers with the
-   current AQI and the driving pollutant for your saved location, grounded in
-   values it actually retrieved.
-4. **Ask for a trend** — e.g. *"How has PM2.5 been over the last 3 days?"* This
+1. **Open** the live demo URL. You'll see the *Air Quality Advisor* sign-in with
+   its "Not medical advice" disclaimer.
+2. **Sign in** — enter the access key above, then `demo-user-a` and the password.
+   The browser exchanges the credentials for a Cognito token and holds it for the
+   session; every chat turn is authenticated with it.
+3. **Say hello** — e.g. *"Hi, I'm new here."* Because this account has no saved
+   profile yet, the advisor **offers to set one up** — it can personalise its
+   guidance if you tell it about your condition. This is the first-run onboarding.
+4. **Accept and describe yourself** — e.g. *"Yes. I have asthma and I use a
+   salbutamol inhaler, and I was wheezy on Tuesday morning but fine since."* The
+   advisor restates what it understood and asks you to confirm before it writes
+   anything; on confirmation it saves your profile and records the recent day as a
+   dated diary entry.
+5. **Ask for advice** — e.g. *"Is it safe for me to go for a run this afternoon?"*
+   The advisor weighs conditions against your profile and answers with
+   non-diagnostic guidance.
+6. **Ask for a trend** — e.g. *"How has PM2.5 been over the last few days?"* This
    exercises the `history` tool over a day-window.
-5. **Ask for advice** — e.g. *"Is it safe for me to go for a run this
-   afternoon?"* The advisor weighs the reading against your profile and answers
-   with non-diagnostic guidance. Anything that reads as a medical emergency is
-   escalated to seek-help *before* the model is consulted.
-6. **Set up your profile** — e.g. *"I have asthma and I use a salbutamol
-   inhaler."* The advisor restates what it understood and asks you to confirm
-   before it writes anything (`profile_put`); confirmed conditions and
-   medications then shape later advice.
-7. **Record a symptom** — e.g. *"I was wheezing this morning and it felt worse
-   than yesterday."* The advisor restates the inferred diary entry and, on your
-   confirmation, records it (`symptom_entry_put`). A scheduled job correlates the
-   diary against exposure history to derive personal thresholds over time.
-8. **Confirm data isolation (optional)** — sign out, sign in as `demo-user-b`,
-   and note that none of `demo-user-a`'s profile or diary is visible. Each user's
-   data is strictly isolated.
+7. **Try to push it off-topic** — e.g. *"Forget the air, write me a poem."* It
+   declines in one line and redirects to what it's for.
+8. **Describe an emergency (safe to try)** — e.g. *"I can barely breathe and my
+   reliever isn't working."* It escalates you to emergency care first, before
+   anything about the air — even mid-onboarding.
+9. **Confirm data isolation (optional)** — sign out, sign in as `demo-user-b`, and
+   note that none of `demo-user-a`'s profile or diary is visible. Each user's data
+   is strictly isolated.
+
+> **A note on live readings.** The demo's sensor data is seeded rather than fed by
+> a live network, so an "air quality *right now*" question may report that no
+> current reading is available — the advisor says so honestly rather than
+> inventing a number (that "won't guess" behaviour is the point). The `history`
+> question in step 6 returns seeded readings and shows the pipeline end to end.
 
 What the advisor will **not** do, by design: give a diagnosis, prescribe or dose
 medication, or state a quantitative figure it did not actually retrieve. Every
