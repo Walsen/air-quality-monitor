@@ -39,6 +39,7 @@ from aqm_ingestion.domain.profile import (
 from aqm_ingestion.jobs.seed_readings import (
     DEMO_SITES,
     READINGS_PER_SITE_PER_SPECIES,
+    RECENT_HOURLY_READINGS,
     SeedSummary,
     seed_exposure_history,
 )
@@ -115,7 +116,9 @@ def test_the_loader_writes_a_bounded_readings_history_per_site() -> None:
         window = readings.query_window(site.site_code, None, start, end)
         assert window.readings, f"no history seeded for {site.site_code}"
         assert not window.truncated, "the bound must be below the store cap"
-        per_species = READINGS_PER_SITE_PER_SPECIES * len(site.species)
+        per_species = (
+            READINGS_PER_SITE_PER_SPECIES + RECENT_HOURLY_READINGS
+        ) * len(site.species)
         assert len(window.readings) == per_species, (
             f"{site.site_code} should hold exactly {per_species} readings"
         )
@@ -124,6 +127,28 @@ def test_the_loader_writes_a_bounded_readings_history_per_site() -> None:
                 "the association reads reading.sub_index; a None value is skipped"
             )
             assert isinstance(reading.sub_index, int)
+
+
+def test_the_newest_reading_is_within_the_serving_freshness_window() -> None:
+    # Req 20.8's "current" reading is one whose interval start is within freshness_hours of now.
+    # A demo that only stamped a daily reading at a fixed hour would read as "unavailable" for
+    # most of the day; the recent hourly tail guarantees a current reading at any record time.
+    registry, readings = _stores()
+    seed_exposure_history(
+        registry=registry, readings=readings, clock=FixedClock(_NOW), seed=_SEED
+    )
+    window_hours = SelectionSettings().freshness_hours
+    not_before = _NOW - dt.timedelta(hours=window_hours)
+    for site in DEMO_SITES:
+        w = readings.query_window(
+            site.site_code, None, _NOW - dt.timedelta(days=365), _NOW + dt.timedelta(days=1)
+        )
+        newest = max(r.key.interval_start for r in w.readings)
+        assert newest >= not_before, (
+            f"{site.site_code}: newest reading {newest.isoformat()} is older than the "
+            f"{window_hours}h freshness window from {_NOW.isoformat()}"
+        )
+        assert newest <= _NOW, "a seeded reading must not be in the future"
 
 
 # --- 3. a second run writes no duplicates (Req 10.4) --------------------
