@@ -143,6 +143,43 @@ def test_ungrounded_guidance_fails_verification() -> None:
     assert "grounding" in verdict.checks
 
 
+def test_a_value_retrieved_during_generation_grounds_the_answer() -> None:
+    # THE HISTORY-DEGRADATION BUG. The agent records its history/air-quality bodies DURING
+    # generation (step 3), AFTER `retrieve` (step 2) captured the snapshot. If verify checks
+    # grounding against that pre-generation snapshot, a reading the model correctly quoted from
+    # history reads as ungrounded and the whole turn degrades. verify must use the recorder's
+    # LIVE values. Here the model records a history body carrying 138 and then quotes 138.
+    recorder = RetrievalRecorder()
+
+    def invoke_recording_history() -> ModelGeneration:
+        # Simulate the agent's history tool running inside the model call.
+        recorder.record_body(
+            {"readings": [{"correctedValue": 138.0, "species": "PM25"}]}
+        )
+        return ModelGeneration(guidance="One recent reading was 138.")
+
+    pipeline = AdvisoryTurnPipeline(
+        recorder=recorder,
+        ledger=VerificationLedger(),
+        invoke=invoke_recording_history,
+        audit_writer=AuditWriter(
+            store=InMemoryAdviceAuditStore(), logger=get_logger("test.advisory")
+        ),
+        clock=FixedClock(_AT),
+        identity=_IDENTITY,
+        red_flag_rules=_RULES,
+        emergency_guidance=_EMERGENCY,
+        forbidden_patterns=(),
+        guardrail=LocalGuardrailChecker(),
+        retrieve_snapshot=lambda: _SERVED,
+        retrieve_profile=lambda: None,
+    )
+    # run() must NOT raise: 138 was retrieved this turn (during generation), so it grounds.
+    response = pipeline.run(_request())
+    assert response is not None
+    assert response.degraded is False
+
+
 def test_run_refuses_to_assemble_an_ungrounded_generation() -> None:
     # End to end through the Template Method: `run` raises BEFORE assembly, so an unverified
     # generation is never built into a response. This is what makes the checks unbypassable now

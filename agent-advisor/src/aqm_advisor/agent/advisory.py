@@ -203,7 +203,8 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
     def verify(
         self,
         generated: str | None,
-        retrieved: RetrievedValues,
+        retrieved: RetrievedValues,  # noqa: ARG002 — verify reads the recorder's LIVE values;
+        # the pre-generation snapshot omits what the agent retrieved via tools during generation
     ) -> VerificationVerdict:
         """Run the output checks on the generated text, and record the verdict.
 
@@ -234,8 +235,16 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         checks: list[str] = []
         failures: list[str] = []
 
+        # Read the recorder's CURRENT values, not the `retrieved` snapshot captured in step 2:
+        # the agent records its history/profile/air-quality bodies DURING generation (step 3),
+        # after `retrieved` was taken, so the snapshot omits every value the model retrieved via
+        # a tool this turn — and a history reading the model correctly quoted would otherwise
+        # read as ungrounded, degrading the turn. The live accumulator is the turn's real
+        # Retrieved_Values (Req 7.1's "a number the API actually returned this turn").
+        current = self._recorder.values()
+
         checks.append("grounding")
-        permitted = permitted_values(retrieved, constants=structural_constants())
+        permitted = permitted_values(current, constants=structural_constants())
         failures += [f"ungrounded:{value}" for value in ungrounded(generated, permitted)]
 
         checks.append("forbidden-claims")
@@ -247,7 +256,7 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         checks.append("medication-closure")
         failures += [
             f"unlisted-medication:{name}"
-            for name in unlisted_medications(generated, retrieved.medications)
+            for name in unlisted_medications(generated, current.medications)
         ]
 
         checks.append("guardrail")
