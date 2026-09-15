@@ -69,6 +69,10 @@ AdvisorRuntimeStack(
     serving_base_url=os.environ.get(
         "AQM_ADVISOR_SERVING_BASE_URL", _PLACEHOLDER_SERVING
     ),
+    # Prompt caching is opt-in per deploy; the same true/1/yes forms the runtime
+    # loader accepts.
+    prompt_caching=os.environ.get("AQM_ADVISOR_MODEL_PROMPT_CACHING", "").strip().lower()
+    in ("true", "1", "yes"),
 )
 
 app.synth()
