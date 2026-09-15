@@ -73,6 +73,7 @@ class AdvisorRuntimeStack(cdk.Stack):
         cognito_client_id: str,
         serving_base_url: str,
         env: cdk.Environment,
+        prompt_caching: bool = False,
     ) -> None:
         """Build the stack from values a deployment supplies, never from literals in code.
 
@@ -89,6 +90,8 @@ class AdvisorRuntimeStack(cdk.Stack):
                 calls; supplied at deploy, never a literal in code.
             env: the target account and region, set EXPLICITLY so synth performs no account
             lookup.
+            prompt_caching: when True, enable Bedrock prompt caching in the runtime env via
+                ``AQM_ADVISOR_MODEL_PROMPT_CACHING=true``; off by default so the flag is absent.
         """
         super().__init__(scope, construct_id, env=env)
 
@@ -185,6 +188,16 @@ class AdvisorRuntimeStack(cdk.Stack):
                 "AQM_ADVISOR_SERVING_CLIENT": "http",
                 "AQM_ADVISOR_MODEL": "bedrock",
                 "AQM_ADVISOR_MODEL_REGION": self.region,
+                # Prompt caching over the stable prompt+tools prefix. Off by default (flag
+                # absent), so the deployed posture is unchanged unless a deploy opts in;
+                # the runtime's loader reads the same env var. This dict is the ONLY place the
+                # var reaches the container — omitting it here (an earlier bug) makes
+                # enabling caching a silent no-op however the deploy is invoked.
+                **(
+                    {"AQM_ADVISOR_MODEL_PROMPT_CACHING": "true"}
+                    if prompt_caching
+                    else {}
+                ),
             },
         )
 

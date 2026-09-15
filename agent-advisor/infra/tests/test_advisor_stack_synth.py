@@ -26,7 +26,7 @@ _DISCOVERY = "https://cognito-idp.us-east-1.amazonaws.com/pool/.well-known/openi
 _SERVING = "https://serving.example.com"
 
 
-def _template() -> assertions.Template:
+def _template(*, prompt_caching: bool = False) -> assertions.Template:
     app = cdk.App()
     stack = AdvisorRuntimeStack(
         app,
@@ -36,8 +36,22 @@ def _template() -> assertions.Template:
         cognito_discovery_url=_DISCOVERY,
         cognito_client_id=_CLIENT,
         serving_base_url=_SERVING,
+        prompt_caching=prompt_caching,
     )
     return assertions.Template.from_stack(stack)
+
+
+def _env_of(template: assertions.Template) -> dict[str, object]:
+    body = template.to_json()
+    runtimes = [
+        res["Properties"]
+        for res in body["Resources"].values()
+        if res["Type"] == "AWS::BedrockAgentCore::Runtime"
+    ]
+    assert len(runtimes) == 1
+    env = runtimes[0]["EnvironmentVariables"]
+    assert isinstance(env, dict)
+    return env
 
 
 def test_the_runtime_serves_the_http_invocation_contract() -> None:
@@ -292,3 +306,19 @@ def test_no_model_literal_leaks_a_bare_id() -> None:
     # The foundation-model ARN is allowed (the profile routes to it), but the profile ARN must
     # also be present — asserted above. This pins that we did not ONLY grant the bare model.
     assert rendered.count(bare) <= rendered.count("anthropic.claude")
+
+
+
+def test_prompt_caching_is_off_by_default_in_the_runtime_env() -> None:
+    # Off by default: the deployed runtime must not carry caching unless a deploy asks for it,
+    # so the offline/default posture is unchanged. Absent or explicitly "false" both satisfy it.
+    env = _env_of(_template())
+    assert env.get("AQM_ADVISOR_MODEL_PROMPT_CACHING", "false") == "false"
+
+
+def test_prompt_caching_reaches_the_runtime_env_when_enabled() -> None:
+    # THE BUG THIS GUARDS: the deploy recipe exported AQM_ADVISOR_MODEL_PROMPT_CACHING, but the
+    # stack's environment_variables dict never included it, so caching NEVER reached the running
+    # advisor — enabling it was a silent no-op. The flag must appear in the env as "true".
+    env = _env_of(_template(prompt_caching=True))
+    assert env["AQM_ADVISOR_MODEL_PROMPT_CACHING"] == "true"
