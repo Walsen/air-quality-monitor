@@ -259,6 +259,9 @@ class IngestionServingStack(Stack):
             memory_size=1024,
             environment=fn_env,
             log_retention=logs.RetentionDays.ONE_WEEK,
+            # X-Ray Active so the serving hop shows in a question's end-to-end trace;
+            # CDK also grants X-Ray write permissions to the role. Cheap and read-only.
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         # Least privilege: the serving adapters read and write the profile and
