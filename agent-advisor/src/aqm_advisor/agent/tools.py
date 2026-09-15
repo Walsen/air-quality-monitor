@@ -83,6 +83,57 @@ def _snapshot_notes(body: object) -> list[str]:
     return notes
 
 
+def _reading_highlights(body: object) -> dict[str, object] | None:
+    """Select the lowest, highest and latest INDIVIDUAL readings from a history body.
+
+    Req 3.4 forbids computing a TREND, an AVERAGE or an EXCEEDANCE COUNT and presenting it as a
+    measurement. The lowest, highest and most-recent are none of those: each is a single
+    reading the series actually contains — a selection, not an aggregate — so surfacing them
+    stays inside Req 3.4 while giving the model grounded numbers to quote. Without them the
+    model reaches for an average, which grounding (Req 7) correctly rejects, degrading the
+    whole turn.
+
+    Returns None when there is nothing to highlight, so the caller omits the field rather than
+    sending an empty one. No mean, sum or count-of-exceedances is computed here — only min, max
+    and last, which are `min`/`max` over retrieved values and the final element.
+    """
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("readings")
+    if not isinstance(raw, list):
+        return None
+    picked = [
+        r
+        for r in raw
+        if isinstance(r, dict) and isinstance(r.get("correctedValue"), (int, float))
+    ]
+    if not picked:
+        return None
+
+    def _one(r: dict[str, object]) -> dict[str, object]:
+        value = r.get("correctedValue")
+        return {
+            "value": int(value) if isinstance(value, (int, float)) else value,
+            "dateTime": r.get("dateTime"),
+            "band": r.get("band"),
+            "species": r.get("species"),
+        }
+
+    lowest = min(picked, key=lambda r: r["correctedValue"])
+    highest = max(picked, key=lambda r: r["correctedValue"])
+    latest = picked[-1]  # the body is ascending by interval; the last is the most recent
+    return {
+        "note": (
+            "These are individual retrieved readings, not an average. Quote these values when "
+            "describing the range; never state a computed mean or a rounded 'typical' figure."
+        ),
+        "readingCount": len(picked),
+        "lowest": _one(lowest),
+        "highest": _one(highest),
+        "latest": _one(latest),
+    }
+
+
 def _site_code_of(body: object) -> str | None:
     """The nearest sensor's `siteCode` from a snapshot, for Req 3.1a's history call.
 
@@ -294,9 +345,14 @@ def build_retrieval_tools(
         except ServingClientError as error:
             return _failure_note("history", error)
         recorder.record_body(body)
-        return json.dumps(
-            {"history": body, "summary": history_view(body).text}, default=str
-        )
+        payload: dict[str, object] = {
+            "history": body,
+            "summary": history_view(body).text,
+        }
+        highlights = _reading_highlights(body)
+        if highlights is not None:
+            payload["highlights"] = highlights
+        return json.dumps(payload, default=str)
 
     @tool
     def profile_get() -> str:
