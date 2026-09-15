@@ -359,3 +359,13 @@ def test_the_stack_synthesizes_offline_with_placeholder_cognito_ids() -> None:
     # must be JSON-serializable CloudFormation.
     template = _template()
     json.dumps(template.to_json())
+
+
+def test_the_serving_lambda_has_xray_active_tracing() -> None:
+    # End-to-end observability: with X-Ray Active the serving hop emits a segment, so a single
+    # question's trace can show the time spent in Service 2 vs the model. CDK also attaches the
+    # X-Ray write permissions to the function role when tracing is Active.
+    fn = _serving_function(_template())
+    assert fn["Properties"].get("TracingConfig", {}).get("Mode") == "Active", (
+        "the serving Lambda must trace to X-Ray so the serving hop appears in the workflow trace"
+    )

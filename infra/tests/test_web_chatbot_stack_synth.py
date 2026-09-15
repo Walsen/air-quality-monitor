@@ -145,3 +145,16 @@ def test_the_stack_synthesizes_offline() -> None:
     # JSON-serializable CloudFormation.
     template = _template()
     json.dumps(template.to_json())
+
+
+def test_the_chatbot_lambda_has_xray_active_tracing() -> None:
+    # The chatbot is the entry hop; tracing it lets a question's trace start at the browser proxy
+    # and continue through the advisor and serving, giving the full end-to-end workflow view.
+    template = _template()
+    functions = template.find_resources("AWS::Lambda::Function")
+    chatbot = [
+        fn for fn in functions.values()
+        if fn["Properties"].get("Handler") == "aqm_chatbot.lambda_handler.handler"
+    ]
+    assert len(chatbot) == 1, f"expected one chatbot Lambda, found {len(chatbot)}"
+    assert chatbot[0]["Properties"].get("TracingConfig", {}).get("Mode") == "Active"
