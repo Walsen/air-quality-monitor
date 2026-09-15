@@ -594,6 +594,55 @@ def test_the_history_tool_delivers_a_labelled_summary() -> None:
     assert "summar" in result
 
 
+def _history_body_with_readings() -> dict[str, object]:
+    # Ascending by time, so the last entry is the most recent. Distinct low/high/latest values.
+    return {
+        "siteCode": "AQM1",
+        "readings": [
+            {"dateTime": "2026-07-01T09:00:00Z", "species": "PM25", "correctedValue": 40.0,
+             "units": "ug.m-3", "confidence": "high", "subIndex": 40, "band": "Good"},
+            {"dateTime": "2026-07-02T09:00:00Z", "species": "PM25", "correctedValue": 120.0,
+             "units": "ug.m-3", "confidence": "high", "subIndex": 120, "band": "Moderate"},
+            {"dateTime": "2026-07-03T09:00:00Z", "species": "PM25", "correctedValue": 75.0,
+             "units": "ug.m-3", "confidence": "high", "subIndex": 75, "band": "Moderate"},
+        ],
+        "truncated": False,
+    }
+
+
+def test_history_surfaces_actual_low_high_and_latest_readings() -> None:
+    # Req 3.4 forbids computing a TREND, AVERAGE or EXCEEDANCE COUNT — it does NOT forbid naming
+    # individual retrieved readings, and the lowest, highest and most-recent are each a real
+    # measured value, not an aggregate. Surfacing them gives the model grounded numbers to quote
+    # so it stops inventing an average (which grounding rejects, degrading the whole turn). Each
+    # value is one that record_body already permitted, so quoting it grounds.
+    client = ScriptedServingClient(history_body=_history_body_with_readings())
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    import json as _json
+
+    result = _json.loads(str(_by_name(tools)["history"](days=7)))
+    hl = result["highlights"]
+    # the lowest, highest and latest are each a real retrieved reading, surfaced explicitly so
+    # the model quotes them rather than averaging.
+    assert hl["lowest"]["value"] == 40
+    assert hl["highest"]["value"] == 120
+    assert hl["latest"]["value"] == 75
+    assert hl["readingCount"] == 3
+    # still labelled a summary (Req 3.4 positive clause)
+    assert "summar" in result["summary"].casefold()
+
+
+def test_history_highlights_name_no_average_or_computed_figure() -> None:
+    # Guard the Req 3.4 line: the highlights are SELECTED readings, never a mean. The mean of
+    # 40/120/75 is ~78.3; that value must not appear, because it would be a computed figure.
+    client = ScriptedServingClient(history_body=_history_body_with_readings())
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    result = str(_by_name(tools)["history"](days=7))
+    assert "78" not in result and "78.3" not in result
+
+
 def test_a_failed_air_quality_call_does_not_consume_the_turn_s_one_retrieval() -> None:
     # A review found the call counter incremented BEFORE the request, so one transient serving
     # failure spent the turn's only air-quality call. The retry was then refused with "already
