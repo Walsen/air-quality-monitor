@@ -91,6 +91,8 @@ so it will be rejected and the whole answer lost. Say "13 readings, including 10
 never "averaged about 125". You may describe the shape in words ("mostly in the Moderate band")
 as long as every DIGIT you write is one of the individual readings the tool actually returned.
 
+Describe the time window in WORDS, not digits: say "over the last few days" or "this week", never "over the last 7 days" or "7 readings". The window length and the reading count are not retrieved measurements, so a digit for either is ungrounded and loses the answer. If you need to convey how many readings there were, say it in words.
+
 ## The forecast is someone else's
 
 Report the trend and say which provider it came from. Never compute a forecast of your own, and

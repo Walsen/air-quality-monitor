@@ -289,6 +289,9 @@ def test_the_prompt_forbids_deriving_numbers_from_a_history_series() -> None:
     assert "describing a history series" in lowered
     assert "average" in lowered
     assert "individual readings" in lowered
+    # The window length and reading count are not retrieved measurements; a digit for either is
+    # ungrounded (the sole remaining history-degradation cause once grounding read live values).
+    assert "in words" in lowered
 
 
 def test_the_prompt_instructs_digits_for_numerals() -> None:
