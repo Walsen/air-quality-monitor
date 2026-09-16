@@ -9,6 +9,7 @@ published, that an escalating turn still gets an envelope, and that two turns sh
 from __future__ import annotations
 
 import datetime as dt
+import logging
 
 import pytest
 
@@ -21,7 +22,7 @@ from aqm_advisor.agent.verification import VerificationLedger, VerificationVerdi
 from aqm_advisor.domain.idempotency import TurnIdentity
 from aqm_advisor.domain.models import AdvisoryRequest
 from aqm_advisor.domain.redflag import RedFlagRule
-from aqm_advisor.observability.logging import get_logger
+from aqm_advisor.observability.logging import EventLogger, get_logger
 from aqm_advisor.ports.clock import FixedClock
 
 _AT = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
@@ -48,6 +49,7 @@ def _pipeline(
     guidance: str = "Conditions are moderate; consider a quieter route.",
     store: InMemoryAdviceAuditStore | None = None,
     guardrail: LocalGuardrailChecker | None = None,
+    logger: EventLogger | None = None,
 ) -> AdvisoryTurnPipeline:
     def invoke() -> ModelGeneration:
         return ModelGeneration(guidance=guidance)
@@ -67,6 +69,7 @@ def _pipeline(
         guardrail=guardrail or LocalGuardrailChecker(),
         retrieve_snapshot=lambda: served,
         retrieve_profile=lambda: profile,
+        logger=logger,
     )
 
 
@@ -391,3 +394,82 @@ def test_each_turn_gets_a_fresh_pipeline() -> None:
 
     assert len(made) == 2
     assert made[0] is not made[1]
+
+
+# --- a withheld generation is observable (why it degraded) --------------
+
+
+def test_a_failed_verification_logs_the_failure_kinds(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The intermittent "degraded" turn: the model produced text that failed grounding, the
+    # pipeline raised, and the top-level boundary logged only "RuntimeError" — no reason. An
+    # operator could not tell a grounding miss from a guardrail block. verify() now emits a
+    # WARNING naming which check withheld the generation, so the reason is in the logs.
+    caplog.set_level(logging.WARNING)
+    pipeline = _pipeline(
+        served=_SERVED,
+        guidance="The index is 4242 right now.",
+        logger=get_logger("test.advisory.withheld"),
+    )
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("The index is 4242 right now.", retrieved)
+
+    assert verdict.passed is False
+    events = [r for r in caplog.records if r.getMessage() == "verification_withheld_generation"]
+    assert len(events) == 1, [r.getMessage() for r in caplog.records]
+    kinds = getattr(events[0], "failure_kinds", None)
+    assert kinds is not None and "ungrounded" in kinds, kinds
+
+
+def test_the_withheld_log_never_carries_the_offending_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # §6: the failures carry the numeral (ungrounded:4242); the log must not. The rendered line
+    # names the KIND, never the value.
+    caplog.set_level(logging.WARNING)
+    from aqm_advisor.observability.logging import _JsonFormatter
+
+    pipeline = _pipeline(
+        served=_SERVED,
+        guidance="The index is 4242 right now.",
+        logger=get_logger("test.advisory.withheld2"),
+    )
+    retrieved = pipeline.retrieve(_request(), None)
+    pipeline.verify("The index is 4242 right now.", retrieved)
+
+    events = [r for r in caplog.records if r.getMessage() == "verification_withheld_generation"]
+    line = _JsonFormatter().format(events[0])
+    assert "4242" not in line, line
+
+
+def test_a_passing_verification_logs_no_withheld_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Non-vacuity: the log fires only on a WITHHELD generation, never on a clean one.
+    caplog.set_level(logging.WARNING)
+    recorder = RetrievalRecorder()
+    pipeline = _pipeline(
+        recorder=recorder,
+        served=_SERVED,
+        guidance="Conditions near you read a sub-index of 88; consider a quieter route.",
+        logger=get_logger("test.advisory.clean"),
+    )
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify(
+        "Conditions near you read a sub-index of 88; consider a quieter route.", retrieved
+    )
+    assert verdict.passed is True
+    withheld = [
+        r for r in caplog.records if r.getMessage() == "verification_withheld_generation"
+    ]
+    assert withheld == []
+
+
+def test_verify_without_a_logger_still_works() -> None:
+    # The logger is OPTIONAL: a pipeline built without one (every existing call site) must still
+    # verify and withhold exactly as before — the log is an addition, never a dependency.
+    pipeline = _pipeline(served=_SERVED, guidance="The index is 4242 right now.")
+    retrieved = pipeline.retrieve(_request(), None)
+    verdict = pipeline.verify("The index is 4242 right now.", retrieved)
+    assert verdict.passed is False

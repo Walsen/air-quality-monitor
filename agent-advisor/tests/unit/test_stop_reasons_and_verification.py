@@ -31,6 +31,7 @@ from aqm_advisor.agent.verification import (
     VerificationHook,
     VerificationLedger,
     VerificationVerdict,
+    failure_kinds,
 )
 
 # --- Req 31.7 / 6.5a: every stop reason is handled ----------------------
@@ -230,3 +231,55 @@ def test_a_hook_with_no_verifier_does_not_poison_the_ledger() -> None:
     ledger.record(VerificationVerdict(passed=True, checks=("grounding",)))
     assert ledger.is_publishable() is True
     assert ledger.release("the sub-index is 68") == "the sub-index is 68"
+
+
+# --- verification failure KINDS are loggable without leaking values -----
+
+
+def test_failure_kinds_reduces_each_failure_to_its_category() -> None:
+    # An operator needs to know WHICH check withheld a generation. The raw failures carry the
+    # offending value or medication name (ungrounded:42, unlisted-medication:salbutamol), which
+    # §6 forbids logging. failure_kinds keeps only the category before the colon, so the reason
+    # is observable and the sensitive tail never reaches a log.
+    kinds = failure_kinds(
+        (
+            "ungrounded:42",
+            "ungrounded:7",
+            "unlisted-medication:salbutamol",
+        )
+    )
+    assert "ungrounded" in kinds
+    assert "unlisted-medication" in kinds
+    # deduplicated: two ungrounded values collapse to one kind
+    assert kinds.count("ungrounded") == 1
+
+
+def test_failure_kinds_never_carries_a_numeral_or_medication_name() -> None:
+    # The whole point: the value and the medication name must not survive into what gets logged.
+    kinds = failure_kinds(("ungrounded:42", "unlisted-medication:salbutamol"))
+    joined = " ".join(kinds)
+    assert "42" not in joined
+    assert "salbutamol" not in joined
+
+
+def test_failure_kinds_keeps_the_structural_marker_for_forbidden_and_guardrail() -> None:
+    # forbidden:<pattern-name> and guardrail:<verdict>/guardrail-category:<name> carry a
+    # STRUCTURAL marker, not user data — the pattern name and category are safe and are exactly
+    # what tells an operator which rule fired. Those are kept in full.
+    kinds = failure_kinds(
+        ("forbidden:diagnosis", "guardrail:INTERVENED", "guardrail-category:health")
+    )
+    assert "forbidden:diagnosis" in kinds
+    assert "guardrail:INTERVENED" in kinds
+    assert "guardrail-category:health" in kinds
+
+
+def test_failure_kinds_is_stable_ordered_and_deduped() -> None:
+    # Deterministic output: a set would iterate in an undefined order, and the log must read the
+    # same for the same failure set.
+    kinds = failure_kinds(("ungrounded:9", "forbidden:dosing", "ungrounded:1"))
+    assert kinds == ("ungrounded", "forbidden:dosing")
+
+
+def test_failure_kinds_of_nothing_is_empty() -> None:
+    assert failure_kinds(()) == ()

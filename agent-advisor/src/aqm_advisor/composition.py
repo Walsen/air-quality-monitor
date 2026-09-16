@@ -256,6 +256,9 @@ def build_pipeline_factory(
             guardrail=guardrail,
             retrieve_snapshot=lambda: snapshot,
             retrieve_profile=lambda: profile,
+            # Pass the logger so a WITHHELD generation records WHICH check withheld it (the
+            # kinds only). Without this the intermittent degraded turn logs only "RuntimeError".
+            logger=logger,
         )
 
     return make_pipeline

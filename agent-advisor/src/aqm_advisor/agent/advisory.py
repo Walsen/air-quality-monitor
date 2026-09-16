@@ -41,7 +41,11 @@ from aqm_advisor.agent.audit import AuditWriter, build_advice_record
 from aqm_advisor.agent.generation import ModelGeneration, obtain_structured_generation
 from aqm_advisor.agent.pipeline import TurnPipeline
 from aqm_advisor.agent.tools import RetrievalRecorder
-from aqm_advisor.agent.verification import VerificationLedger, VerificationVerdict
+from aqm_advisor.agent.verification import (
+    VerificationLedger,
+    VerificationVerdict,
+    failure_kinds,
+)
 from aqm_advisor.domain.basis import assemble_basis
 from aqm_advisor.domain.envelope import resolve_envelope
 from aqm_advisor.domain.forbidden import forbidden_matches, unlisted_medications
@@ -57,6 +61,7 @@ from aqm_advisor.domain.models import (
 from aqm_advisor.domain.records import RetrievedValues
 from aqm_advisor.domain.redflag import RedFlagRule
 from aqm_advisor.domain.turn import determine_escalation, escalating_response
+from aqm_advisor.observability.logging import EventLogger
 from aqm_advisor.ports.clock import Clock
 from aqm_advisor.ports.protocols import GuardrailChecker, GuardrailVerdict
 
@@ -87,8 +92,14 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         guardrail: GuardrailChecker,
         retrieve_snapshot: Callable[[], object],
         retrieve_profile: Callable[[], object] | None = None,
+        logger: EventLogger | None = None,
     ) -> None:
-        """Bind one turn's collaborators. All injected; none read from config here."""
+        """Bind one turn's collaborators. All injected; none read from config here.
+
+        `logger` is optional: when present, a WITHHELD generation logs which checks withheld it
+        (the KINDS only, never the offending value). A turn built without one behaves exactly as
+        before — the diagnostic is an addition, never a dependency.
+        """
         self._recorder = recorder
         self._ledger = ledger
         self._invoke = invoke
@@ -105,6 +116,7 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         # defaulting to None so a turn with no profile source names nothing, exactly as the
         # prompt's "if no profile was retrieved" branch already requires.
         self._retrieve_profile = retrieve_profile or (lambda: None)
+        self._logger = logger
         self._served_body: object = None
         self._degraded = False
 
@@ -271,6 +283,17 @@ class AdvisoryTurnPipeline(TurnPipeline[RetrievedValues, AdvisoryResponse]):
         verdict = VerificationVerdict(
             passed=not failures, checks=tuple(checks), failures=tuple(failures)
         )
+        if not verdict.passed and self._logger is not None:
+            # WHY THIS LOG EXISTS: a failed verdict makes `run` raise, and the top-level
+            # boundary logs only the exception TYPE (RuntimeError) to avoid leaking the raise
+            # message, which carries the offending value. That left the intermittent "degraded"
+            # turn with no operator-visible reason. `failure_kinds` keeps only the loggable
+            # category (never the ungrounded numeral or the medication name), so which check
+            # withheld the generation is visible without breaking the §6 redaction boundary.
+            self._logger.warning(
+                "verification_withheld_generation",
+                failure_kinds=list(failure_kinds(verdict.failures)),
+            )
         self._ledger.record(verdict)
         return verdict
 
