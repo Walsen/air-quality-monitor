@@ -184,6 +184,13 @@ def build_pipeline_factory(
             recorder=recorder,
             clock=clock,
             identity=identity,
+            # REUSE THE SNAPSHOT FETCHED ABOVE rather than let the model's air_quality tool make
+            # a second, identical GET /air-quality/me. The pipeline already fetched it once (for
+            # the envelope, the identity and the basis) and step 2 records its body into the
+            # recorder, so the numerals are groundable without a second call — the redundant
+            # ~2s round-trip is removed and the basis and the guidance cannot describe two
+            # different readings.
+            prefetched_snapshot=snapshot,
         )
 
         # The agent is per turn because its TOOLS are. A process-wide agent would need the

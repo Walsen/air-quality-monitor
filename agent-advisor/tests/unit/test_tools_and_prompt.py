@@ -64,6 +64,28 @@ def _by_name(
     return {tool.tool_name: tool for tool in tools}
 
 
+def _build_with_prefetch(
+    prefetched_snapshot: object,
+    client: ScriptedServingClient | None = None,
+) -> tuple[tuple[DecoratedFunctionTool[Any, Any], ...], RetrievalRecorder]:
+    """Build the tools with the composition root's pre-fetched snapshot handed in.
+
+    Mirrors the real wiring: the composition root fetches the snapshot once and passes it as
+    `prefetched_snapshot`, so the model's `air_quality` tool reuses it instead of making a
+    second identical GET.
+    """
+    recorder = RetrievalRecorder()
+    tools = build_retrieval_tools(
+        identity=_IDENTITY,
+        client=client or ScriptedServingClient(),
+        credential=_CREDENTIAL,
+        recorder=recorder,
+        clock=FixedClock(_NOW),
+        prefetched_snapshot=prefetched_snapshot,
+    )
+    return tools, recorder
+
+
 # --- Req 9.1: the five tools --------------------------------------------
 
 def test_the_five_tools_are_built() -> None:
@@ -676,3 +698,76 @@ def test_a_rejected_history_window_reports_the_permitted_bound() -> None:
     note = str(_by_name(tools)["history"](days=7)).casefold()
     assert "30 days" in note, note
     assert "do not retry" in note, note
+
+
+# --- Latency #2: the pre-fetched snapshot is reused, not re-fetched ------
+
+
+def test_air_quality_reuses_the_prefetched_snapshot_without_a_client_call() -> None:
+    # The composition root already fetched the snapshot once this turn (for the envelope, the
+    # identity and the basis). Without reuse, the model's air_quality tool made a SECOND
+    # identical GET /air-quality/me — a redundant ~2s round-trip that could also return a
+    # different reading than the basis was built from. Given a prefetched snapshot, the tool
+    # must answer from it and make NO client call.
+    client = ScriptedServingClient()
+    tools, _ = _build_with_prefetch(canned_air_quality(), client)
+    result = str(_by_name(tools)["air_quality"]())
+    assert client.tool_names() == (), "air_quality re-fetched despite a prefetched snapshot"
+    assert "AQM1" in result, result
+
+
+def test_the_reused_snapshot_still_enables_the_history_call() -> None:
+    # Correctness, not just efficiency: the site the snapshot named is what Req 3.1a's history
+    # call needs. The reuse path must set `retrieved_site_code` exactly as the network path
+    # does, so a later history call resolves the site from THIS user's snapshot rather than
+    # reporting itself unavailable.
+    client = ScriptedServingClient()
+    tools, _ = _build_with_prefetch(canned_air_quality(), client)
+    _by_name(tools)["air_quality"]()
+    _by_name(tools)["history"](days=7)
+    # The ONLY client call is history — air_quality never reached the client.
+    assert client.tool_names() == ("history",), client.tool_names()
+    _name, args = client.calls[0]
+    assert args[0] == "AQM1", args
+
+
+def test_the_reused_snapshot_still_counts_against_the_one_retrieval_cap() -> None:
+    # Req 2.6 bounds air-quality retrievals to one per turn. Reuse must consume that budget too,
+    # so a model that calls air_quality twice is told so rather than getting a second snapshot.
+    client = ScriptedServingClient()
+    tools, _ = _build_with_prefetch(canned_air_quality(), client)
+    named = _by_name(tools)
+    named["air_quality"]()
+    second = str(named["air_quality"]())
+    assert "already" in second.casefold(), second
+    assert client.tool_names() == (), client.tool_names()
+
+
+def test_without_a_prefetched_snapshot_the_tool_still_fetches() -> None:
+    # Non-vacuity: the reuse is OPT-IN. With no prefetched snapshot the tool behaves exactly as
+    # before, fetching from the client — otherwise the default composition would silently stop
+    # retrieving.
+    client = ScriptedServingClient()
+    tools, _ = _build(client)
+    _by_name(tools)["air_quality"]()
+    assert client.tool_names() == ("air_quality",)
+
+
+# --- Latency #1: the prompt asks for a brief answer ----------------------
+
+
+def test_the_prompt_asks_for_a_brief_answer() -> None:
+    # A long answer is slower to arrive and harder to act on; the dominant latency cost is model
+    # OUTPUT generation. The prompt steers the model to lead with what matters and stop, rather
+    # than restating the full data or listing every nearby sensor.
+    lowered = load_system_prompt().casefold()
+    assert "be brief" in lowered
+    assert "at most" in lowered
+
+
+def test_the_brevity_instruction_trips_no_forbidden_claim_pattern() -> None:
+    # The prompt is data held to code's standard: new wording must introduce no diagnosis,
+    # dosing or attribution match of its own (same guard the scope and onboarding sections run).
+    from aqm_advisor.domain.forbidden import forbidden_matches
+
+    assert forbidden_matches(load_system_prompt()) == ()
