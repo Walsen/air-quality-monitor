@@ -51,6 +51,34 @@ class VerificationVerdict:
             raise ValueError("a verdict must name at least one check that ran")
 
 
+# The verification `failures` an operator most needs to SEE carry a sensitive tail: an
+# ungrounded numeral (`ungrounded:42`) is a reading, and an unlisted medication
+# (`unlisted-medication:salbutamol`) is health data — §6 forbids both in a log. For those, only
+# the category before the colon is safe. The other markers — `forbidden:<pattern-name>`,
+# `guardrail:<verdict>`, `guardrail-category:<name>` — carry a STRUCTURAL value that names which
+# rule fired, which is exactly what makes the log actionable, so those are kept whole. A failure
+# with no colon (a verifier-configuration message, an exception type) is structural too and
+# passes through unchanged.
+_FAILURE_PREFIXES_WITH_SENSITIVE_TAIL = frozenset({"ungrounded", "unlisted-medication"})
+
+
+def failure_kinds(failures: tuple[str, ...]) -> tuple[str, ...]:
+    """Reduce raw verification failures to loggable KINDS, dropping any sensitive tail.
+
+    `ungrounded:42` and `unlisted-medication:salbutamol` become the bare category; every other
+    marker is kept in full because its tail is structural (a pattern name, a guardrail verdict).
+    The result is order-preserving and deduplicated, so the same failure set always logs the
+    same line and a repeated value collapses to one kind rather than leaking its multiplicity.
+    """
+    kinds: list[str] = []
+    for failure in failures:
+        prefix = failure.split(":", 1)[0]
+        kind = prefix if prefix in _FAILURE_PREFIXES_WITH_SENSITIVE_TAIL else failure
+        if kind not in kinds:
+            kinds.append(kind)
+    return tuple(kinds)
+
+
 @dataclass
 class VerificationLedger:
     """Per-turn record of whether a generation may be published.
@@ -186,4 +214,9 @@ class VerificationHook:
         )
 
 
-__all__ = ["VerificationHook", "VerificationLedger", "VerificationVerdict"]
+__all__ = [
+    "VerificationHook",
+    "VerificationLedger",
+    "VerificationVerdict",
+    "failure_kinds",
+]
