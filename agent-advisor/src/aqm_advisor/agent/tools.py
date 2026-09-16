@@ -245,6 +245,7 @@ def build_retrieval_tools(
     recorder: RetrievalRecorder,
     clock: Clock,
     identity: TurnIdentity,
+    prefetched_snapshot: object | None = None,
 ) -> tuple[DecoratedFunctionTool[Any, Any], ...]:
     """Build the five tools for ONE turn, closed over that turn's credential and recorder.
 
@@ -287,6 +288,23 @@ def build_retrieval_tools(
             return (
                 "Air quality was already retrieved for this turn. Use the snapshot you have; "
                 "retrieving again could return a different reading than the basis describes."
+            )
+        # REUSE THE PRE-FETCHED SNAPSHOT when the pipeline already retrieved it this turn. The
+        # composition root fetches the snapshot once (for the envelope, the identity and the
+        # basis), and the pipeline's step 2 records its body into THIS recorder — so the
+        # numerals are already groundable. Without reuse the model's air_quality tool made a
+        # SECOND identical GET /air-quality/me: a redundant ~2s round-trip that could also
+        # return a different reading than the basis was built from. So here we set the site
+        # code and return the snapshot WITHOUT re-recording (step 2 already did) and WITHOUT a
+        # network call. It still counts against the one-retrieval cap and still sets the site
+        # for a later history call, exactly as the network path does.
+        if prefetched_snapshot is not None:
+            air_quality_calls += 1
+            retrieved_site_code = _site_code_of(prefetched_snapshot)
+            notes = _snapshot_notes(prefetched_snapshot)
+            return json.dumps(
+                {"snapshot": prefetched_snapshot, "notes": notes},
+                default=str,
             )
         try:
             body = client.air_quality(credential)
