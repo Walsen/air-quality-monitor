@@ -109,6 +109,9 @@ class WebChatbotStack(Stack):
             memory_size=512,
             environment=fn_env,
             log_retention=logs.RetentionDays.ONE_WEEK,
+            # X-Ray Active so a question's trace starts at the chatbot proxy hop;
+            # CDK grants X-Ray write permissions to the role. Cheap and read-only.
+            tracing=lambda_.Tracing.ACTIVE,
         )
 
         # Least privilege: invoke ONLY the advisor runtime, nothing else on AgentCore.
