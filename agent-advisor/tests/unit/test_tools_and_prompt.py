@@ -324,6 +324,38 @@ def test_the_prompt_instructs_digits_for_numerals() -> None:
     assert "digit" in lowered
 
 
+def test_the_prompt_frames_safety_answers_on_conditions_not_the_person() -> None:
+    # The intermittent degradation had a single cause, found via the withheld-generation log:
+    # the diagnosis pattern `you are (fine|okay|ok|not in danger)` fired on the model's
+    # reassuring phrasing when a user with a condition asked "is it okay to go out?". The model
+    # answered "you are fine to head out" — a person-state claim the forbidden check withholds,
+    # degrading the turn. The `forbidden.py` floor is correct and unchanged; the prompt now
+    # steers the model to answer about the AIR and CONDITIONS ("conditions are fine for a run"),
+    # never the person's state, so the reassurance survives verification. Vague wording does not
+    # steer a model, so the concrete phrases are pinned here as a floor.
+    lowered = load_system_prompt().casefold()
+    assert "conditions" in lowered
+    # Names the anti-pattern to avoid and the framing to prefer. The forbidden phrase is quoted
+    # in its CONTRACTION form ("you're fine") deliberately: the diagnosis pattern keys on the
+    # two words "you are", so the literal "you are fine" in the prompt would trip the very check
+    # this steer exists to avoid (and fail the forbidden-match test below). The contraction
+    # names the anti-pattern without matching it.
+    assert "you're fine" in lowered
+    assert "okay to go out" in lowered or "safe to go out" in lowered
+
+
+def test_the_safety_framing_steer_trips_no_forbidden_claim_pattern() -> None:
+    # The steer necessarily QUOTES the forbidden phrasing ("you are fine") to tell the model not
+    # to use it. That quote must not itself trip the diagnosis pattern, or the prompt would fail
+    # its own forbidden-claims check
+    # (test_the_prompt_claims_no_capability_the_guardrails_forbid)
+    # and every turn would be instructed toward a withheld generation. Guarded here explicitly
+    # because this edit is the one most likely to introduce such a match.
+    from aqm_advisor.domain.forbidden import forbidden_matches
+
+    assert forbidden_matches(load_system_prompt()) == ()
+
+
 def test_a_supplied_prompt_replaces_the_default() -> None:
     # Configuration that can only ever be the default is not configuration.
     assert load_system_prompt("a configured prompt") == "a configured prompt"
