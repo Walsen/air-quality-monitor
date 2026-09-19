@@ -21,6 +21,7 @@ from aqm_infra.cognito_stack import CognitoStack
 from aqm_infra.demo_data_refresh_stack import DemoDataRefreshStack
 from aqm_infra.ingestion_serving_stack import IngestionServingStack
 from aqm_infra.lambda_rest_stack import LambdaRestStack
+from aqm_infra.synthetics_stack import SyntheticsStack
 from aqm_infra.web_chatbot_stack import WebChatbotStack
 
 REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
@@ -173,6 +174,27 @@ if app.node.try_get_context("deploy_diary_memory"):
         readings_table_name=serving_stack.readings_table_name,
         registry_table_name=serving_stack.sensor_registry_table_name,
         description="POC: scheduled demo-data seed refresh (demo-data-refresh)",
+    )
+
+
+# CloudWatch Synthetics canaries over the deployed serving API, with alarms.
+# Gated by its own opt-in flag, like the other second-tier stacks, so it does not
+# synth into every run. All targets come from context (the serving stack's ApiUrl
+# output and the Cognito details); at synth with none, the stack adds deploy-time
+# errors but synthesizes cleanly, so a full-app synth resolves nothing from an
+# account. The Cognito client-credentials themselves live in a Secrets Manager
+# secret referenced only by NAME here — never committed.
+if app.node.try_get_context("deploy_synthetics"):
+    SyntheticsStack(
+        app,
+        "aqm-poc-synthetics",
+        env=env,
+        target_url=app.node.try_get_context("synthetics_target_url"),
+        cognito_token_url=app.node.try_get_context("synthetics_cognito_token_url"),
+        cognito_secret_name=app.node.try_get_context("synthetics_cognito_secret_name"),
+        require_reading=bool(app.node.try_get_context("synthetics_require_reading")),
+        alarm_email=app.node.try_get_context("synthetics_alarm_email"),
+        description="POC: CloudWatch Synthetics canaries + alarms over the serving API",
     )
 
 
