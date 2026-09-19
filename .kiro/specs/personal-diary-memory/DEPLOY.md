@@ -27,6 +27,7 @@ CloudFormation stacks:
 | `aqm-poc-cognito` | 15 | Cognito user pool + app client |
 | `aqm-poc-serving` | 16 | DynamoDB tables (profiles / symptom-log / readings / sensor-registry) + serving Lambda + HTTP API |
 | `aqm-poc-association` | 18 | Association Lambda + EventBridge schedule; **imports `aqm-poc-serving`'s table-name exports cross-stack** |
+| `aqm-poc-demo-refresh` | demo-data-refresh | Scheduled seed-refresh Lambda (2h) keeping a *current* reading fresh; **imports `aqm-poc-serving`'s readings + sensor-registry tables cross-stack**. Optional, demo-only. |
 | `AqmAdvisorRuntime` | 19 | CDK-managed AgentCore advisor runtime; a **separate CDK app** under `agent-advisor/infra/` (not the `infra/` app) |
 | `aqm-poc-chatbot` | 20 | Pre-existing chatbot stack, redeployed to point at the new runtime + Cognito |
 
@@ -115,6 +116,31 @@ just deploy-association
 
 This imports the serving stack's table-name exports cross-stack, so serving
 **must** already be deployed (step 3).
+
+### 5b. Demo-data refresh (feature: demo-data-refresh) — OPTIONAL, demo only
+
+```bash
+just deploy-demo-refresh
+```
+
+Keeps a **current** demo reading available continuously so the advisor's "what's
+the air right now?" answer returns live numbers instead of "unavailable". It
+deploys `aqm-poc-demo-refresh` (a Lambda that re-runs the seed on an EventBridge
+schedule) and then seeds ONCE immediately, so the 60-day history and a current tail
+exist without waiting for the first scheduled fire. Imports the serving stack's
+readings + sensor-registry tables cross-stack, so serving must be deployed first.
+
+**The cadence is coupled to the freshness window and must stay inside it.** The
+schedule fires every **2h**; serving counts a reading as current only if it is
+within `AQM_FRESHNESS_HOURS` (default **3h**). Do NOT raise the cadence above, or
+lower the freshness window below, that pairing — either opens a gap where `current`
+reads as "unavailable". Do NOT "fix" staleness by widening the freshness window:
+that makes genuinely old data present as current, which a judge inspecting the
+`asOf` timestamp would catch.
+
+This stack is a **demo-window artefact**. Remove it after the event with
+`just teardown-demo-refresh` (see Teardown). Seeded rows are left in place; they
+age out via the readings retention window.
 
 ### 6. Advisor runtime (separate CDK app)
 
@@ -278,7 +304,11 @@ The chatbot and advisor previously pointed at the **starter-toolkit runtime**
 
 - `just --list` shows the deploy and teardown recipes (`deploy-cognito`,
   `create-demo-user`, `deploy-serving`, `seed-readings`, `deploy-association`,
-  `teardown-diary`, `teardown-advisor`, `delete-demo-user`).
+  `deploy-demo-refresh`, `teardown-diary`, `teardown-advisor`,
+  `teardown-demo-refresh`, `delete-demo-user`).
+- **Remember `just teardown-demo-refresh` after the demo** if you deployed the
+  optional demo-data refresh stack (step 5b): it is the one add-on that keeps a
+  Lambda firing on a schedule, so leaving it runs (cheaply) until removed.
 - `just synth` synthesizes the `infra/` app resolving nothing from an account.
 - `just synth-advisor-infra` synthesizes the advisor app offline.
 
