@@ -370,6 +370,32 @@ deploy-association:
             -c deploy_diary_memory=true --require-approval never
     @{{cdk_clean}}
 
+# Deploy the scheduled demo-data refresh stack (feature: demo-data-refresh), then
+# seed ONCE immediately so the 60-day history and a current tail exist without
+# waiting for the first scheduled fire. The stack imports the serving stack's
+# readings + sensor-registry tables cross-stack, so serving must be deployed first.
+# The one-off seed resolves those table names from the serving stack's outputs
+# (never committed), the same way deploy-advisor resolves its identifiers.
+deploy-demo-refresh:
+    {{cdk_env}} cd {{infra_dir}} && \
+        uv run cdk deploy --exclusively aqm-poc-demo-refresh \
+            -c deploy_diary_memory=true --require-approval never
+    @{{cdk_clean}}
+    READINGS="$(aws cloudformation describe-stacks --stack-name aqm-poc-serving \
+        --query "Stacks[0].Outputs[?OutputKey=='ReadingsTableName'].OutputValue|[0]" --output text)" && \
+        REGISTRY="$(aws cloudformation describe-stacks --stack-name aqm-poc-serving \
+        --query "Stacks[0].Outputs[?OutputKey=='SensorRegistryTableName'].OutputValue|[0]" --output text)" && \
+        just seed-readings "$READINGS" "$REGISTRY"
+
+# Tear down the demo-data refresh stack after the demo (Requirement 3.3). Seeded
+# rows are left in place — they are harmless demo data and age out via the readings
+# retention window. A SEPARATE step from teardown-diary, like the other add-ons.
+teardown-demo-refresh:
+    {{cdk_env}} cd {{infra_dir}} && \
+        uv run cdk destroy --exclusively aqm-poc-demo-refresh \
+            -c deploy_diary_memory=true --force
+    @{{cdk_clean}}
+
 # Invoke the deployed association function on demand (Task 18 demo). Pass the
 # deployed function name (read it from the AssociationStack's output). Writes the
 # response body to /dev/stdout so the caller sees the invocation result.
