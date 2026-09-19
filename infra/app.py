@@ -18,6 +18,7 @@ import os
 import aws_cdk as cdk
 from aqm_infra.association_stack import AssociationStack
 from aqm_infra.cognito_stack import CognitoStack
+from aqm_infra.demo_data_refresh_stack import DemoDataRefreshStack
 from aqm_infra.ingestion_serving_stack import IngestionServingStack
 from aqm_infra.lambda_rest_stack import LambdaRestStack
 from aqm_infra.web_chatbot_stack import WebChatbotStack
@@ -155,6 +156,23 @@ if app.node.try_get_context("deploy_diary_memory"):
         readings_table_name=serving_stack.readings_table_name,
         registry_table_name=serving_stack.sensor_registry_table_name,
         description="POC: scheduled association-derivation Lambda (personal-diary-memory)",
+    )
+
+    # A scheduled seed refresh keeps a CURRENT demo reading available throughout the
+    # demo window (feature: demo-data-refresh). It reuses the serving stack's readings
+    # and sensor-registry tables — read+write, since the seed upserts the registry AND
+    # writes the readings — so the serving stack must deploy first, exactly as the
+    # association stack does. Its EventBridge cadence (2h) stays inside the serving
+    # freshness window (3h) so `current` never lapses to "unavailable".
+    DemoDataRefreshStack(
+        app,
+        "aqm-poc-demo-refresh",
+        env=env,
+        service_dir="../data-processing",
+        region=REGION,
+        readings_table_name=serving_stack.readings_table_name,
+        registry_table_name=serving_stack.sensor_registry_table_name,
+        description="POC: scheduled demo-data seed refresh (demo-data-refresh)",
     )
 
 
