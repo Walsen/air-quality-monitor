@@ -286,6 +286,10 @@ synth:
             AWS_SHARED_CREDENTIALS_FILE=/nonexistent/credentials \
         uv run cdk synth --no-lookups \
             -c deploy_ingestion=true -c deploy_diary_memory=true \
+            -c deploy_synthetics=true \
+            -c synthetics_target_url=https://serving.placeholder.example.com \
+            -c synthetics_cognito_token_url=https://auth.placeholder.example.com/oauth2/token \
+            -c synthetics_cognito_secret_name=aqm/canary/placeholder \
             -c simulator_api_key=placeholder -c ingestion_api_key=placeholder \
             -c chatbot_access_key=placeholder \
             -c cognito_user_pool_id=us-east-1_PLACEHOLD \
@@ -475,3 +479,36 @@ delete-demo-user user_pool_id username:
 synth-advisor-infra:
     cd agent-advisor/infra && uv run pytest tests/ -c pyproject.toml -q
     cd agent-advisor/infra && AQM_CDK_SYNTH_PLACEHOLDER=1 npx cdk synth --no-lookups > /dev/null && echo "synth OK"
+
+# Deploy the CloudWatch Synthetics canaries + alarms over the serving API
+# (feature: observability-xray-synthetics). Resolves the serving base URL from the
+# aqm-poc-serving stack's ApiUrl output — never literals (§7). The authenticated
+# canary reads its client-credentials from a Secrets Manager secret referenced by
+# NAME only (create it separately: `aws secretsmanager create-secret --name <name>
+# --secret-string '{"client_id":"...","client_secret":"...","scope":"..."}'`); no
+# credential is committed or passed on the command line. Pass secret_name (required
+# for the authenticated canary), an optional token_url, and alarm_email. Carries the
+# node/TMPDIR preamble and cleans staging like the other cdk recipes.
+deploy-synthetics secret_name token_url="" alarm_email="" require_reading="false":
+    {{cdk_env}} cd {{infra_dir}} && \
+        SERVING="$(aws cloudformation describe-stacks --stack-name aqm-poc-serving \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue|[0]" --output text)" && \
+        [ -n "$SERVING" ] && [ "$SERVING" != "None" ] || \
+            { echo "deploy-synthetics: could not resolve serving ApiUrl" >&2; exit 1; } && \
+        uv run cdk deploy --exclusively aqm-poc-synthetics \
+            -c deploy_synthetics=true \
+            -c synthetics_target_url="$SERVING" \
+            -c synthetics_cognito_token_url="{{token_url}}" \
+            -c synthetics_cognito_secret_name="{{secret_name}}" \
+            -c synthetics_require_reading="{{require_reading}}" \
+            -c synthetics_alarm_email="{{alarm_email}}" \
+            --require-approval never
+    @{{cdk_clean}}
+
+# Tear down the Synthetics canaries + alarms after the demo. A SEPARATE step from
+# teardown-diary, like the other add-ons. The artifacts bucket auto-deletes.
+teardown-synthetics:
+    {{cdk_env}} cd {{infra_dir}} && \
+        uv run cdk destroy --exclusively aqm-poc-synthetics \
+            -c deploy_synthetics=true --force
+    @{{cdk_clean}}
