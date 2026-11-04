@@ -42,22 +42,16 @@ owning its own manifest, tests, and container. They share one contract — the
 sensor-data schema — so the simulator could be swapped for a live public feed
 without changing the ingestion service.
 
-```
-  ┌──────────────────────┐   MQTT (push) / REST (pull)   ┌───────────────────────────┐
-  │  Sensor Simulator    │ ────────────────────────────▶ │  Ingestion & Serving       │
-  │  (sensor-simulator/) │   Breathe-London-shaped        │  (data-processing/)        │
-  │  N virtual sensors   │   PM2.5 / NO2 / meteorology    │  validate → calibrate →    │
-  └──────────────────────┘                                │  AQI → store → serve       │
-                                                          │  DynamoDB + S3, HTTP API   │
-                                                          │  gated by Cognito          │
-                                                          └────────────┬──────────────┘
-                                        per-user JSON (tool call,       │
-                                        carrying the user's JWT)        ▼
-  ┌──────────────────────┐   Cognito JWT   ┌───────────────────────────────────────────┐
-  │  Web Chatbot         │ ──────────────▶ │  AI Advisor Agent (agent-advisor/)         │
-  │  (web-chatbot/)      │   sign in +     │  on Amazon Bedrock AgentCore Runtime       │
-  │  browser UI          │   chat turn     │  retrieve → generate → verify → escalate   │
-  └──────────────────────┘                 └───────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    sim["<b>Sensor Simulator</b><br/>(sensor-simulator/)<br/>N virtual sensors"]
+    ing["<b>Ingestion &amp; Serving</b><br/>(data-processing/)<br/>validate → calibrate → AQI → store → serve<br/>DynamoDB + S3, HTTP API gated by Cognito"]
+    web["<b>Web Chatbot</b><br/>(web-chatbot/)<br/>browser UI"]
+    adv["<b>AI Advisor Agent</b><br/>(agent-advisor/)<br/>on Amazon Bedrock AgentCore Runtime<br/>retrieve → generate → verify → escalate"]
+
+    sim -- "MQTT (push) / REST (pull)<br/>Breathe-London-shaped<br/>PM2.5 / NO2 / meteorology" --> ing
+    web -- "Cognito JWT<br/>sign in + chat turn" --> adv
+    ing -- "per-user JSON<br/>(tool call, carrying the user's JWT)" --> adv
 ```
 
 | Directory | Service | Role |
@@ -67,6 +61,41 @@ without changing the ingestion service.
 | [`agent-advisor/`](agent-advisor/README.md) | AI Advisor Agent | Consumes the serving API and turns an utterance into a verified, non-diagnostic `Advisory_Response`. Deploys to Amazon Bedrock AgentCore Runtime. |
 | `web-chatbot/` | Web Chatbot | A browser sign-in + chat UI that proxies to the advisor, gated by a shared key and per-user Cognito login. |
 | [`infra/`](infra/) | Infrastructure (CDK) | AWS CDK (Python) stacks for the deployable pieces: Cognito, the serving API + DynamoDB tables, and the scheduled association Lambda. |
+
+### The sensor device being simulated
+
+![Low-cost air-quality sensor unit: lamppost installation and enclosure cutaway](docs/architecture/sensor-unit.svg)
+
+The project has no physical hardware. `sensor-simulator/` emulates the kind of
+commercial low-cost sensor unit that municipal networks such as Breathe London
+deploy. The figure is a generic illustration of that class of device, not a
+specific product, and its layout is schematic.
+
+- **Installation.** The weatherproof unit is mounted on a lamppost or pole about
+  2–3 m above the ground, a few metres from the kerb, so it measures the air at
+  street level where people walk. It runs on mains power or a solar panel.
+- **PM2.5 optical sensor.** A laser shines through a sample of air, and a
+  photodetector counts and sizes the particles from the scattered light. Mass is
+  estimated through calibration, not weighed. Humid air makes particles swell,
+  which inflates raw readings, so the simulator models this artifact and the
+  ingestion service corrects for it with humidity-aware calibration.
+- **NO2 electrochemical cell.** The gas reacts in the cell and produces a current
+  proportional to its concentration. These cells are sensitive to temperature
+  and drift slowly over time. The simulator adds measurement noise and a slow
+  per-sensor drift to both PM2.5 and NO2.
+- **Met sensor.** Temperature, relative humidity, and pressure. These are
+  published as readings, and humidity drives the PM2.5 correction.
+- **Controller.** Samples every minute and publishes hourly averages, the
+  resolution the reference network exposes.
+- **Power and modem.** A battery (when solar powered) and a cellular modem with a
+  roaming SIM, which sends data to the cloud over MQTT or HTTPS. The unit also
+  reports housekeeping: battery/solar state, signal quality, and fault flags.
+
+Each virtual sensor in the simulator is a small state machine that produces this
+same set of values on every tick, in the same shape as the real network's feed.
+That is why the simulator could be swapped for a live feed without changing the
+ingestion service. The full hardware reference is in
+[`docs/architecture/01-sensor-simulator-service.md`](docs/architecture/01-sensor-simulator-service.md).
 
 Design principles carried through every service:
 
